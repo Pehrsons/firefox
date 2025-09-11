@@ -469,6 +469,11 @@ nsresult MediaEngineRemoteVideoSource::Reconfigure(
   LOG("%s", __PRETTY_FUNCTION__);
   AssertIsOnOwningThread();
 
+  if (mState == kReleased) {
+    // XXX needed for when Allocate fails and Reconfigure already is in flight
+    return NS_ERROR_INVALID_ARG;
+  }
+
   NormalizedConstraints c(aConstraints);
   const auto resizeMode = MediaConstraintsHelper::GetResizeMode(c, aPrefs);
   const auto distanceMode =
