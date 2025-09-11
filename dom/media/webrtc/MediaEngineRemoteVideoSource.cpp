@@ -203,6 +203,17 @@ MediaEngineRemoteVideoSource::MediaEngineRemoteVideoSource(
   }
 }
 
+already_AddRefed<MediaEngineRemoteVideoSource>
+MediaEngineRemoteVideoSource::CreateFrom(
+    const MediaEngineRemoteVideoSource* aSource,
+    const MediaDevice* aMediaDevice) {
+  auto src = MakeRefPtr<MediaEngineRemoteVideoSource>(aMediaDevice);
+  *static_cast<MediaTrackSettings*>(src->mSettings) = *aSource->mSettings;
+  *static_cast<MediaTrackCapabilities*>(src->mTrackCapabilities) =
+      *aSource->mTrackCapabilities;
+  return src.forget();
+}
+
 MediaEngineRemoteVideoSource::~MediaEngineRemoteVideoSource() {
   mFirstFramePromiseHolder.RejectIfExists(NS_ERROR_ABORT, __func__);
 }

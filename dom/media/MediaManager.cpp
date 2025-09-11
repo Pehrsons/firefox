@@ -887,17 +887,18 @@ class LocalTrackSource : public MediaStreamTrackSource {
     }
   }
 
-  already_AddRefed<MediaStreamTrackSource> Clone() override {
+  CloneResult Clone() override {
     if (!mListener) {
-      return nullptr;
+      return {};
     }
     RefPtr listener = mListener->Clone();
     MOZ_ASSERT(listener);
     if (!listener) {
-      return nullptr;
+      return {};
     }
 
-    return do_AddRef(listener->GetTrackSource());
+    return {.mSource = listener->GetTrackSource(),
+            .mInputTrack = listener->GetTrackSource()->mTrack};
   }
 
   void Disable() override {
@@ -1291,9 +1292,11 @@ nsresult LocalMediaDevice::Deallocate() {
   return mSource->Deallocate();
 }
 
-already_AddRefed<LocalMediaDevice> LocalMediaDevice::Clone() const {
+already_AddRefed<LocalMediaDevice> LocalMediaDevice::Clone() {
   MOZ_ASSERT(NS_IsMainThread());
   auto device = MakeRefPtr<LocalMediaDevice>(mRawDevice, mID, mGroupID, mName);
+  device->mSource =
+      mRawDevice->mEngine->CreateSourceFrom(Source(), device->mRawDevice);
 #ifdef MOZ_THREAD_SAFETY_OWNERSHIP_CHECKS_SUPPORTED
   // The source is normally created on the MediaManager thread. But for cloning,
   // it ends up being created on main thread. Make sure its owning event target

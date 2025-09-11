@@ -87,6 +87,10 @@ class MediaEngineRemoteVideoSource : public MediaEngineSource,
  public:
   explicit MediaEngineRemoteVideoSource(const MediaDevice* aMediaDevice);
 
+  static already_AddRefed<MediaEngineRemoteVideoSource> CreateFrom(
+      const MediaEngineRemoteVideoSource* aSource,
+      const MediaDevice* aMediaDevice);
+
   // ExternalRenderer
   /**
    * Signals that the capture stream has ended

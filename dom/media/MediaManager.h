@@ -153,7 +153,7 @@ class LocalMediaDevice final : public nsIMediaDevice {
   /**
    * Clones the LocalMediaDevice and sets a cloned source.
    */
-  already_AddRefed<LocalMediaDevice> Clone() const;
+  already_AddRefed<LocalMediaDevice> Clone();
 
   void GetSettings(dom::MediaTrackSettings& aOutSettings);
   void GetCapabilities(dom::MediaTrackCapabilities& aOutCapabilities);
