@@ -129,6 +129,13 @@ class MediaStreamTrackSource : public nsISupports {
   virtual void Destroy() {}
 
   /**
+   * Clone this MediaStreamTrackSource. Cloned sources allow independent track
+   * settings. Not supported by all source types. A source not supporting
+   * cloning returns nullptr.
+   */
+  virtual already_AddRefed<MediaStreamTrackSource> Clone() { return nullptr; }
+
+  /**
    * Gets the source's MediaSourceEnum for usage by PeerConnections.
    */
   virtual MediaSourceEnum GetMediaSource() const = 0;
@@ -645,7 +652,11 @@ class MediaStreamTrack : public DOMEventTargetHelper, public SupportsWeakPtr {
 
   template <typename TrackType>
   already_AddRefed<MediaStreamTrack> CloneInternal() {
-    auto newTrack = MakeRefPtr<TrackType>(mWindow, mInputTrack, mSource,
+    RefPtr source = mSource->Clone();
+    if (!source) {
+      source = mSource;
+    }
+    auto newTrack = MakeRefPtr<TrackType>(mWindow, mInputTrack, source,
                                           ReadyState(), Muted(), mConstraints);
     newTrack->SetEnabled(Enabled());
     newTrack->SetMuted(Muted());
