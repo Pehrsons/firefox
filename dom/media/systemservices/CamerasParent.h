@@ -233,14 +233,14 @@ class CamerasParent final : public PCamerasParent {
  private:
   virtual ~CamerasParent();
 
-  struct GetOrCreateCapturerResult {
-    AggregateCapturer* mCapturer{};
+  struct GetOrCreateAggregatorResult {
+    AggregateCapturer* mAggregator{};
     int mStreamId{};
   };
-  GetOrCreateCapturerResult GetOrCreateCapturer(
+  GetOrCreateAggregatorResult GetOrCreateAggregator(
       CaptureEngine aEngine, uint64_t aWindowId, const nsCString& aUniqueId,
       nsTArray<webrtc::VideoCaptureCapability>&& aCapabilities);
-  AggregateCapturer* GetCapturer(CaptureEngine aEngine, int aStreamId);
+  AggregateCapturer* GetAggregator(CaptureEngine aEngine, int aStreamId);
   int ReleaseStream(CaptureEngine aEngine, int aStreamId);
 
   nsTArray<webrtc::VideoCaptureCapability> const* EnsureCapabilitiesPopulated(
@@ -273,12 +273,13 @@ class CamerasParent final : public PCamerasParent {
   // Reference to same VideoEngineArray as sEngines. Video capture thread only.
   const RefPtr<VideoEngineArray> mEngines;
 
-  // Reference to same array of AggregateCapturers as sCapturers. There is one
-  // AggregateCapturer per allocated video source. It tracks the mapping from
-  // source to streamIds and CamerasParent instances. Video capture thread only.
+  // Reference to same array of AggregateCapturers as sAggregators. There is one
+  // AggregateCapturer per allocated video capturer. It tracks the mapping from
+  // capturer to streamIds and CamerasParent instances. Video capture thread
+  // only.
   const RefPtr<
       media::Refcountable<nsTArray<std::unique_ptr<AggregateCapturer>>>>
-      mCapturers;
+      mAggregators;
 
   // Reference to same VideoCaptureFactory as sVideoCaptureFactory. Video
   // capture thread only.
