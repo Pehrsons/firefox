@@ -38,7 +38,8 @@ class ClientHandle final : public ClientThing<ClientHandleChild> {
 
   RefPtr<ClientManager> mManager;
   nsCOMPtr<nsISerialEventTarget> mSerialEventTarget;
-  RefPtr<GenericPromise::Private> mDetachPromise;
+  MozPromiseHolder<GenericPromise> mDetachHolder;
+  RefPtr<GenericPromise> mDetachPromise;
   ClientInfo mClientInfo;
 
   ~ClientHandle();

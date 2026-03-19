@@ -11,12 +11,9 @@ namespace mozilla::dom {
 using mozilla::ipc::IPCResult;
 
 void ClientSourceOpParent::ActorDestroy(ActorDestroyReason aReason) {
-  if (mPromise) {
-    CopyableErrorResult rv;
-    rv.ThrowAbortError("Client torn down");
-    mPromise->Reject(rv, __func__);
-    mPromise = nullptr;
-  }
+  CopyableErrorResult rv;
+  rv.ThrowAbortError("Client torn down");
+  mHolder.RejectIfExists(rv, __func__);
 }
 
 IPCResult ClientSourceOpParent::Recv__delete__(const ClientOpResult& aResult) {
@@ -32,24 +29,19 @@ IPCResult ClientSourceOpParent::Recv__delete__(const ClientOpResult& aResult) {
       }
     }
 
-    mPromise->Reject(aResult.get_CopyableErrorResult(), __func__);
-    mPromise = nullptr;
+    mHolder.Reject(aResult.get_CopyableErrorResult(), __func__);
     return IPC_OK();
   }
 
-  mPromise->Resolve(aResult, __func__);
-  mPromise = nullptr;
+  mHolder.Resolve(aResult, __func__);
   return IPC_OK();
 }
 
-ClientSourceOpParent::ClientSourceOpParent(ClientOpConstructorArgs&& aArgs,
-                                           ClientOpPromise::Private* aPromise)
-    : mArgs(std::move(aArgs)), mPromise(aPromise) {
-  MOZ_DIAGNOSTIC_ASSERT(mPromise);
-}
+ClientSourceOpParent::ClientSourceOpParent(ClientOpConstructorArgs&& aArgs)
+    : mArgs(std::move(aArgs)), mPromise(mHolder.Ensure(__func__)) {}
 
 ClientSourceOpParent::~ClientSourceOpParent() {
-  MOZ_DIAGNOSTIC_ASSERT(!mPromise);
+  MOZ_DIAGNOSTIC_ASSERT(mHolder.IsEmpty());
 }
 
 }  // namespace mozilla::dom

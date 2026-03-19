@@ -226,9 +226,6 @@ void ClientSourceParent::DetachHandle(ClientHandleParent* aClientHandle) {
 
 RefPtr<ClientOpPromise> ClientSourceParent::StartOp(
     ClientOpConstructorArgs&& aArgs) {
-  RefPtr<ClientOpPromise::Private> promise =
-      new ClientOpPromise::Private(__func__);
-
   // If we are being controlled, remember that data before propagating
   // on to the ClientSource.  This must be set prior to triggering
   // the controllerchange event from the ClientSource since some tests
@@ -241,8 +238,8 @@ RefPtr<ClientOpPromise> ClientSourceParent::StartOp(
   }
 
   // Constructor failure will reject the promise via ActorDestroy().
-  ClientSourceOpParent* actor =
-      new ClientSourceOpParent(std::move(aArgs), promise);
+  ClientSourceOpParent* actor = new ClientSourceOpParent(std::move(aArgs));
+  RefPtr promise = actor->Promise();
   (void)SendPClientSourceOpConstructor(actor, actor->Args());
 
   return promise;

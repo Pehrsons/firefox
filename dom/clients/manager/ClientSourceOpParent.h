@@ -11,7 +11,8 @@ namespace mozilla::dom {
 
 class ClientSourceOpParent final : public PClientSourceOpParent {
   const ClientOpConstructorArgs mArgs;
-  RefPtr<ClientOpPromise::Private> mPromise;
+  MozPromiseHolder<ClientOpPromise> mHolder;
+  RefPtr<ClientOpPromise> mPromise;
 
   // PClientSourceOpParent interface
   void ActorDestroy(ActorDestroyReason aReason) override;
@@ -20,10 +21,10 @@ class ClientSourceOpParent final : public PClientSourceOpParent {
       const ClientOpResult& aResult) override;
 
  public:
-  ClientSourceOpParent(ClientOpConstructorArgs&& aArgs,
-                       ClientOpPromise::Private* aPromise);
+  explicit ClientSourceOpParent(ClientOpConstructorArgs&& aArgs);
 
   const ClientOpConstructorArgs& Args() const { return mArgs; }
+  ClientOpPromise* Promise() const { return mPromise; }
 
   ~ClientSourceOpParent();
 };

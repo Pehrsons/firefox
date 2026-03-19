@@ -10,7 +10,8 @@
 namespace mozilla::dom {
 
 class ClientNavigateOpParent final : public PClientNavigateOpParent {
-  RefPtr<ClientOpPromise::Private> mPromise;
+  MozPromiseHolder<ClientOpPromise> mHolder;
+  RefPtr<ClientOpPromise> mPromise;
 
   // PClientNavigateOpParent interface
   void ActorDestroy(ActorDestroyReason aReason) override;
@@ -19,10 +20,11 @@ class ClientNavigateOpParent final : public PClientNavigateOpParent {
       const ClientOpResult& aResult) override;
 
  public:
-  ClientNavigateOpParent(const ClientNavigateOpConstructorArgs& aArgs,
-                         ClientOpPromise::Private* aPromise);
+  explicit ClientNavigateOpParent(const ClientNavigateOpConstructorArgs& aArgs);
 
   ~ClientNavigateOpParent();
+
+  ClientOpPromise* Promise() const { return mPromise; }
 };
 
 }  // namespace mozilla::dom

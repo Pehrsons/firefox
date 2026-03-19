@@ -62,7 +62,7 @@ void ClientHandle::OnShutdownThing() {
   if (!mDetachPromise) {
     return;
   }
-  mDetachPromise->Resolve(true, __func__);
+  mDetachHolder.ResolveIfExists(true, __func__);
 }
 
 ClientHandle::ClientHandle(ClientManager* aManager,
@@ -168,9 +168,9 @@ RefPtr<GenericPromise> ClientHandle::OnDetach() {
   NS_ASSERT_OWNINGTHREAD(ClientHandle);
 
   if (!mDetachPromise) {
-    mDetachPromise = new GenericPromise::Private(__func__);
+    mDetachPromise = mDetachHolder.Ensure(__func__);
     if (IsShutdown()) {
-      mDetachPromise->Resolve(true, __func__);
+      mDetachHolder.Resolve(true, __func__);
     }
   }
 

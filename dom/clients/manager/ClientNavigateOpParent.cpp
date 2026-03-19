@@ -9,36 +9,28 @@ namespace mozilla::dom {
 using mozilla::ipc::IPCResult;
 
 void ClientNavigateOpParent::ActorDestroy(ActorDestroyReason aReason) {
-  if (mPromise) {
-    CopyableErrorResult rv;
-    rv.ThrowAbortError("Client aborted");
-    mPromise->Reject(rv, __func__);
-    mPromise = nullptr;
-  }
+  CopyableErrorResult rv;
+  rv.ThrowAbortError("Client aborted");
+  mHolder.RejectIfExists(rv, __func__);
 }
 
 IPCResult ClientNavigateOpParent::Recv__delete__(
     const ClientOpResult& aResult) {
   if (aResult.type() == ClientOpResult::TCopyableErrorResult &&
       aResult.get_CopyableErrorResult().Failed()) {
-    mPromise->Reject(aResult.get_CopyableErrorResult(), __func__);
-    mPromise = nullptr;
+    mHolder.Reject(aResult.get_CopyableErrorResult(), __func__);
     return IPC_OK();
   }
-  mPromise->Resolve(aResult, __func__);
-  mPromise = nullptr;
+  mHolder.Resolve(aResult, __func__);
   return IPC_OK();
 }
 
 ClientNavigateOpParent::ClientNavigateOpParent(
-    const ClientNavigateOpConstructorArgs& aArgs,
-    ClientOpPromise::Private* aPromise)
-    : mPromise(aPromise) {
-  MOZ_DIAGNOSTIC_ASSERT(mPromise);
-}
+    const ClientNavigateOpConstructorArgs& aArgs)
+    : mPromise(mHolder.Ensure(__func__)) {}
 
 ClientNavigateOpParent::~ClientNavigateOpParent() {
-  MOZ_DIAGNOSTIC_ASSERT(!mPromise);
+  MOZ_DIAGNOSTIC_ASSERT(mHolder.IsEmpty());
 }
 
 }  // namespace mozilla::dom

@@ -437,17 +437,10 @@ RefPtr<ClientOpPromise> ClientManagerService::Navigate(
   ClientNavigateOpConstructorArgs args(WrapNotNull(source), aArgs.url(),
                                        aArgs.baseURL());
 
-  RefPtr<ClientOpPromise::Private> promise =
-      new ClientOpPromise::Private(__func__);
-
-  ClientNavigateOpParent* op = new ClientNavigateOpParent(args, promise);
-  PClientNavigateOpParent* result =
-      manager->SendPClientNavigateOpConstructor(op, args);
-  if (!result) {
-    CopyableErrorResult rv;
-    rv.ThrowInvalidStateError("Client is aborted");
-    promise->Reject(rv, __func__);
-  }
+  // Constructor failure will reject via ActorDestroy().
+  ClientNavigateOpParent* op = new ClientNavigateOpParent(args);
+  RefPtr promise = op->Promise();
+  (void)manager->SendPClientNavigateOpConstructor(op, args);
 
   return promise;
 }
@@ -455,7 +448,8 @@ RefPtr<ClientOpPromise> ClientManagerService::Navigate(
 namespace {
 
 class PromiseListHolder final {
-  RefPtr<ClientOpPromise::Private> mResultPromise;
+  MozPromiseHolder<ClientOpPromise> mResultHolder;
+  RefPtr<ClientOpPromise> mResultPromise;
   nsTArray<RefPtr<ClientOpPromise>> mPromiseList;
   nsTArray<ClientInfoAndState> mResultList;
   uint32_t mOutstandingPromiseCount;
@@ -475,7 +469,7 @@ class PromiseListHolder final {
 
  public:
   PromiseListHolder()
-      : mResultPromise(new ClientOpPromise::Private(__func__)),
+      : mResultPromise(mResultHolder.Ensure(__func__)),
         mOutstandingPromiseCount(0) {}
 
   RefPtr<ClientOpPromise> GetResultPromise() {
@@ -512,7 +506,8 @@ class PromiseListHolder final {
 
   void MaybeFinish() {
     if (!mOutstandingPromiseCount) {
-      mResultPromise->Resolve(CopyableTArray(mResultList.Clone()), __func__);
+      mResultHolder.Resolve(ClientList(CopyableTArray(mResultList.Clone())),
+                            __func__);
     }
   }
 
