@@ -1258,6 +1258,13 @@ class MozPromise : public MozPromiseBase {
     }
   }
 
+  template <typename ImplType>
+  void ChainTo(MozPromiseHolderBase<MozPromise, ImplType>&& aChainedHolder,
+               StaticString aCallSite) {
+    MOZ_ASSERT(!aChainedHolder.IsEmpty());
+    ChainTo(aChainedHolder.Steal(), aCallSite);
+  }
+
 #ifdef MOZ_WIDGET_ANDROID
   // Creates a C++ MozPromise from its Java counterpart, GeckoResult.
   [[nodiscard]] static RefPtr<MozPromise> FromGeckoResult(

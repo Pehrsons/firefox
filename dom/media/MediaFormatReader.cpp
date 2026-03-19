@@ -178,7 +178,7 @@ void MediaFormatReader::DecoderData::Flush() {
             // Let's continue to shut down the decoder. Note
             // we don't access |this| because this decoder
             // is no longer managed by MFR::DecoderData.
-            d->Shutdown()->ChainTo(p->Steal(), __func__);
+            d->Shutdown()->ChainTo(std::move(*p), __func__);
             return;
           }
           mFlushing = false;
@@ -191,7 +191,7 @@ void MediaFormatReader::DecoderData::Flush() {
           DDLOGEX2("MediaFormatReader::DecoderData", this, DDLogCategory::Log,
                    "flush_error", aError);
           if (!p->IsEmpty()) {
-            d->Shutdown()->ChainTo(p->Steal(), __func__);
+            d->Shutdown()->ChainTo(std::move(*p), __func__);
             return;
           }
           mFlushing = false;
