@@ -55,10 +55,8 @@ void FileSystemBackgroundRequestHandler::Shutdown() {
 
     mCreatingFileSystemManagerChild = false;
 
-    // We must either resolve/reject the promise or steal the internal promise
-    // before the holder is destroyed. The former isn't possible during
-    // shutdown.
-    mCreateFileSystemManagerChildPromiseHolder.Steal().leak();
+    mCreateFileSystemManagerChildPromiseHolder.RejectIfExists(NS_ERROR_ABORT,
+                                                              __func__);
   }
 }
 
