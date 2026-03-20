@@ -980,9 +980,7 @@ MFCDMParent::GetAllKeySystemsCapabilities() {
                                                 __func__);
   }
 
-  RefPtr<CapabilitiesPromise::Private> p =
-      new CapabilitiesPromise::Private(__func__);
-  (void)backgroundTaskQueue->Dispatch(NS_NewRunnableFunction(__func__, [p] {
+  return InvokeAsync(backgroundTaskQueue, __func__, [] {
     MFCDM_PARENT_SLOG("GetAllKeySystemsCapabilities");
     enum SecureLevel : bool {
       Software = false,
@@ -1024,9 +1022,9 @@ MFCDMParent::GetAllKeySystemsCapabilities() {
       }
     }
 
-    p->Resolve(std::move(capabilitiesArr), __func__);
-  }));
-  return p;
+    return CapabilitiesPromise::CreateAndResolve(std::move(capabilitiesArr),
+                                                 __func__);
+  });
 }
 
 /* static */
