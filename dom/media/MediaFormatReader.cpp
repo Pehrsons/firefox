@@ -59,8 +59,7 @@ using MediaDataDecoderID = void*;
  */
 class MediaFormatReader::ShutdownPromisePool {
  public:
-  ShutdownPromisePool()
-      : mOnShutdownComplete(new ShutdownPromise::Private(__func__)) {}
+  ShutdownPromisePool() = default;
 
   // Return a promise which will be resolved when all the tracking promises
   // are resolved. Note no more promises should be added for tracking once
@@ -77,17 +76,18 @@ class MediaFormatReader::ShutdownPromisePool {
 
  private:
   bool mShutdown = false;
-  const RefPtr<ShutdownPromise::Private> mOnShutdownComplete;
+  MozPromiseHolder<ShutdownPromise> mOnShutdownComplete;
   nsTHashSet<RefPtr<ShutdownPromise>> mPromises;
 };
 
 RefPtr<ShutdownPromise> MediaFormatReader::ShutdownPromisePool::Shutdown() {
   MOZ_DIAGNOSTIC_ASSERT(!mShutdown);
   mShutdown = true;
+  RefPtr<ShutdownPromise> p = mOnShutdownComplete.Ensure(__func__);
   if (mPromises.Count() == 0) {
-    mOnShutdownComplete->Resolve(true, __func__);
+    mOnShutdownComplete.Resolve(true, __func__);
   }
-  return mOnShutdownComplete;
+  return p;
 }
 
 void MediaFormatReader::ShutdownPromisePool::Track(
@@ -99,7 +99,7 @@ void MediaFormatReader::ShutdownPromisePool::Track(
     MOZ_DIAGNOSTIC_ASSERT(mPromises.Contains(aPromise));
     mPromises.Remove(aPromise);
     if (mShutdown && mPromises.Count() == 0) {
-      mOnShutdownComplete->Resolve(true, __func__);
+      mOnShutdownComplete.Resolve(true, __func__);
     }
   });
 }

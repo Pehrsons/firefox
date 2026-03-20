@@ -4747,17 +4747,18 @@ RefPtr<GenericPromise> MediaDecoderStateMachine::RequestDebugInfo(
     return GenericPromise::CreateAndReject(NS_ERROR_FAILURE, __func__);
   }
 
-  RefPtr<GenericPromise::Private> p = new GenericPromise::Private(__func__);
+  MozPromiseHolder<GenericPromise> holder;
+  RefPtr<GenericPromise> p = holder.Ensure(__func__);
   RefPtr<MediaDecoderStateMachine> self = this;
-  nsresult rv = OwnerThread()->Dispatch(
-      NS_NewRunnableFunction("MediaDecoderStateMachine::RequestDebugInfo",
-                             [self, p, &aInfo]() {
-                               self->GetDebugInfo(aInfo);
-                               p->Resolve(true, __func__);
-                             }),
+  DebugOnly<nsresult> rv = OwnerThread()->Dispatch(
+      NS_NewRunnableFunction(
+          "MediaDecoderStateMachine::RequestDebugInfo",
+          [self, holder = std::move(holder), &aInfo]() mutable {
+            self->GetDebugInfo(aInfo);
+            holder.Resolve(true, __func__);
+          }),
       AbstractThread::TailDispatch);
   MOZ_ASSERT(NS_SUCCEEDED(rv));
-  (void)rv;
   return p;
 }
 
