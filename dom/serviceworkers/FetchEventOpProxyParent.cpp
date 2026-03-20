@@ -104,7 +104,7 @@ ParentToParentFetchEventRespondWithResult ToParentToParent(
 
 /* static */ void FetchEventOpProxyParent::Create(
     PRemoteWorkerParent* aManager,
-    RefPtr<ServiceWorkerFetchEventOpPromise::Private>&& aPromise,
+    MozPromiseHolder<ServiceWorkerFetchEventOpPromise>&& aHolder,
     const ParentToParentServiceWorkerFetchEventOpArgs& aArgs,
     RefPtr<FetchEventOpParent> aReal, nsCOMPtr<nsIInputStream> aBodyStream) {
   AssertIsInMainProcess();
@@ -129,7 +129,7 @@ ParentToParentFetchEventRespondWithResult ToParentToParent(
   }
 
   RefPtr<FetchEventOpProxyParent> actor =
-      new FetchEventOpProxyParent(std::move(aReal), std::move(aPromise));
+      new FetchEventOpProxyParent(std::move(aReal), std::move(aHolder));
 
   // As long as the fetch event was pending, the FetchEventOpParent was
   // responsible for keeping the preload response, if it already arrived. Once
@@ -156,8 +156,7 @@ ParentToParentFetchEventRespondWithResult ToParentToParent(
       if (!SerializeIPCStream(aBodyStream.forget(), stream,
                               /* aAllowLazy */ false)) {
         actor->mReal->OnFinish();
-        actor->mLifetimePromise->Reject(NS_ERROR_FAILURE, __func__);
-        actor->mLifetimePromise = nullptr;
+        actor->mLifetimeHolder.Reject(NS_ERROR_FAILURE, __func__);
         actor->mReal = nullptr;
         return;
       }
@@ -179,8 +178,8 @@ FetchEventOpProxyParent::~FetchEventOpProxyParent() {
 
 FetchEventOpProxyParent::FetchEventOpProxyParent(
     RefPtr<FetchEventOpParent>&& aReal,
-    RefPtr<ServiceWorkerFetchEventOpPromise::Private>&& aPromise)
-    : mReal(std::move(aReal)), mLifetimePromise(std::move(aPromise)) {}
+    MozPromiseHolder<ServiceWorkerFetchEventOpPromise>&& aHolder)
+    : mReal(std::move(aReal)), mLifetimeHolder(std::move(aHolder)) {}
 
 mozilla::ipc::IPCResult FetchEventOpProxyParent::RecvAsyncLog(
     const nsCString& aScriptSpec, const uint32_t& aLineNumber,
@@ -209,25 +208,18 @@ mozilla::ipc::IPCResult FetchEventOpProxyParent::RecvRespondWith(
 mozilla::ipc::IPCResult FetchEventOpProxyParent::Recv__delete__(
     const ServiceWorkerFetchEventOpResult& aResult) {
   AssertIsOnBackgroundThread();
-  MOZ_ASSERT(mLifetimePromise);
   MOZ_ASSERT(mReal);
   mReal->OnFinish();
-  if (mLifetimePromise) {
-    mLifetimePromise->Resolve(aResult, __func__);
-    mLifetimePromise = nullptr;
-    mReal = nullptr;
-  }
+  mReal = nullptr;
+  mLifetimeHolder.Resolve(aResult, __func__);
 
   return IPC_OK();
 }
 
 void FetchEventOpProxyParent::ActorDestroy(ActorDestroyReason) {
   AssertIsOnBackgroundThread();
-  if (mLifetimePromise) {
-    mLifetimePromise->Reject(NS_ERROR_DOM_ABORT_ERR, __func__);
-    mLifetimePromise = nullptr;
-    mReal = nullptr;
-  }
+  mReal = nullptr;
+  mLifetimeHolder.RejectIfExists(NS_ERROR_DOM_ABORT_ERR, __func__);
 }
 
 }  // namespace dom

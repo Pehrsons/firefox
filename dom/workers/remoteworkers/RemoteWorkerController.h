@@ -288,7 +288,7 @@ class RemoteWorkerController final {
   class PendingServiceWorkerOp final : public PendingOp {
    public:
     PendingServiceWorkerOp(ServiceWorkerOpArgs&& aArgs,
-                           RefPtr<ServiceWorkerOpPromise::Private> aPromise);
+                           MozPromiseHolder<ServiceWorkerOpPromise>&&);
 
     ~PendingServiceWorkerOp();
 
@@ -298,7 +298,7 @@ class RemoteWorkerController final {
 
    private:
     ServiceWorkerOpArgs mArgs;
-    RefPtr<ServiceWorkerOpPromise::Private> mPromise;
+    MozPromiseHolder<ServiceWorkerOpPromise> mHolder;
   };
 
   /**
@@ -315,7 +315,7 @@ class RemoteWorkerController final {
    public:
     PendingSWFetchEventOp(
         const ParentToParentServiceWorkerFetchEventOpArgs& aArgs,
-        RefPtr<ServiceWorkerFetchEventOpPromise::Private> aPromise,
+        MozPromiseHolder<ServiceWorkerFetchEventOpPromise>&& aHolder,
         RefPtr<FetchEventOpParent>&& aReal);
 
     ~PendingSWFetchEventOp();
@@ -326,7 +326,7 @@ class RemoteWorkerController final {
 
    private:
     ParentToParentServiceWorkerFetchEventOpArgs mArgs;
-    RefPtr<ServiceWorkerFetchEventOpPromise::Private> mPromise;
+    MozPromiseHolder<ServiceWorkerFetchEventOpPromise> mHolder;
     RefPtr<FetchEventOpParent> mReal;
     nsCOMPtr<nsIInputStream> mBodyStream;
   };

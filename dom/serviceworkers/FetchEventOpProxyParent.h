@@ -5,6 +5,7 @@
 #ifndef mozilla_dom_fetcheventopproxyparent_h_
 #define mozilla_dom_fetcheventopproxyparent_h_
 
+#include "mozilla/MozPromise.h"
 #include "mozilla/RefPtr.h"
 #include "mozilla/dom/PFetchEventOpProxyParent.h"
 #include "mozilla/dom/ServiceWorkerOpPromise.h"
@@ -32,14 +33,14 @@ class FetchEventOpProxyParent final : public PFetchEventOpProxyParent {
 
   static void Create(
       PRemoteWorkerParent* aManager,
-      RefPtr<ServiceWorkerFetchEventOpPromise::Private>&& aPromise,
+      MozPromiseHolder<ServiceWorkerFetchEventOpPromise>&& aHolder,
       const ParentToParentServiceWorkerFetchEventOpArgs& aArgs,
       RefPtr<FetchEventOpParent> aReal, nsCOMPtr<nsIInputStream> aBodyStream);
 
  private:
   FetchEventOpProxyParent(
       RefPtr<FetchEventOpParent>&& aReal,
-      RefPtr<ServiceWorkerFetchEventOpPromise::Private>&& aPromise);
+      MozPromiseHolder<ServiceWorkerFetchEventOpPromise>&& aHolder);
 
   ~FetchEventOpProxyParent();
 
@@ -58,7 +59,7 @@ class FetchEventOpProxyParent final : public PFetchEventOpProxyParent {
   void ActorDestroy(ActorDestroyReason) override;
 
   RefPtr<FetchEventOpParent> mReal;
-  RefPtr<ServiceWorkerFetchEventOpPromise::Private> mLifetimePromise;
+  MozPromiseHolder<ServiceWorkerFetchEventOpPromise> mLifetimeHolder;
 };
 
 }  // namespace mozilla::dom
