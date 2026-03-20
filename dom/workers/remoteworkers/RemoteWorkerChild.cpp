@@ -934,36 +934,27 @@ IPCResult RemoteWorkerChild::RecvExecServiceWorkerOp(
 
 RefPtr<GenericPromise>
 RemoteWorkerChild::MaybeSendSetServiceWorkerSkipWaitingFlag() {
-  RefPtr<GenericPromise::Private> promise =
-      new GenericPromise::Private(__func__);
+  return InvokeAsync(
+      GetActorEventTarget(), __func__,
+      [self = RefPtr(this)]() -> RefPtr<GenericPromise> {
+        if (!self->CanSend()) {
+          return GenericPromise::CreateAndReject(NS_ERROR_DOM_ABORT_ERR,
+                                                 __func__);
+        }
 
-  RefPtr<RemoteWorkerChild> self = this;
+        return self->SendSetServiceWorkerSkipWaitingFlag()->Then(
+            GetCurrentSerialEventTarget(), __func__,
+            [](SetServiceWorkerSkipWaitingFlagPromise::ResolveOrRejectValue&&
+                   aResult) {
+              if (NS_WARN_IF(aResult.IsReject())) {
+                return GenericPromise::CreateAndReject(NS_ERROR_DOM_ABORT_ERR,
+                                                       __func__);
+              }
 
-  nsCOMPtr<nsIRunnable> r = NS_NewRunnableFunction(__func__, [self = std::move(
-                                                                  self),
-                                                              promise] {
-    if (!self->CanSend()) {
-      promise->Reject(NS_ERROR_DOM_ABORT_ERR, __func__);
-      return;
-    }
-
-    self->SendSetServiceWorkerSkipWaitingFlag()->Then(
-        GetCurrentSerialEventTarget(), __func__,
-        [promise](
-            const SetServiceWorkerSkipWaitingFlagPromise::ResolveOrRejectValue&
-                aResult) {
-          if (NS_WARN_IF(aResult.IsReject())) {
-            promise->Reject(NS_ERROR_DOM_ABORT_ERR, __func__);
-            return;
-          }
-
-          promise->Resolve(aResult.ResolveValue(), __func__);
-        });
-  });
-
-  GetActorEventTarget()->Dispatch(r.forget(), NS_DISPATCH_NORMAL);
-
-  return promise;
+              return GenericPromise::CreateAndResolve(aResult.ResolveValue(),
+                                                      __func__);
+            });
+      });
 }
 
 /**
