@@ -223,25 +223,23 @@ KeySystemConfig::CreateKeySystemConfigs(
 
 #ifdef MOZ_WMF_CDM
   if (!asyncRequests.IsEmpty()) {
-    RefPtr<SupportedConfigsPromise::Private> promise =
-        new SupportedConfigsPromise::Private(__func__);
     RefPtr<WMFCDMCapabilites> cdm = new WMFCDMCapabilites();
-    cdm->GetCapabilities(asyncRequests)
+    return cdm->GetCapabilities(asyncRequests)
         ->Then(GetMainThreadSerialEventTarget(), __func__,
-               [syncConfigs = std::move(outConfigs),
-                promise](SupportedConfigsPromise::ResolveOrRejectValue&&
-                             aResult) mutable {
+               [syncConfigs = std::move(outConfigs)](
+                   SupportedConfigsPromise::ResolveOrRejectValue&&
+                       aResult) mutable {
                  // Return the capabilities we already know
                  if (aResult.IsReject()) {
-                   promise->Resolve(std::move(syncConfigs), __func__);
-                   return;
+                   return SupportedConfigsPromise::CreateAndResolve(
+                       std::move(syncConfigs), __func__);
                  }
                  // Merge sync results with async results
                  auto& asyncConfigs = aResult.ResolveValue();
                  asyncConfigs.AppendElements(std::move(syncConfigs));
-                 promise->Resolve(std::move(asyncConfigs), __func__);
+                 return SupportedConfigsPromise::CreateAndResolve(
+                     std::move(asyncConfigs), __func__);
                });
-    return promise;
   }
 #endif
   return SupportedConfigsPromise::CreateAndResolve(std::move(outConfigs),
