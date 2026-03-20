@@ -227,17 +227,14 @@ RefPtr<GetIPCIdentityCredentialPromise> GetCredentialInMainProcess(
         NS_ERROR_NOT_AVAILABLE, __func__);
   }
 
-  RefPtr<GetIPCIdentityCredentialPromise::Private> result =
-      new GetIPCIdentityCredentialPromise::Private(__func__);
-  DiscoverFromExternalSourceInMainProcess(aPrincipal, aRelyingParty, aOptions,
-                                          aMediationRequirement)
-      ->Then(
-          GetCurrentSerialEventTarget(), __func__,
-          [result](const IPCIdentityCredential& credential) {
-            result->Resolve(credential, __func__);
-          },
-          [result](nsresult rv) { result->Reject(rv, __func__); });
-  return result.forget();
+  return DiscoverFromExternalSourceInMainProcess(
+             aPrincipal, aRelyingParty, aOptions, aMediationRequirement)
+      ->Then(GetCurrentSerialEventTarget(), __func__,
+             [](GetIPCIdentityCredentialPromise::ResolveOrRejectValue&&
+                    aValue) mutable {
+               return GetIPCIdentityCredentialPromise::CreateAndResolveOrReject(
+                   aValue, __func__);
+             });
 }
 
 // static

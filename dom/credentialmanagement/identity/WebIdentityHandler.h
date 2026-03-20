@@ -42,10 +42,12 @@ class WebIdentityHandler final : public AbortFollower {
   void SetLoginStatus(const LoginStatus& aStatus,
                       const RefPtr<Promise>& aPromise);
 
-  RefPtr<MozPromise<nsresult, nsresult, true>> ResolveContinuationWindow(
+  using ResolveContinuationWindowPromise =
+      MozPromise<nsresult, nsresult, /*IsExclusive=*/true>;
+  RefPtr<ResolveContinuationWindowPromise> ResolveContinuationWindow(
       const nsACString& aToken, const IdentityResolveOptions& aOptions);
 
-  RefPtr<MozPromise<bool, nsresult, true>> IsContinuationWindow();
+  RefPtr<GenericPromise> IsContinuationWindow();
 
   nsPIDOMWindowInner* GetWindow() {
     MOZ_ASSERT(mWindow);

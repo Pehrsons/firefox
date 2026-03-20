@@ -178,53 +178,47 @@ void WebIdentityHandler::SetLoginStatus(const LoginStatus& aStatus,
       });
 }
 
-RefPtr<MozPromise<nsresult, nsresult, true>>
-WebIdentityHandler::ResolveContinuationWindow(
-    const nsACString& aToken, const IdentityResolveOptions& aOptions) {
+auto WebIdentityHandler::ResolveContinuationWindow(
+    const nsACString& aToken, const IdentityResolveOptions& aOptions)
+    -> RefPtr<ResolveContinuationWindowPromise> {
+  using P = ResolveContinuationWindowPromise;
   if (!mActor) {
-    return MozPromise<nsresult, nsresult, true>::CreateAndReject(
-        NS_ERROR_UNEXPECTED, __func__);
+    return P::CreateAndReject(NS_ERROR_UNEXPECTED, __func__);
   }
   // Tell the parent process that we want to resolve with a given token and
   // options. The main process will infer what popup we are, and find the
   // pending promise.
-  RefPtr<MozPromise<nsresult, nsresult, true>::Private> promise =
-      new MozPromise<nsresult, nsresult, true>::Private(__func__);
-  mActor->SendResolveContinuationWindow(aToken, aOptions)
-      ->Then(
-          GetCurrentSerialEventTarget(), __func__,
-          [promise](const WebIdentityChild::ResolveContinuationWindowPromise::
-                        ResolveValueType& aResult) {
-            // Only resolve on success
-            if (NS_SUCCEEDED(aResult)) {
-              promise->Resolve(aResult, __func__);
-            } else {
-              promise->Reject(aResult, __func__);
-            }
-          },
-          [promise](const WebIdentityChild::ResolveContinuationWindowPromise::
-                        RejectValueType& aResult) {
-            // Fall back to a not allowed error when IPC fails.
-            promise->Reject(nsresult::NS_ERROR_DOM_NOT_ALLOWED_ERR, __func__);
-          });
-  return promise.forget();
+  return mActor->SendResolveContinuationWindow(aToken, aOptions)
+      ->Then(GetCurrentSerialEventTarget(), __func__,
+             [](WebIdentityChild::ResolveContinuationWindowPromise::
+                    ResolveOrRejectValue&& aValue) mutable {
+               if (aValue.IsResolve()) {
+                 // Only resolve on success
+                 if (NS_SUCCEEDED(aValue.ResolveValue())) {
+                   return P::CreateAndResolve(aValue.ResolveValue(), __func__);
+                 }
+                 return P::CreateAndReject(aValue.ResolveValue(), __func__);
+               }
+               // Fall back to a not allowed error when IPC fails.
+               return P::CreateAndReject(nsresult::NS_ERROR_DOM_NOT_ALLOWED_ERR,
+                                         __func__);
+             });
 }
 
-RefPtr<MozPromise<bool, nsresult, true>>
-WebIdentityHandler::IsContinuationWindow() {
+RefPtr<GenericPromise> WebIdentityHandler::IsContinuationWindow() {
+  using P = GenericPromise;
   if (!mActor) {
-    return MozPromise<bool, nsresult, true>::CreateAndReject(
-        NS_ERROR_UNEXPECTED, __func__);
+    return P::CreateAndReject(NS_ERROR_UNEXPECTED, __func__);
   }
-  RefPtr<MozPromise<bool, nsresult, true>::Private> promise =
-      new MozPromise<bool, nsresult, true>::Private(__func__);
-  mActor->SendIsActiveContinuationWindow()->Then(
+  return mActor->SendIsActiveContinuationWindow()->Then(
       GetCurrentSerialEventTarget(), __func__,
-      [promise](bool result) { promise->Resolve(result, __func__); },
-      [promise](mozilla::ipc::ResponseRejectReason reject) {
-        promise->Resolve(false, __func__);
+      [](WebIdentityChild::IsActiveContinuationWindowPromise::
+             ResolveOrRejectValue&& aValue) mutable {
+        if (aValue.IsResolve()) {
+          return P::CreateAndResolve(aValue.ResolveValue(), __func__);
+        }
+        return P::CreateAndResolve(false, __func__);
       });
-  return promise.forget();
 }
 
 void WebIdentityHandler::ActorDestroyed() {
