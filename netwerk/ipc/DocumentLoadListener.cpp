@@ -1224,10 +1224,10 @@ auto DocumentLoadListener::Open(nsDocShellLoadState* aLoadState,
   }
 
   *aRv = NS_OK;
-  mOpenPromise = new OpenPromise::Private(__func__);
   // We make the promise use direct task dispatch in order to reduce the number
   // of event loops iterations.
-  mOpenPromise->UseDirectTaskDispatch(__func__);
+  mOpenPromise = mOpenPromiseHolder.Ensure(__func__);
+  mOpenPromiseHolder.UseDirectTaskDispatch(__func__);
   return mOpenPromise;
 }
 
@@ -2561,7 +2561,7 @@ DocumentLoadListener::RedirectToRealChannel(
       MakeRefPtr<PDocumentChannelParent::RedirectToRealChannelPromise::Private>(
           __func__);
 
-  mOpenPromise->Resolve(
+  mOpenPromiseHolder.Resolve(
       OpenPromiseSucceededType({std::move(aStreamFilterEndpoints),
                                 aRedirectFlags, aLoadFlags,
                                 mEarlyHintsService.LinkType(), promise}),
@@ -2620,8 +2620,7 @@ void DocumentLoadListener::TriggerRedirectToRealChannel(
 
     for (StreamFilterRequest& request : aStreamFilterRequests) {
       if (!pid) {
-        request.mPromise->Reject(false, __func__);
-        request.mPromise = nullptr;
+        request.mPromise.Reject(false, __func__);
         continue;
       }
       ParentEndpoint parent;
@@ -2629,8 +2628,7 @@ void DocumentLoadListener::TriggerRedirectToRealChannel(
           &parent, &request.mChildEndpoint);
 
       if (NS_FAILED(rv)) {
-        request.mPromise->Reject(false, __func__);
-        request.mPromise = nullptr;
+        request.mPromise.Reject(false, __func__);
       } else {
         parentEndpoints.AppendElement(std::move(parent));
       }
@@ -2826,11 +2824,8 @@ void DocumentLoadListener::TriggerRedirectToRealChannel(
           [self, requests = std::move(aStreamFilterRequests)](
               const nsresult& aResponse) mutable {
             for (StreamFilterRequest& request : requests) {
-              if (request.mPromise) {
-                request.mPromise->Resolve(std::move(request.mChildEndpoint),
-                                          __func__);
-                request.mPromise = nullptr;
-              }
+              request.mPromise.ResolveIfExists(
+                  std::move(request.mChildEndpoint), __func__);
             }
             self->RedirectToRealChannelFinished(aResponse);
           },
@@ -3571,8 +3566,7 @@ auto DocumentLoadListener::AttachStreamFilter()
   LOG(("DocumentLoadListener AttachStreamFilter [this=%p]", this));
 
   StreamFilterRequest* request = mStreamFilterRequests.AppendElement();
-  request->mPromise = new ChildEndpointPromise::Private(__func__);
-  return request->mPromise;
+  return request->mPromise.Ensure(__func__);
 }
 
 NS_IMETHODIMP DocumentLoadListener::OnProgress(nsIRequest* aRequest,

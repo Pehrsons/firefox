@@ -51,12 +51,8 @@ using ChildEndpointPromise =
 struct StreamFilterRequest {
   StreamFilterRequest() = default;
   StreamFilterRequest(StreamFilterRequest&&) = default;
-  ~StreamFilterRequest() {
-    if (mPromise) {
-      mPromise->Reject(false, __func__);
-    }
-  }
-  RefPtr<ChildEndpointPromise::Private> mPromise;
+  ~StreamFilterRequest() { mPromise.RejectIfExists(false, __func__); }
+  MozPromiseHolder<ChildEndpointPromise> mPromise;
   mozilla::ipc::Endpoint<extensions::PStreamFilterChild> mChildEndpoint;
 };
 }  // namespace net
@@ -620,13 +616,15 @@ class DocumentLoadListener : public nsIInterfaceRequestor,
     // It is possible for mOpenPromise to not be set if AsyncOpen failed and
     // the DocumentChannel got canceled.
     if (!mOpenPromiseResolved && mOpenPromise) {
-      mOpenPromise->Reject(OpenPromiseFailedType({aStatus, aLoadGroupStatus,
-                                                  aContinueNavigating}),
-                           aLocation);
+      mOpenPromiseHolder.Reject(
+          OpenPromiseFailedType(
+              {aStatus, aLoadGroupStatus, aContinueNavigating}),
+          aLocation);
       mOpenPromiseResolved = true;
     }
   }
-  RefPtr<OpenPromise::Private> mOpenPromise;
+  MozPromiseHolder<OpenPromise> mOpenPromiseHolder;
+  RefPtr<OpenPromise> mOpenPromise;
   bool mOpenPromiseResolved = false;
 
   const bool mIsDocumentLoad;

@@ -1761,7 +1761,7 @@ void nsHttpChannel::ReleaseListeners() {
   mWebTransportSessionEventListener = nullptr;
 
   for (StreamFilterRequest& request : mStreamFilterRequests) {
-    request.mPromise->Reject(false, __func__);
+    request.mPromise.Reject(false, __func__);
   }
   mStreamFilterRequests.Clear();
 }
@@ -2630,20 +2630,19 @@ nsresult nsHttpChannel::CallOnStartRequest() {
       mozilla::ipc::Endpoint<extensions::PStreamFilterChild> child;
       nsresult rv = extensions::PStreamFilter::CreateEndpoints(&parent, &child);
       if (NS_FAILED(rv)) {
-        request.mPromise->Reject(false, __func__);
+        request.mPromise.Reject(false, __func__);
       } else {
         extensions::StreamFilterParent::Attach(this, std::move(parent));
-        request.mPromise->Resolve(std::move(child), __func__);
+        request.mPromise.Resolve(std::move(child), __func__);
       }
     } else {
       if (docListener) {
-        docListener->AttachStreamFilter()->ChainTo(request.mPromise.forget(),
+        docListener->AttachStreamFilter()->ChainTo(std::move(request.mPromise),
                                                    __func__);
       } else {
-        request.mPromise->Reject(false, __func__);
+        request.mPromise.Reject(false, __func__);
       }
     }
-    request.mPromise = nullptr;
   }
   mStreamFilterRequests.Clear();
   StoreTracingEnabled(false);
@@ -8678,8 +8677,7 @@ auto nsHttpChannel::AttachStreamFilter() -> RefPtr<ChildEndpointPromise> {
   // multipart handler (in the parent process!) if applicable.
   if (RefPtr<DocumentLoadListener> docParent = do_QueryObject(parentChannel)) {
     StreamFilterRequest* request = mStreamFilterRequests.AppendElement();
-    request->mPromise = new ChildEndpointPromise::Private(__func__);
-    return request->mPromise;
+    return request->mPromise.Ensure(__func__);
   }
 
   mozilla::ipc::Endpoint<extensions::PStreamFilterParent> parent;
