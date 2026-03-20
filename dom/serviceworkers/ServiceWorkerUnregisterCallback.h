@@ -6,7 +6,6 @@
 #define mozilla_dom_ServiceWorkerUnregisterCallback_h
 
 #include "mozilla/MozPromise.h"
-#include "mozilla/RefPtr.h"
 #include "nsIServiceWorkerManager.h"
 
 namespace mozilla::dom {
@@ -15,9 +14,7 @@ class UnregisterCallback final : public nsIServiceWorkerUnregisterCallback {
  public:
   NS_DECL_ISUPPORTS
 
-  UnregisterCallback();
-
-  explicit UnregisterCallback(GenericPromise::Private* aPromise);
+  explicit UnregisterCallback(MozPromiseHolder<GenericPromise>&& aPromise);
 
   // nsIServiceWorkerUnregisterCallback implementation
   NS_IMETHOD
@@ -26,12 +23,10 @@ class UnregisterCallback final : public nsIServiceWorkerUnregisterCallback {
   NS_IMETHOD
   UnregisterFailed() override;
 
-  RefPtr<GenericPromise> Promise() const;
-
  private:
   ~UnregisterCallback() = default;
 
-  RefPtr<GenericPromise::Private> mPromise;
+  MozPromiseHolder<GenericPromise> mPromise;
 };
 
 }  // namespace mozilla::dom

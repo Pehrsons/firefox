@@ -477,11 +477,12 @@ class ServiceWorkerManager final : public nsIServiceWorkerManager,
 
   struct PendingReadyData {
     RefPtr<ClientHandle> mClientHandle;
-    RefPtr<ServiceWorkerRegistrationPromise::Private> mPromise;
+    MozPromiseHolder<ServiceWorkerRegistrationPromise> mPromiseHolder;
+    RefPtr<ServiceWorkerRegistrationPromise> mPromise;
 
     explicit PendingReadyData(ClientHandle* aClientHandle)
         : mClientHandle(aClientHandle),
-          mPromise(new ServiceWorkerRegistrationPromise::Private(__func__)) {}
+          mPromise(mPromiseHolder.Ensure(__func__)) {}
   };
 
   nsTArray<UniquePtr<PendingReadyData>> mPendingReadyList;

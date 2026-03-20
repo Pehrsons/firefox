@@ -44,22 +44,24 @@ RefPtr<ServiceWorkerRegistrationPromise> ServiceWorkerContainerProxy::Register(
     ServiceWorkerUpdateViaCache aUpdateViaCache) {
   AssertIsOnBackgroundThread();
 
-  RefPtr<ServiceWorkerRegistrationPromise::Private> promise =
-      new ServiceWorkerRegistrationPromise::Private(__func__);
+  MozPromiseHolder<ServiceWorkerRegistrationPromise> holder;
+  RefPtr<ServiceWorkerRegistrationPromise> promise = holder.Ensure(__func__);
 
   nsCOMPtr<nsIRunnable> r = NS_NewRunnableFunction(
-      __func__,
-      [aClientInfo, aScopeURL = nsCString(aScopeURL), aType,
-       aScriptURL = nsCString(aScriptURL), aUpdateViaCache, promise]() mutable {
-        auto scopeExit = MakeScopeExit(
-            [&] { promise->Reject(NS_ERROR_DOM_INVALID_STATE_ERR, __func__); });
+      __func__, [aClientInfo, aScopeURL = nsCString(aScopeURL), aType,
+                 aScriptURL = nsCString(aScriptURL), aUpdateViaCache,
+                 holder = std::move(holder)]() mutable {
+        auto scopeExit = MakeScopeExit([&] {
+          holder.Reject(CopyableErrorResult(NS_ERROR_DOM_INVALID_STATE_ERR),
+                        __func__);
+        });
 
         RefPtr<ServiceWorkerManager> swm = ServiceWorkerManager::GetInstance();
         NS_ENSURE_TRUE_VOID(swm);
 
         swm->Register(aClientInfo, aScopeURL, aType, aScriptURL,
                       aUpdateViaCache)
-            ->ChainTo(promise.forget(), __func__);
+            ->ChainTo(std::move(holder), __func__);
 
         scopeExit.release();
       });
@@ -74,19 +76,22 @@ ServiceWorkerContainerProxy::GetRegistration(const ClientInfo& aClientInfo,
                                              const nsACString& aURL) {
   AssertIsOnBackgroundThread();
 
-  RefPtr<ServiceWorkerRegistrationPromise::Private> promise =
-      new ServiceWorkerRegistrationPromise::Private(__func__);
+  MozPromiseHolder<ServiceWorkerRegistrationPromise> holder;
+  RefPtr<ServiceWorkerRegistrationPromise> promise = holder.Ensure(__func__);
 
-  nsCOMPtr<nsIRunnable> r = NS_NewRunnableFunction(
-      __func__, [aClientInfo, aURL = nsCString(aURL), promise]() mutable {
-        auto scopeExit = MakeScopeExit(
-            [&] { promise->Reject(NS_ERROR_DOM_INVALID_STATE_ERR, __func__); });
+  nsCOMPtr<nsIRunnable> r =
+      NS_NewRunnableFunction(__func__, [aClientInfo, aURL = nsCString(aURL),
+                                        holder = std::move(holder)]() mutable {
+        auto scopeExit = MakeScopeExit([&] {
+          holder.Reject(CopyableErrorResult(NS_ERROR_DOM_INVALID_STATE_ERR),
+                        __func__);
+        });
 
         RefPtr<ServiceWorkerManager> swm = ServiceWorkerManager::GetInstance();
         NS_ENSURE_TRUE_VOID(swm);
 
         swm->GetRegistration(aClientInfo, aURL)
-            ->ChainTo(promise.forget(), __func__);
+            ->ChainTo(std::move(holder), __func__);
 
         scopeExit.release();
       });
@@ -100,18 +105,22 @@ RefPtr<ServiceWorkerRegistrationListPromise>
 ServiceWorkerContainerProxy::GetRegistrations(const ClientInfo& aClientInfo) {
   AssertIsOnBackgroundThread();
 
-  RefPtr<ServiceWorkerRegistrationListPromise::Private> promise =
-      new ServiceWorkerRegistrationListPromise::Private(__func__);
+  MozPromiseHolder<ServiceWorkerRegistrationListPromise> holder;
+  RefPtr<ServiceWorkerRegistrationListPromise> promise =
+      holder.Ensure(__func__);
 
-  nsCOMPtr<nsIRunnable> r =
-      NS_NewRunnableFunction(__func__, [aClientInfo, promise]() mutable {
-        auto scopeExit = MakeScopeExit(
-            [&] { promise->Reject(NS_ERROR_DOM_INVALID_STATE_ERR, __func__); });
+  nsCOMPtr<nsIRunnable> r = NS_NewRunnableFunction(
+      __func__, [aClientInfo, holder = std::move(holder)]() mutable {
+        auto scopeExit = MakeScopeExit([&] {
+          holder.Reject(CopyableErrorResult(NS_ERROR_DOM_INVALID_STATE_ERR),
+                        __func__);
+        });
 
         RefPtr<ServiceWorkerManager> swm = ServiceWorkerManager::GetInstance();
         NS_ENSURE_TRUE_VOID(swm);
 
-        swm->GetRegistrations(aClientInfo)->ChainTo(promise.forget(), __func__);
+        swm->GetRegistrations(aClientInfo)
+            ->ChainTo(std::move(holder), __func__);
 
         scopeExit.release();
       });
@@ -125,18 +134,20 @@ RefPtr<ServiceWorkerRegistrationPromise> ServiceWorkerContainerProxy::GetReady(
     const ClientInfo& aClientInfo) {
   AssertIsOnBackgroundThread();
 
-  RefPtr<ServiceWorkerRegistrationPromise::Private> promise =
-      new ServiceWorkerRegistrationPromise::Private(__func__);
+  MozPromiseHolder<ServiceWorkerRegistrationPromise> holder;
+  RefPtr<ServiceWorkerRegistrationPromise> promise = holder.Ensure(__func__);
 
-  nsCOMPtr<nsIRunnable> r =
-      NS_NewRunnableFunction(__func__, [aClientInfo, promise]() mutable {
-        auto scopeExit = MakeScopeExit(
-            [&] { promise->Reject(NS_ERROR_DOM_INVALID_STATE_ERR, __func__); });
+  nsCOMPtr<nsIRunnable> r = NS_NewRunnableFunction(
+      __func__, [aClientInfo, holder = std::move(holder)]() mutable {
+        auto scopeExit = MakeScopeExit([&] {
+          holder.Reject(CopyableErrorResult(NS_ERROR_DOM_INVALID_STATE_ERR),
+                        __func__);
+        });
 
         RefPtr<ServiceWorkerManager> swm = ServiceWorkerManager::GetInstance();
         NS_ENSURE_TRUE_VOID(swm);
 
-        swm->WhenReady(aClientInfo)->ChainTo(promise.forget(), __func__);
+        swm->WhenReady(aClientInfo)->ChainTo(std::move(holder), __func__);
 
         scopeExit.release();
       });

@@ -61,35 +61,38 @@ ServiceWorkerUnregisterJob::~ServiceWorkerUnregisterJob() = default;
 
 already_AddRefed<GenericPromise>
 ServiceWorkerUnregisterJob::ClearNotifications() {
-  RefPtr<GenericPromise::Private> resultPromise =
-      new GenericPromise::Private(__func__);
-
   nsCOMPtr<nsIAlertsService> alertsService =
       do_GetService("@mozilla.org/alerts-service;1");
 
   nsAutoCString origin;
   nsresult rv = mPrincipal->GetOrigin(origin);
   if (!alertsService || NS_FAILED(rv)) {
-    resultPromise->Reject(rv, __func__);
-    return resultPromise.forget();
+    return GenericPromise::CreateAndReject(rv, __func__).forget();
   }
+
+  MozPromiseHolder<GenericPromise> holder;
+  RefPtr<GenericPromise> resultPromise = holder.Ensure(__func__);
 
   RefPtr<NotificationsPromise> promise =
       GetStoredNotificationsForScope(mPrincipal, mScope, u""_ns);
 
   promise->Then(
       GetCurrentSerialEventTarget(), __func__,
-      [resultPromise,
-       alertsService](const CopyableTArray<IPCNotification>& aNotifications) {
-        for (const IPCNotification& notification : aNotifications) {
-          // CloseAlert will emit alertfinished which will synchronously remove
-          // each notification also from the DB. (The DB removal doesn't happen
-          // synchronously but its task queue guarantees the order.)
-          alertsService->CloseAlert(notification.id(), false);
+      [holder = std::move(holder), alertsService](
+          const NotificationsPromise::ResolveOrRejectValue& aValue) mutable {
+        if (aValue.IsResolve()) {
+          for (const IPCNotification& notification : aValue.ResolveValue()) {
+            // CloseAlert will emit alertfinished which will synchronously
+            // remove each notification also from the DB. (The DB removal
+            // doesn't happen synchronously but its task queue guarantees the
+            // order.)
+            alertsService->CloseAlert(notification.id(), false);
+          }
+          holder.Resolve(true, __func__);
+        } else {
+          holder.Reject(aValue.RejectValue(), __func__);
         }
-        resultPromise->Resolve(true, __func__);
-      },
-      [resultPromise](nsresult rv) { resultPromise->Reject(rv, __func__); });
+      });
 
   return resultPromise.forget();
 }

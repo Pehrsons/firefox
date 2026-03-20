@@ -22,7 +22,7 @@ class ServiceWorkerRegistrationProxy::DelayedUpdate final
     : public nsITimerCallback,
       public nsINamed {
   RefPtr<ServiceWorkerRegistrationProxy> mProxy;
-  RefPtr<ServiceWorkerRegistrationPromise::Private> mPromise;
+  MozPromiseHolder<ServiceWorkerRegistrationPromise> mPromise;
   nsCOMPtr<nsITimer> mTimer;
   nsCString mNewestWorkerScriptUrl;
 
@@ -34,10 +34,10 @@ class ServiceWorkerRegistrationProxy::DelayedUpdate final
   NS_DECL_NSINAMED
 
   DelayedUpdate(RefPtr<ServiceWorkerRegistrationProxy>&& aProxy,
-                RefPtr<ServiceWorkerRegistrationPromise::Private>&& aPromise,
+                MozPromiseHolder<ServiceWorkerRegistrationPromise>&& aHolder,
                 nsCString&& aNewestWorkerScriptUrl, uint32_t delay);
 
-  void ChainTo(RefPtr<ServiceWorkerRegistrationPromise::Private> aPromise);
+  void ChainTo(MozPromiseHolder<ServiceWorkerRegistrationPromise>&& aPromise);
 
   void Reject();
 
@@ -215,26 +215,29 @@ RefPtr<GenericPromise> ServiceWorkerRegistrationProxy::Unregister() {
   AssertIsOnBackgroundThread();
 
   RefPtr<ServiceWorkerRegistrationProxy> self = this;
-  RefPtr<GenericPromise::Private> promise =
-      new GenericPromise::Private(__func__);
+  MozPromiseHolder<GenericPromise> holder;
+  RefPtr<GenericPromise> promise = holder.Ensure(__func__);
 
-  nsCOMPtr<nsIRunnable> r =
-      NS_NewRunnableFunction(__func__, [self, promise]() mutable {
+  nsCOMPtr<nsIRunnable> r = NS_NewRunnableFunction(
+      __func__, [self, holder = std::move(holder)]() mutable {
         nsresult rv = NS_ERROR_DOM_INVALID_STATE_ERR;
-        auto scopeExit = MakeScopeExit([&] { promise->Reject(rv, __func__); });
+        auto scopeExit = MakeScopeExit([&] { holder.Reject(rv, __func__); });
 
         NS_ENSURE_TRUE_VOID(self->mReg);
 
         RefPtr<ServiceWorkerManager> swm = ServiceWorkerManager::GetInstance();
         NS_ENSURE_TRUE_VOID(swm);
 
-        RefPtr<UnregisterCallback> cb = new UnregisterCallback(promise);
+        scopeExit.release();
+
+        RefPtr<UnregisterCallback> cb =
+            new UnregisterCallback(std::move(holder));
 
         rv = swm->Unregister(self->mReg->Principal(), cb,
                              NS_ConvertUTF8toUTF16(self->mReg->Scope()));
-        NS_ENSURE_SUCCESS_VOID(rv);
-
-        scopeExit.release();
+        if (NS_WARN_IF(NS_FAILED(rv))) {
+          cb->UnregisterFailed();
+        }
       });
 
   MOZ_ALWAYS_SUCCEEDS(SchedulerGroup::Dispatch(r.forget()));
@@ -245,23 +248,23 @@ RefPtr<GenericPromise> ServiceWorkerRegistrationProxy::Unregister() {
 namespace {
 
 class UpdateCallback final : public ServiceWorkerUpdateFinishCallback {
-  RefPtr<ServiceWorkerRegistrationPromise::Private> mPromise;
+  MozPromiseHolder<ServiceWorkerRegistrationPromise> mPromise;
 
   ~UpdateCallback() = default;
 
  public:
   explicit UpdateCallback(
-      RefPtr<ServiceWorkerRegistrationPromise::Private>&& aPromise)
+      MozPromiseHolder<ServiceWorkerRegistrationPromise>&& aPromise)
       : mPromise(std::move(aPromise)) {
-    MOZ_DIAGNOSTIC_ASSERT(mPromise);
+    MOZ_DIAGNOSTIC_ASSERT(!mPromise.IsEmpty());
   }
 
   void UpdateSucceeded(ServiceWorkerRegistrationInfo* aInfo) override {
-    mPromise->Resolve(aInfo->Descriptor(), __func__);
+    mPromise.Resolve(aInfo->Descriptor(), __func__);
   }
 
   void UpdateFailed(ErrorResult& aResult) override {
-    mPromise->Reject(CopyableErrorResult(aResult), __func__);
+    mPromise.Reject(CopyableErrorResult(aResult), __func__);
   }
 };
 
@@ -272,13 +275,13 @@ NS_IMPL_ISUPPORTS(ServiceWorkerRegistrationProxy::DelayedUpdate,
 
 ServiceWorkerRegistrationProxy::DelayedUpdate::DelayedUpdate(
     RefPtr<ServiceWorkerRegistrationProxy>&& aProxy,
-    RefPtr<ServiceWorkerRegistrationPromise::Private>&& aPromise,
+    MozPromiseHolder<ServiceWorkerRegistrationPromise>&& aHolder,
     nsCString&& aNewestWorkerScriptUrl, uint32_t delay)
     : mProxy(std::move(aProxy)),
-      mPromise(std::move(aPromise)),
+      mPromise(std::move(aHolder)),
       mNewestWorkerScriptUrl(std::move(aNewestWorkerScriptUrl)) {
   MOZ_DIAGNOSTIC_ASSERT(mProxy);
-  MOZ_DIAGNOSTIC_ASSERT(mPromise);
+  MOZ_DIAGNOSTIC_ASSERT(!mPromise.IsEmpty());
   MOZ_ASSERT(!mNewestWorkerScriptUrl.IsEmpty());
   mProxy->mDelayedUpdate = this;
   Result<nsCOMPtr<nsITimer>, nsresult> result =
@@ -288,21 +291,23 @@ ServiceWorkerRegistrationProxy::DelayedUpdate::DelayedUpdate(
 }
 
 void ServiceWorkerRegistrationProxy::DelayedUpdate::ChainTo(
-    RefPtr<ServiceWorkerRegistrationPromise::Private> aPromise) {
+    MozPromiseHolder<ServiceWorkerRegistrationPromise>&& aPromise) {
   AssertIsOnMainThread();
   MOZ_ASSERT(mProxy->mDelayedUpdate == this);
-  MOZ_ASSERT(mPromise);
+  MOZ_ASSERT(!mPromise.IsEmpty());
 
-  mPromise->ChainTo(aPromise.forget(), __func__);
+  RefPtr promise = mPromise.Ensure(__func__);
+  promise->ChainTo(std::move(aPromise), __func__);
 }
 
 void ServiceWorkerRegistrationProxy::DelayedUpdate::Reject() {
-  MOZ_DIAGNOSTIC_ASSERT(mPromise);
+  MOZ_DIAGNOSTIC_ASSERT(!mPromise.IsEmpty());
   if (mTimer) {
     mTimer->Cancel();
     mTimer = nullptr;
   }
-  mPromise->Reject(NS_ERROR_DOM_INVALID_STATE_ERR, __func__);
+  mPromise.Reject(CopyableErrorResult(NS_ERROR_DOM_INVALID_STATE_ERR),
+                  __func__);
 }
 
 void ServiceWorkerRegistrationProxy::DelayedUpdate::SetNewestWorkerScriptUrl(
@@ -318,8 +323,10 @@ ServiceWorkerRegistrationProxy::DelayedUpdate::Notify(nsITimer* aTimer) {
     return NS_OK;
   }
 
-  auto scopeExit = MakeScopeExit(
-      [&] { mPromise->Reject(NS_ERROR_DOM_INVALID_STATE_ERR, __func__); });
+  auto scopeExit = MakeScopeExit([&] {
+    mPromise.Reject(CopyableErrorResult(NS_ERROR_DOM_INVALID_STATE_ERR),
+                    __func__);
+  });
 
   NS_ENSURE_TRUE(mProxy->mReg, NS_ERROR_FAILURE);
 
@@ -348,15 +355,17 @@ RefPtr<ServiceWorkerRegistrationPromise> ServiceWorkerRegistrationProxy::Update(
   AssertIsOnBackgroundThread();
 
   RefPtr<ServiceWorkerRegistrationProxy> self = this;
-  RefPtr<ServiceWorkerRegistrationPromise::Private> promise =
-      new ServiceWorkerRegistrationPromise::Private(__func__);
+  MozPromiseHolder<ServiceWorkerRegistrationPromise> holder;
+  RefPtr<ServiceWorkerRegistrationPromise> promise = holder.Ensure(__func__);
 
   nsCOMPtr<nsIRunnable> r = NS_NewRunnableFunction(
       __func__,
-      [self, promise,
+      [self, holder = std::move(holder),
        newestWorkerScriptUrl = nsCString(aNewestWorkerScriptUrl)]() mutable {
-        auto scopeExit = MakeScopeExit(
-            [&] { promise->Reject(NS_ERROR_DOM_INVALID_STATE_ERR, __func__); });
+        auto scopeExit = MakeScopeExit([&] {
+          holder.Reject(CopyableErrorResult(NS_ERROR_DOM_INVALID_STATE_ERR),
+                        __func__);
+        });
 
         // Get the delay value for the update
         NS_ENSURE_TRUE_VOID(self->mReg);
@@ -369,7 +378,7 @@ RefPtr<ServiceWorkerRegistrationPromise> ServiceWorkerRegistrationProxy::Update(
             // NOTE: if we `ChainTo(),` there will ultimately be a single
             // update, and this update will resolve all promises that were
             // issued while the update's timer was ticking down.
-            self->mDelayedUpdate->ChainTo(std::move(promise));
+            self->mDelayedUpdate->ChainTo(std::move(holder));
 
             // Use the "newest newest worker"'s script URL.
             self->mDelayedUpdate->SetNewestWorkerScriptUrl(
@@ -377,7 +386,7 @@ RefPtr<ServiceWorkerRegistrationPromise> ServiceWorkerRegistrationProxy::Update(
           } else {
             RefPtr<ServiceWorkerRegistrationProxy::DelayedUpdate> du =
                 new ServiceWorkerRegistrationProxy::DelayedUpdate(
-                    std::move(self), std::move(promise),
+                    std::move(self), std::move(holder),
                     std::move(newestWorkerScriptUrl), delay);
           }
         } else {
@@ -385,7 +394,7 @@ RefPtr<ServiceWorkerRegistrationPromise> ServiceWorkerRegistrationProxy::Update(
               ServiceWorkerManager::GetInstance();
           NS_ENSURE_TRUE_VOID(swm);
 
-          RefPtr<UpdateCallback> cb = new UpdateCallback(std::move(promise));
+          RefPtr<UpdateCallback> cb = new UpdateCallback(std::move(holder));
           swm->Update(self->mListeningClientInfo, self->mReg->Principal(),
                       self->mReg->Scope(), std::move(newestWorkerScriptUrl),
                       cb);
@@ -404,13 +413,13 @@ ServiceWorkerRegistrationProxy::SetNavigationPreloadEnabled(
   AssertIsOnBackgroundThread();
 
   RefPtr<ServiceWorkerRegistrationProxy> self = this;
-  RefPtr<GenericPromise::Private> promise =
-      new GenericPromise::Private(__func__);
+  MozPromiseHolder<GenericPromise> holder;
+  RefPtr<GenericPromise> promise = holder.Ensure(__func__);
 
-  nsCOMPtr<nsIRunnable> r =
-      NS_NewRunnableFunction(__func__, [aEnabled, self, promise]() mutable {
+  nsCOMPtr<nsIRunnable> r = NS_NewRunnableFunction(
+      __func__, [aEnabled, self, holder = std::move(holder)]() mutable {
         nsresult rv = NS_ERROR_DOM_INVALID_STATE_ERR;
-        auto scopeExit = MakeScopeExit([&] { promise->Reject(rv, __func__); });
+        auto scopeExit = MakeScopeExit([&] { holder.Reject(rv, __func__); });
 
         NS_ENSURE_TRUE_VOID(self->mReg);
         NS_ENSURE_TRUE_VOID(self->mReg->GetActive());
@@ -424,7 +433,7 @@ ServiceWorkerRegistrationProxy::SetNavigationPreloadEnabled(
 
         scopeExit.release();
 
-        promise->Resolve(true, __func__);
+        holder.Resolve(true, __func__);
       });
 
   MOZ_ALWAYS_SUCCEEDS(SchedulerGroup::Dispatch(r.forget()));
@@ -438,13 +447,14 @@ ServiceWorkerRegistrationProxy::SetNavigationPreloadHeader(
   AssertIsOnBackgroundThread();
 
   RefPtr<ServiceWorkerRegistrationProxy> self = this;
-  RefPtr<GenericPromise::Private> promise =
-      new GenericPromise::Private(__func__);
+  MozPromiseHolder<GenericPromise> holder;
+  RefPtr<GenericPromise> promise = holder.Ensure(__func__);
 
-  nsCOMPtr<nsIRunnable> r = NS_NewRunnableFunction(
-      __func__, [aHeader = nsCString(aHeader), self, promise]() mutable {
+  nsCOMPtr<nsIRunnable> r =
+      NS_NewRunnableFunction(__func__, [aHeader = nsCString(aHeader), self,
+                                        holder = std::move(holder)]() mutable {
         nsresult rv = NS_ERROR_DOM_INVALID_STATE_ERR;
-        auto scopeExit = MakeScopeExit([&] { promise->Reject(rv, __func__); });
+        auto scopeExit = MakeScopeExit([&] { holder.Reject(rv, __func__); });
 
         NS_ENSURE_TRUE_VOID(self->mReg);
         NS_ENSURE_TRUE_VOID(self->mReg->GetActive());
@@ -458,7 +468,7 @@ ServiceWorkerRegistrationProxy::SetNavigationPreloadHeader(
 
         scopeExit.release();
 
-        promise->Resolve(true, __func__);
+        holder.Resolve(true, __func__);
       });
 
   MOZ_ALWAYS_SUCCEEDS(SchedulerGroup::Dispatch(r.forget()));
@@ -471,18 +481,20 @@ ServiceWorkerRegistrationProxy::GetNavigationPreloadState() {
   AssertIsOnBackgroundThread();
 
   RefPtr<ServiceWorkerRegistrationProxy> self = this;
-  RefPtr<NavigationPreloadStatePromise::Private> promise =
-      new NavigationPreloadStatePromise::Private(__func__);
+  MozPromiseHolder<NavigationPreloadStatePromise> holder;
+  RefPtr<NavigationPreloadStatePromise> promise = holder.Ensure(__func__);
 
-  nsCOMPtr<nsIRunnable> r =
-      NS_NewRunnableFunction(__func__, [self, promise]() mutable {
-        nsresult rv = NS_ERROR_DOM_INVALID_STATE_ERR;
-        auto scopeExit = MakeScopeExit([&] { promise->Reject(rv, __func__); });
+  nsCOMPtr<nsIRunnable> r = NS_NewRunnableFunction(
+      __func__, [self, holder = std::move(holder)]() mutable {
+        auto scopeExit = MakeScopeExit([&] {
+          holder.Reject(CopyableErrorResult(NS_ERROR_DOM_INVALID_STATE_ERR),
+                        __func__);
+        });
 
         NS_ENSURE_TRUE_VOID(self->mReg);
         scopeExit.release();
 
-        promise->Resolve(self->mReg->GetNavigationPreloadState(), __func__);
+        holder.Resolve(self->mReg->GetNavigationPreloadState(), __func__);
       });
 
   MOZ_ALWAYS_SUCCEEDS(SchedulerGroup::Dispatch(r.forget()));

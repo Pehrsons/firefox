@@ -956,13 +956,14 @@ RefPtr<ServiceWorkerRegistrationPromise> ServiceWorkerManager::Register(
  */
 class GetRegistrationsRunnable final : public Runnable {
   const ClientInfo mClientInfo;
-  RefPtr<ServiceWorkerRegistrationListPromise::Private> mPromise;
+  MozPromiseHolder<ServiceWorkerRegistrationListPromise> mHolder;
+  RefPtr<ServiceWorkerRegistrationListPromise> mPromise;
 
  public:
   explicit GetRegistrationsRunnable(const ClientInfo& aClientInfo)
       : Runnable("dom::ServiceWorkerManager::GetRegistrationsRunnable"),
         mClientInfo(aClientInfo),
-        mPromise(new ServiceWorkerRegistrationListPromise::Private(__func__)) {}
+        mPromise(mHolder.Ensure(__func__)) {}
 
   RefPtr<ServiceWorkerRegistrationListPromise> Promise() const {
     return mPromise;
@@ -970,8 +971,10 @@ class GetRegistrationsRunnable final : public Runnable {
 
   NS_IMETHOD
   Run() override {
-    auto scopeExit = MakeScopeExit(
-        [&] { mPromise->Reject(NS_ERROR_DOM_INVALID_STATE_ERR, __func__); });
+    auto scopeExit = MakeScopeExit([&] {
+      mHolder.Reject(CopyableErrorResult(NS_ERROR_DOM_INVALID_STATE_ERR),
+                     __func__);
+    });
 
     RefPtr<ServiceWorkerManager> swm = ServiceWorkerManager::GetInstance();
     if (!swm) {
@@ -1000,7 +1003,7 @@ class GetRegistrationsRunnable final : public Runnable {
     ServiceWorkerManager::RegistrationDataPerPrincipal* data;
     if (!swm->mRegistrationInfos.Get(scopeKey, &data)) {
       scopeExit.release();
-      mPromise->Resolve(array, __func__);
+      mHolder.Resolve(array, __func__);
       return NS_OK;
     }
 
@@ -1030,7 +1033,7 @@ class GetRegistrationsRunnable final : public Runnable {
     }
 
     scopeExit.release();
-    mPromise->Resolve(array, __func__);
+    mHolder.Resolve(array, __func__);
 
     return NS_OK;
   }
@@ -1049,14 +1052,15 @@ ServiceWorkerManager::GetRegistrations(const ClientInfo& aClientInfo) const {
  */
 class GetRegistrationRunnable final : public Runnable {
   const ClientInfo mClientInfo;
-  RefPtr<ServiceWorkerRegistrationPromise::Private> mPromise;
+  MozPromiseHolder<ServiceWorkerRegistrationPromise> mHolder;
+  RefPtr<ServiceWorkerRegistrationPromise> mPromise;
   nsCString mURL;
 
  public:
   GetRegistrationRunnable(const ClientInfo& aClientInfo, const nsACString& aURL)
       : Runnable("dom::ServiceWorkerManager::GetRegistrationRunnable"),
         mClientInfo(aClientInfo),
-        mPromise(new ServiceWorkerRegistrationPromise::Private(__func__)),
+        mPromise(mHolder.Ensure(__func__)),
         mURL(aURL) {}
 
   RefPtr<ServiceWorkerRegistrationPromise> Promise() const { return mPromise; }
@@ -1065,13 +1069,15 @@ class GetRegistrationRunnable final : public Runnable {
   Run() override {
     RefPtr<ServiceWorkerManager> swm = ServiceWorkerManager::GetInstance();
     if (!swm) {
-      mPromise->Reject(NS_ERROR_DOM_INVALID_STATE_ERR, __func__);
+      mHolder.Reject(CopyableErrorResult(NS_ERROR_DOM_INVALID_STATE_ERR),
+                     __func__);
       return NS_OK;
     }
 
     auto principalOrErr = mClientInfo.GetPrincipal();
     if (NS_WARN_IF(principalOrErr.isErr())) {
-      mPromise->Reject(NS_ERROR_DOM_INVALID_STATE_ERR, __func__);
+      mHolder.Reject(CopyableErrorResult(NS_ERROR_DOM_INVALID_STATE_ERR),
+                     __func__);
       return NS_OK;
     }
 
@@ -1079,7 +1085,7 @@ class GetRegistrationRunnable final : public Runnable {
     nsCOMPtr<nsIURI> uri;
     nsresult rv = NS_NewURI(getter_AddRefs(uri), mURL);
     if (NS_WARN_IF(NS_FAILED(rv))) {
-      mPromise->Reject(rv, __func__);
+      mHolder.Reject(CopyableErrorResult(rv), __func__);
       return NS_OK;
     }
 
@@ -1089,7 +1095,7 @@ class GetRegistrationRunnable final : public Runnable {
     rv = principal->CheckMayLoadWithReporting(
         uri, false /* allowIfInheritsPrincipal */, 0 /* innerWindowID */);
     if (NS_FAILED(rv)) {
-      mPromise->Reject(NS_ERROR_DOM_SECURITY_ERR, __func__);
+      mHolder.Reject(CopyableErrorResult(NS_ERROR_DOM_SECURITY_ERR), __func__);
       return NS_OK;
     }
 
@@ -1098,11 +1104,11 @@ class GetRegistrationRunnable final : public Runnable {
 
     if (!registration) {
       // Reject with NS_OK means "not found".
-      mPromise->Reject(NS_OK, __func__);
+      mHolder.Reject(CopyableErrorResult(NS_OK), __func__);
       return NS_OK;
     }
 
-    mPromise->Resolve(registration->Descriptor(), __func__);
+    mHolder.Resolve(registration->Descriptor(), __func__);
 
     return NS_OK;
   }
@@ -1299,7 +1305,7 @@ void ServiceWorkerManager::CheckPendingReadyPromises() {
         GetServiceWorkerRegistrationInfo(prd->mClientHandle->Info());
 
     if (reg && reg->GetActive()) {
-      prd->mPromise->Resolve(reg->Descriptor(), __func__);
+      prd->mPromiseHolder.Resolve(reg->Descriptor(), __func__);
     } else {
       mPendingReadyList.AppendElement(std::move(prd));
     }
@@ -1316,7 +1322,8 @@ void ServiceWorkerManager::RemovePendingReadyPromise(
     if (prd->mClientHandle->Info().Id() == aClientInfo.Id() &&
         prd->mClientHandle->Info().PrincipalInfo() ==
             aClientInfo.PrincipalInfo()) {
-      prd->mPromise->Reject(NS_ERROR_DOM_ABORT_ERR, __func__);
+      prd->mPromiseHolder.Reject(CopyableErrorResult(NS_ERROR_DOM_ABORT_ERR),
+                                 __func__);
     } else {
       mPendingReadyList.AppendElement(std::move(prd));
     }
