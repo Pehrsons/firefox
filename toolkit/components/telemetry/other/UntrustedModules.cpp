@@ -41,7 +41,6 @@ class MOZ_HEAP_CLASS MultiGetUntrustedModulesData final {
   explicit MultiGetUntrustedModulesData(uint32_t aFlags)
       : mFlags(aFlags),
         mBackupSvc(UntrustedModulesBackupService::Get()),
-        mPromise(new MultiGetUntrustedModulesPromise::Private(__func__)),
         mNumPending(0) {}
 
   NS_INLINE_DECL_THREADSAFE_REFCOUNTING(MultiGetUntrustedModulesData)
@@ -100,7 +99,7 @@ class MOZ_HEAP_CLASS MultiGetUntrustedModulesData final {
       return;
     }
 
-    mPromise->Resolve(true, __func__);
+    mPromise.Resolve(true, __func__);
   }
 
   void OnCompletion(Maybe<UntrustedModulesData>&& aResult) {
@@ -119,7 +118,7 @@ class MOZ_HEAP_CLASS MultiGetUntrustedModulesData final {
   uint32_t mFlags;
 
   RefPtr<UntrustedModulesBackupService> mBackupSvc;
-  RefPtr<MultiGetUntrustedModulesPromise::Private> mPromise;
+  MozPromiseHolder<MultiGetUntrustedModulesPromise> mPromise;
   size_t mNumPending;
 };
 
@@ -168,7 +167,7 @@ MultiGetUntrustedModulesData::GetUntrustedModuleLoadEvents() {
     }
   }
 
-  return mPromise;
+  return mPromise.Ensure(__func__);
 }
 
 #if defined(XP_WIN)
