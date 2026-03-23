@@ -909,8 +909,7 @@ using PrintPromise = CanonicalBrowsingContext::PrintPromise;
 // resolve.
 class PrintListenerAdapter final : public nsIWebProgressListener {
  public:
-  explicit PrintListenerAdapter(PrintPromise::Private* aPromise)
-      : mPromise(aPromise) {}
+  PrintListenerAdapter() : mPromise(mHolder.Ensure(__func__)) {}
 
   NS_DECL_ISUPPORTS
 
@@ -919,11 +918,11 @@ class PrintListenerAdapter final : public nsIWebProgressListener {
                            uint32_t aStateFlags, nsresult aStatus) override {
     MOZ_ASSERT(NS_IsMainThread());
     if (aStateFlags & nsIWebProgressListener::STATE_STOP &&
-        aStateFlags & nsIWebProgressListener::STATE_IS_DOCUMENT && mPromise) {
+        aStateFlags & nsIWebProgressListener::STATE_IS_DOCUMENT &&
+        !mHolder.IsEmpty()) {
       mPrintJobFinished = true;
       if (mHaveSetBrowsingContext) {
-        mPromise->Resolve(mClonedStaticBrowsingContext, __func__);
-        mPromise = nullptr;
+        mHolder.Resolve(mClonedStaticBrowsingContext, __func__);
       }
     }
     return NS_OK;
@@ -931,9 +930,8 @@ class PrintListenerAdapter final : public nsIWebProgressListener {
   NS_IMETHOD OnStatusChange(nsIWebProgress* aWebProgress, nsIRequest* aRequest,
                             nsresult aStatus,
                             const char16_t* aMessage) override {
-    if (aStatus != NS_OK && mPromise) {
-      mPromise->Reject(aStatus, __func__);
-      mPromise = nullptr;
+    if (aStatus != NS_OK && !mHolder.IsEmpty()) {
+      mHolder.Reject(aStatus, __func__);
     }
     return NS_OK;
   }
@@ -964,9 +962,8 @@ class PrintListenerAdapter final : public nsIWebProgressListener {
     MOZ_ASSERT(NS_IsMainThread());
     mClonedStaticBrowsingContext = std::move(aClonedStaticBrowsingContext);
     mHaveSetBrowsingContext = true;
-    if (mPrintJobFinished && mPromise) {
-      mPromise->Resolve(mClonedStaticBrowsingContext, __func__);
-      mPromise = nullptr;
+    if (mPrintJobFinished && !mHolder.IsEmpty()) {
+      mHolder.Resolve(mClonedStaticBrowsingContext, __func__);
     }
   }
 
@@ -974,10 +971,17 @@ class PrintListenerAdapter final : public nsIWebProgressListener {
     StaticCloneForPrintingCreated(nullptr);
   }
 
+  PrintPromise* Promise() { return mPromise; }
+
+  void Reject(nsresult aRv, StaticString aCallSite) {
+    mHolder.RejectIfExists(aRv, aCallSite);
+  }
+
  private:
   ~PrintListenerAdapter() = default;
 
-  RefPtr<PrintPromise::Private> mPromise;
+  MozPromiseHolder<PrintPromise> mHolder;
+  const RefPtr<PrintPromise> mPromise;
   MaybeDiscardedBrowsingContext mClonedStaticBrowsingContext = nullptr;
   bool mHaveSetBrowsingContext = false;
   bool mPrintJobFinished = false;
@@ -1061,17 +1065,15 @@ void CanonicalBrowsingContext::ReleaseClonedPrint(
 RefPtr<PrintPromise> CanonicalBrowsingContext::PrintWithNoContentAnalysis(
     nsIPrintSettings* aPrintSettings, bool aForceStaticDocument,
     const MaybeDiscardedBrowsingContext& aCachedStaticDocument) {
-  auto promise = MakeRefPtr<PrintPromise::Private>(__func__);
-  auto listener = MakeRefPtr<PrintListenerAdapter>(promise);
   if (IsInProcess()) {
     RefPtr<nsGlobalWindowOuter> outerWindow =
         nsGlobalWindowOuter::Cast(GetDOMWindow());
     if (NS_WARN_IF(!outerWindow)) {
-      promise->Reject(NS_ERROR_FAILURE, __func__);
-      return promise;
+      return PrintPromise::CreateAndReject(NS_ERROR_FAILURE, __func__);
     }
 
     ErrorResult rv;
+    auto listener = MakeRefPtr<PrintListenerAdapter>();
     listener->NoStaticCloneForPrintingWillBeCreated();
     outerWindow->Print(aPrintSettings,
                        /* aRemotePrintJob = */ nullptr, listener,
@@ -1081,22 +1083,20 @@ RefPtr<PrintPromise> CanonicalBrowsingContext::PrintWithNoContentAnalysis(
                        /* aPrintPreviewCallback = */ nullptr,
                        /* aCachedBrowsingContext = */ nullptr, rv);
     if (rv.Failed()) {
-      promise->Reject(rv.StealNSResult(), __func__);
+      listener->Reject(rv.StealNSResult(), __func__);
     }
-    return promise;
+    return listener->Promise();
   }
 
   auto* browserParent = GetBrowserParent();
   if (NS_WARN_IF(!browserParent)) {
-    promise->Reject(NS_ERROR_FAILURE, __func__);
-    return promise;
+    return PrintPromise::CreateAndReject(NS_ERROR_FAILURE, __func__);
   }
 
   nsCOMPtr<nsIPrintSettingsService> printSettingsSvc =
       do_GetService("@mozilla.org/gfx/printsettings-service;1");
   if (NS_WARN_IF(!printSettingsSvc)) {
-    promise->Reject(NS_ERROR_FAILURE, __func__);
-    return promise;
+    return PrintPromise::CreateAndReject(NS_ERROR_FAILURE, __func__);
   }
 
   nsresult rv;
@@ -1105,16 +1105,14 @@ RefPtr<PrintPromise> CanonicalBrowsingContext::PrintWithNoContentAnalysis(
     rv =
         printSettingsSvc->CreateNewPrintSettings(getter_AddRefs(printSettings));
     if (NS_WARN_IF(NS_FAILED(rv))) {
-      promise->Reject(rv, __func__);
-      return promise;
+      return PrintPromise::CreateAndReject(rv, __func__);
     }
   }
 
   embedding::PrintData printData;
   rv = printSettingsSvc->SerializeToPrintData(printSettings, &printData);
   if (NS_WARN_IF(NS_FAILED(rv))) {
-    promise->Reject(rv, __func__);
-    return promise;
+    return PrintPromise::CreateAndReject(rv, __func__);
   }
 
   layout::RemotePrintJobParent* remotePrintJob =
@@ -1122,6 +1120,7 @@ RefPtr<PrintPromise> CanonicalBrowsingContext::PrintWithNoContentAnalysis(
   printData.remotePrintJob() =
       browserParent->Manager()->SendPRemotePrintJobConstructor(remotePrintJob);
 
+  auto listener = MakeRefPtr<PrintListenerAdapter>();
   remotePrintJob->RegisterListener(listener);
 
   if (!aCachedStaticDocument.IsNullOrDiscarded()) {
@@ -1131,7 +1130,7 @@ RefPtr<PrintPromise> CanonicalBrowsingContext::PrintWithNoContentAnalysis(
     listener->NoStaticCloneForPrintingWillBeCreated();
     if (NS_WARN_IF(!browserParent->SendPrintClonedPage(
             this, printData, aCachedStaticDocument))) {
-      promise->Reject(NS_ERROR_FAILURE, __func__);
+      listener->Reject(NS_ERROR_FAILURE, __func__);
     }
   } else {
     RefPtr<PBrowserParent::PrintPromise> printPromise =
@@ -1143,12 +1142,12 @@ RefPtr<PrintPromise> CanonicalBrowsingContext::PrintWithNoContentAnalysis(
           listener->StaticCloneForPrintingCreated(
               std::move(cachedStaticDocument));
         },
-        [promise](ResponseRejectReason reason) {
+        [listener](ResponseRejectReason reason) {
           NS_WARNING("SendPrint() failed");
-          promise->Reject(NS_ERROR_FAILURE, __func__);
+          listener->Reject(NS_ERROR_FAILURE, __func__);
         });
   }
-  return promise.forget();
+  return listener->Promise();
 }
 
 void CanonicalBrowsingContext::CallOnTopDescendants(
@@ -2294,7 +2293,7 @@ nsresult CanonicalBrowsingContext::PendingRemotenessChange::FinishTopContent() {
     newBrowser->ResumeLoad(mPendingSwitchId);
   }
 
-  mPromise->Resolve(
+  mHolder.Resolve(
       std::pair{newBrowser,
                 RefPtr{frameLoader->GetBrowsingContext()->Canonical()}},
       __func__);
@@ -2372,7 +2371,7 @@ nsresult CanonicalBrowsingContext::PendingRemotenessChange::FinishSubframe() {
 
     target->SetCurrentBrowserParent(embedderBrowser);
     (void)embedderWindow->SendMakeFrameLocal(target, mPendingSwitchId);
-    mPromise->Resolve(std::pair{embedderBrowser, target}, __func__);
+    mHolder.Resolve(std::pair{embedderBrowser, target}, __func__);
     return NS_OK;
   }
 
@@ -2444,7 +2443,7 @@ nsresult CanonicalBrowsingContext::PendingRemotenessChange::FinishSubframe() {
   }
 
   // We did it! The process switch is complete.
-  mPromise->Resolve(std::pair{newBrowser, target}, __func__);
+  mHolder.Resolve(std::pair{newBrowser, target}, __func__);
   return NS_OK;
 }
 
@@ -2453,7 +2452,7 @@ void CanonicalBrowsingContext::PendingRemotenessChange::Cancel(nsresult aRv) {
     return;
   }
 
-  mPromise->Reject(aRv, __func__);
+  mHolder.Reject(aRv, __func__);
   Clear();
 }
 
@@ -2475,17 +2474,20 @@ void CanonicalBrowsingContext::PendingRemotenessChange::Clear() {
     mSpecificGroup = nullptr;
   }
 
+  MOZ_ASSERT(mHolder.IsEmpty());
   mPromise = nullptr;
   mTarget = nullptr;
 }
 
 CanonicalBrowsingContext::PendingRemotenessChange::PendingRemotenessChange(
-    CanonicalBrowsingContext* aTarget, RemotenessPromise::Private* aPromise,
-    uint64_t aPendingSwitchId, const NavigationIsolationOptions& aOptions)
+    CanonicalBrowsingContext* aTarget, uint64_t aPendingSwitchId,
+    const NavigationIsolationOptions& aOptions)
     : mTarget(aTarget),
-      mPromise(aPromise),
+      mPromise(mHolder.Ensure(__func__)),
       mPendingSwitchId(aPendingSwitchId),
-      mOptions(aOptions) {}
+      mOptions(aOptions) {
+  mHolder.UseDirectTaskDispatch(__func__);
+}
 
 CanonicalBrowsingContext::PendingRemotenessChange::~PendingRemotenessChange() {
   MOZ_ASSERT(
@@ -2577,11 +2579,9 @@ CanonicalBrowsingContext::ChangeRemoteness(
     MOZ_DIAGNOSTIC_ASSERT(!mPendingRemotenessChange, "Should have cleared");
   }
 
-  auto promise = MakeRefPtr<RemotenessPromise::Private>(__func__);
-  promise->UseDirectTaskDispatch(__func__);
-
-  RefPtr change = MakeRefPtr<PendingRemotenessChange>(
-      this, promise, aPendingSwitchId, aOptions);
+  RefPtr change =
+      MakeRefPtr<PendingRemotenessChange>(this, aPendingSwitchId, aOptions);
+  RefPtr promise = change->Promise();
   mPendingRemotenessChange = change;
 
   // If we're replacing BrowsingContext, determine which BrowsingContextGroup

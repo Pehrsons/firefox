@@ -530,11 +530,12 @@ class CanonicalBrowsingContext final : public BrowsingContext {
     NS_INLINE_DECL_REFCOUNTING(PendingRemotenessChange)
 
     PendingRemotenessChange(CanonicalBrowsingContext* aTarget,
-                            RemotenessPromise::Private* aPromise,
                             uint64_t aPendingSwitchId,
                             const NavigationIsolationOptions& aOptions);
 
     void Cancel(nsresult aRv);
+
+    RemotenessPromise* Promise() const { return mPromise; }
 
    private:
     friend class CanonicalBrowsingContext;
@@ -553,7 +554,8 @@ class CanonicalBrowsingContext final : public BrowsingContext {
     nsresult FinishSubframe();
 
     RefPtr<CanonicalBrowsingContext> mTarget;
-    RefPtr<RemotenessPromise::Private> mPromise;
+    MozPromiseHolder<RemotenessPromise> mHolder;
+    RefPtr<RemotenessPromise> mPromise;
     UniqueContentParentKeepAlive mContentParentKeepAlive;
     RefPtr<BrowsingContextGroup> mSpecificGroup;
 
