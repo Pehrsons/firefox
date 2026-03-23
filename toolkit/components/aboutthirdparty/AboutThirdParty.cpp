@@ -666,7 +666,7 @@ already_AddRefed<AboutThirdParty> AboutThirdParty::GetSingleton() {
 }
 
 AboutThirdParty::AboutThirdParty()
-    : mPromise(new BackgroundThreadPromise::Private(__func__)) {}
+    : mPromise(mPromiseHolder.Ensure(__func__)) {}
 
 void AboutThirdParty::AddKnownModule(const nsString& aPath,
                                      KnownModuleType aType) {
@@ -883,13 +883,13 @@ RefPtr<BackgroundThreadPromise> AboutThirdParty::CollectSystemInfoAsync() {
           self->BackgroundThread();
           NS_DispatchToMainThread(NS_NewRunnableFunction(
               "AboutThirdParty::BackgroundThread Done",
-              [self]() { self->mPromise->Resolve(true, __func__); }));
+              [self]() { self->mPromiseHolder.Resolve(true, __func__); }));
         });
 
     nsresult rv =
         NS_DispatchBackgroundTask(runnable.forget(), NS_DISPATCH_NORMAL);
     if (NS_FAILED(rv)) {
-      mPromise->Reject(rv, __func__);
+      mPromiseHolder.Reject(rv, __func__);
     }
   }
 

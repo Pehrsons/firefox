@@ -75,7 +75,8 @@ class AboutThirdParty final : public nsIAboutThirdParty {
     Done,
   };
   Atomic<WorkerState, SequentiallyConsistent> mWorkerState;
-  RefPtr<BackgroundThreadPromise::Private> mPromise;
+  MozPromiseHolder<BackgroundThreadPromise> mPromiseHolder;
+  RefPtr<BackgroundThreadPromise> mPromise;
   nsTHashMap<nsStringCaseInsensitiveHashKey, uint32_t> mKnownModules;
   ComponentPathMapT mComponentPaths;
   nsTArray<InstallLocationT> mLocations;
