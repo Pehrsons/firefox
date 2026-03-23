@@ -58,30 +58,28 @@ void FetchEventOpProxyChild::Initialize(
     // response arrived before we dispatch the fetch event, then the JS preload
     // response promise will get resolved immediately.
     mPreloadResponseAvailablePromise =
-        MakeRefPtr<FetchEventPreloadResponseAvailablePromise::Private>(
-            __func__);
-    mPreloadResponseAvailablePromise->UseDirectTaskDispatch(__func__);
+        mPreloadResponseAvailableHolder.Ensure(__func__);
+    mPreloadResponseAvailableHolder.UseDirectTaskDispatch(__func__);
     if (aArgs.preloadResponse().isSome()) {
       mPreloadResponseAvailablePromiseResolved = true;
-      mPreloadResponseAvailablePromise->Resolve(
+      mPreloadResponseAvailableHolder.Resolve(
           InternalResponse::FromIPC(aArgs.preloadResponse().ref()), __func__);
     }
 
     mPreloadResponseTimingPromise =
-        MakeRefPtr<FetchEventPreloadResponseTimingPromise::Private>(__func__);
-    mPreloadResponseTimingPromise->UseDirectTaskDispatch(__func__);
+        mPreloadResponseTimingHolder.Ensure(__func__);
+    mPreloadResponseTimingHolder.UseDirectTaskDispatch(__func__);
     if (aArgs.preloadResponseTiming().isSome()) {
-      mPreloadResponseTimingPromise->Resolve(
-          aArgs.preloadResponseTiming().ref(), __func__);
+      mPreloadResponseTimingHolder.Resolve(aArgs.preloadResponseTiming().ref(),
+                                           __func__);
     }
 
-    mPreloadResponseEndPromise =
-        MakeRefPtr<FetchEventPreloadResponseEndPromise::Private>(__func__);
-    mPreloadResponseEndPromise->UseDirectTaskDispatch(__func__);
+    mPreloadResponseEndPromise = mPreloadResponseEndHolder.Ensure(__func__);
+    mPreloadResponseEndHolder.UseDirectTaskDispatch(__func__);
     if (aArgs.preloadResponseEndArgs().isSome()) {
       mPreloadResponseEndPromiseResolved = true;
-      mPreloadResponseEndPromise->Resolve(aArgs.preloadResponseEndArgs().ref(),
-                                          __func__);
+      mPreloadResponseEndHolder.Resolve(aArgs.preloadResponseEndArgs().ref(),
+                                        __func__);
     }
   }
 
@@ -194,8 +192,8 @@ mozilla::ipc::IPCResult FetchEventOpProxyChild::RecvPreloadResponse(
   MOZ_ASSERT(mPreloadResponseAvailablePromise);
 
   mPreloadResponseAvailablePromiseResolved = true;
-  mPreloadResponseAvailablePromise->Resolve(
-      InternalResponse::FromIPC(aResponse), __func__);
+  mPreloadResponseAvailableHolder.Resolve(InternalResponse::FromIPC(aResponse),
+                                          __func__);
 
   return IPC_OK();
 }
@@ -206,7 +204,7 @@ mozilla::ipc::IPCResult FetchEventOpProxyChild::RecvPreloadResponseTiming(
   // Initialize() should have created this promise.
   MOZ_ASSERT(mPreloadResponseTimingPromise);
 
-  mPreloadResponseTimingPromise->Resolve(std::move(aTiming), __func__);
+  mPreloadResponseTimingHolder.Resolve(std::move(aTiming), __func__);
   return IPC_OK();
 }
 
@@ -217,7 +215,7 @@ mozilla::ipc::IPCResult FetchEventOpProxyChild::RecvPreloadResponseEnd(
   MOZ_ASSERT(mPreloadResponseEndPromise);
 
   mPreloadResponseEndPromiseResolved = true;
-  mPreloadResponseEndPromise->Resolve(std::move(aArgs), __func__);
+  mPreloadResponseEndHolder.Resolve(std::move(aArgs), __func__);
   // If mCachedOpResult is not nothing, it means FetchEventOp had already done
   // and the operation result is cached. Continue closing IPC here.
   if (mCachedOpResult.isNothing()) {
@@ -250,20 +248,18 @@ void FetchEventOpProxyChild::ActorDestroy(ActorDestroyReason) {
   // will not be valid anymore since it is too late to respond to the
   // FetchEvent. Resolve the preload response promise with
   // NS_ERROR_DOM_ABORT_ERR.
-  if (mPreloadResponseAvailablePromise) {
+  if (!mPreloadResponseAvailableHolder.IsEmpty()) {
     mPreloadResponseAvailablePromiseResolved = true;
-    mPreloadResponseAvailablePromise->Resolve(
+    mPreloadResponseAvailableHolder.Resolve(
         InternalResponse::NetworkError(NS_ERROR_DOM_ABORT_ERR), __func__);
   }
 
-  if (mPreloadResponseTimingPromise) {
-    mPreloadResponseTimingPromise->Resolve(ResponseTiming(), __func__);
-  }
+  mPreloadResponseTimingHolder.ResolveIfExists(ResponseTiming(), __func__);
 
-  if (mPreloadResponseEndPromise) {
+  if (!mPreloadResponseEndHolder.IsEmpty()) {
     mPreloadResponseEndPromiseResolved = true;
     ResponseEndArgs args(FetchDriverObserver::eAborted);
-    mPreloadResponseEndPromise->Resolve(args, __func__);
+    mPreloadResponseEndHolder.Resolve(args, __func__);
   }
 
   mOp->RevokeActor(this);

@@ -60,12 +60,16 @@ class FetchEventOpProxyChild final : public PFetchEventOpProxyChild {
   // Initialized on RemoteWorkerService::Thread, read on a worker thread.
   SafeRefPtr<InternalRequest> mInternalRequest;
 
-  RefPtr<FetchEventPreloadResponseAvailablePromise::Private>
+  MozPromiseHolder<FetchEventPreloadResponseAvailablePromise>
+      mPreloadResponseAvailableHolder;
+  RefPtr<FetchEventPreloadResponseAvailablePromise>
       mPreloadResponseAvailablePromise;
-  RefPtr<FetchEventPreloadResponseTimingPromise::Private>
-      mPreloadResponseTimingPromise;
-  RefPtr<FetchEventPreloadResponseEndPromise::Private>
-      mPreloadResponseEndPromise;
+  MozPromiseHolder<FetchEventPreloadResponseTimingPromise>
+      mPreloadResponseTimingHolder;
+  RefPtr<FetchEventPreloadResponseTimingPromise> mPreloadResponseTimingPromise;
+  MozPromiseHolder<FetchEventPreloadResponseEndPromise>
+      mPreloadResponseEndHolder;
+  RefPtr<FetchEventPreloadResponseEndPromise> mPreloadResponseEndPromise;
 
   // MozPromise intentionally does not expose synchronous access to the
   // resolved/rejected state of a promise, so track whether or not we've
