@@ -1017,38 +1017,36 @@ RefPtr<PrintPromise> CanonicalBrowsingContext::Print(
     (void)NS_WARN_IF(NS_FAILED(rv));
   }
   if (needContentAnalysis) {
-    auto done = MakeRefPtr<PrintPromise::Private>(__func__);
-    contentanalysis::ContentAnalysis::PrintToPDFToDetermineIfPrintAllowed(
-        this, aPrintSettings)
-        ->Then(
-            GetCurrentSerialEventTarget(), __func__,
-            [done, aPrintSettings = RefPtr{aPrintSettings},
-             self = RefPtr{this}](
-                contentanalysis::ContentAnalysis::PrintAllowedResult aResponse)
-                MOZ_CAN_RUN_SCRIPT_BOUNDARY_LAMBDA mutable {
-                  if (aResponse.mAllowed) {
-                    self->PrintWithNoContentAnalysis(
+    return contentanalysis::ContentAnalysis::
+        PrintToPDFToDetermineIfPrintAllowed(this, aPrintSettings)
+            ->Then(
+                GetCurrentSerialEventTarget(), __func__,
+                [aPrintSettings = RefPtr{aPrintSettings}, self = RefPtr{this}](
+                    contentanalysis::ContentAnalysis::PrintAllowedPromise::
+                        ResolveOrRejectValue&& aValue)
+                    MOZ_CAN_RUN_SCRIPT_BOUNDARY_LAMBDA mutable {
+                      if (aValue.IsReject()) {
+                        // Since we are not doing the second print in this case,
+                        // release the clone that is no longer needed.
+                        auto errorResponse = aValue.RejectValue();
+                        self->ReleaseClonedPrint(
+                            errorResponse.mCachedStaticDocumentBrowsingContext);
+                        return PrintPromise::CreateAndReject(
+                            errorResponse.mError, __func__);
+                      }
+                      auto response = aValue.ResolveValue();
+                      if (response.mAllowed) {
+                        return self->PrintWithNoContentAnalysis(
                             aPrintSettings, false,
-                            aResponse.mCachedStaticDocumentBrowsingContext)
-                        ->ChainTo(done.forget(), __func__);
-                  } else {
-                    // Since we are not doing the second print in this case,
-                    // release the clone that is no longer needed.
-                    self->ReleaseClonedPrint(
-                        aResponse.mCachedStaticDocumentBrowsingContext);
-                    done->Reject(NS_ERROR_CONTENT_BLOCKED, __func__);
-                  }
-                },
-            [done, self = RefPtr{this}](
-                contentanalysis::ContentAnalysis::PrintAllowedError
-                    aErrorResponse) MOZ_CAN_RUN_SCRIPT_BOUNDARY_LAMBDA {
-              // Since we are not doing the second print in this case, release
-              // the clone that is no longer needed.
-              self->ReleaseClonedPrint(
-                  aErrorResponse.mCachedStaticDocumentBrowsingContext);
-              done->Reject(aErrorResponse.mError, __func__);
-            });
-    return done;
+                            response.mCachedStaticDocumentBrowsingContext);
+                      }
+                      // Since we are not doing the second print in this case,
+                      // release the clone that is no longer needed.
+                      self->ReleaseClonedPrint(
+                          response.mCachedStaticDocumentBrowsingContext);
+                      return PrintPromise::CreateAndReject(
+                          NS_ERROR_CONTENT_BLOCKED, __func__);
+                    });
   }
   return PrintWithNoContentAnalysis(aPrintSettings, false, nullptr);
 }
