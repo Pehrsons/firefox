@@ -69,9 +69,12 @@ class FetchServicePromises final {
  private:
   ~FetchServicePromises() = default;
 
-  RefPtr<FetchServiceResponseAvailablePromise::Private> mAvailablePromise;
-  RefPtr<FetchServiceResponseTimingPromise::Private> mTimingPromise;
-  RefPtr<FetchServiceResponseEndPromise::Private> mEndPromise;
+  MozPromiseHolder<FetchServiceResponseAvailablePromise> mAvailableHolder;
+  RefPtr<FetchServiceResponseAvailablePromise> mAvailablePromise;
+  MozPromiseHolder<FetchServiceResponseTimingPromise> mTimingHolder;
+  RefPtr<FetchServiceResponseTimingPromise> mTimingPromise;
+  MozPromiseHolder<FetchServiceResponseEndPromise> mEndHolder;
+  RefPtr<FetchServiceResponseEndPromise> mEndPromise;
 
   // The MozPromise interface intentionally does not expose synchronous access
   // to the internal resolved/rejected state. Instead, we track whether or not
@@ -198,6 +201,10 @@ class FetchService final : public nsIObserver {
     RefPtr<FetchServicePromises> Fetch();
 
     void Cancel(bool aForceAbort);
+
+    // Settles any promise that is still pending, for when the fetch will not
+    // complete anymore.
+    void SettlePendingPromises(nsresult aRv);
 
     bool IsLocalHostFetch() const;
 

@@ -39,15 +39,12 @@ mozilla::LazyLogModule gFetchLog("Fetch");
 // FetchServicePromises
 
 FetchServicePromises::FetchServicePromises()
-    : mAvailablePromise(
-          MakeRefPtr<FetchServiceResponseAvailablePromise::Private>(__func__)),
-      mTimingPromise(
-          MakeRefPtr<FetchServiceResponseTimingPromise::Private>(__func__)),
-      mEndPromise(
-          MakeRefPtr<FetchServiceResponseEndPromise::Private>(__func__)) {
-  mAvailablePromise->UseDirectTaskDispatch(__func__);
-  mTimingPromise->UseDirectTaskDispatch(__func__);
-  mEndPromise->UseDirectTaskDispatch(__func__);
+    : mAvailablePromise(mAvailableHolder.Ensure(__func__)),
+      mTimingPromise(mTimingHolder.Ensure(__func__)),
+      mEndPromise(mEndHolder.Ensure(__func__)) {
+  mAvailableHolder.UseDirectTaskDispatch(__func__);
+  mTimingHolder.UseDirectTaskDispatch(__func__);
+  mEndHolder.UseDirectTaskDispatch(__func__);
 }
 
 RefPtr<FetchServiceResponseAvailablePromise>
@@ -67,47 +64,41 @@ FetchServicePromises::GetResponseEndPromise() {
 
 void FetchServicePromises::ResolveResponseAvailablePromise(
     FetchServiceResponse&& aResponse, StaticString aMethodName) {
-  if (mAvailablePromise) {
+  if (!mAvailableHolder.IsEmpty()) {
     mAvailablePromiseResolved = true;
-    mAvailablePromise->Resolve(std::move(aResponse), aMethodName);
+    mAvailableHolder.Resolve(std::move(aResponse), aMethodName);
   }
 }
 
 void FetchServicePromises::RejectResponseAvailablePromise(
     const CopyableErrorResult&& aError, StaticString aMethodName) {
-  if (mAvailablePromise) {
-    mAvailablePromise->Reject(aError, aMethodName);
-  }
+  mAvailableHolder.RejectIfExists(aError, aMethodName);
 }
 
 void FetchServicePromises::ResolveResponseTimingPromise(
     ResponseTiming&& aTiming, StaticString aMethodName) {
-  if (mTimingPromise) {
+  if (!mTimingHolder.IsEmpty()) {
     mTimingPromiseResolved = true;
-    mTimingPromise->Resolve(std::move(aTiming), aMethodName);
+    mTimingHolder.Resolve(std::move(aTiming), aMethodName);
   }
 }
 
 void FetchServicePromises::RejectResponseTimingPromise(
     const CopyableErrorResult&& aError, StaticString aMethodName) {
-  if (mTimingPromise) {
-    mTimingPromise->Reject(aError, aMethodName);
-  }
+  mTimingHolder.RejectIfExists(aError, aMethodName);
 }
 
 void FetchServicePromises::ResolveResponseEndPromise(ResponseEndArgs&& aArgs,
                                                      StaticString aMethodName) {
-  if (mEndPromise) {
+  if (!mEndHolder.IsEmpty()) {
     mEndPromiseResolved = true;
-    mEndPromise->Resolve(std::move(aArgs), aMethodName);
+    mEndHolder.Resolve(std::move(aArgs), aMethodName);
   }
 }
 
 void FetchServicePromises::RejectResponseEndPromise(
     const CopyableErrorResult&& aError, StaticString aMethodName) {
-  if (mEndPromise) {
-    mEndPromise->Reject(aError, aMethodName);
-  }
+  mEndHolder.RejectIfExists(aError, aMethodName);
 }
 
 // FetchInstance
@@ -301,10 +292,28 @@ RefPtr<FetchServicePromises> FetchService::FetchInstance::Fetch() {
   if (NS_WARN_IF(NS_FAILED(rv))) {
     FETCH_LOG(
         ("FetchInstance::Fetch FetchDriver::Fetch failed(0x%X)", (uint32_t)rv));
+    SettlePendingPromises(rv);
     return FetchService::NetworkErrorResponse(rv, mArgs);
   }
 
   return mPromises;
+}
+
+void FetchService::FetchInstance::SettlePendingPromises(nsresult aRv) {
+  MOZ_ASSERT(NS_IsMainThread());
+  MOZ_ASSERT(mPromises);
+
+  if (!mPromises->IsResponseAvailablePromiseResolved()) {
+    mPromises->ResolveResponseAvailablePromise(
+        InternalResponse::NetworkError(aRv), __func__);
+  }
+  if (!mPromises->IsResponseTimingPromiseResolved()) {
+    mPromises->ResolveResponseTimingPromise(ResponseTiming(), __func__);
+  }
+  if (!mPromises->IsResponseEndPromiseResolved()) {
+    mPromises->ResolveResponseEndPromise(
+        ResponseEndArgs(FetchDriverObserver::eAborted), __func__);
+  }
 }
 
 bool FetchService::FetchInstance::IsLocalHostFetch() const {
@@ -716,6 +725,9 @@ FetchService::FetchService() {
 
 FetchService::~FetchService() {
   MOZ_ALWAYS_SUCCEEDS(UnregisterNetworkObserver());
+  for (const auto& fetch : mFetchInstanceTable.Values()) {
+    fetch->SettlePendingPromises(NS_ERROR_DOM_ABORT_ERR);
+  }
 }
 
 nsresult FetchService::RegisterNetworkObserver() {
