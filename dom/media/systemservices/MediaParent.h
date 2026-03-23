@@ -57,6 +57,9 @@ class Parent : public RefCountedParent, public Super {
       const uint64_t& aSinceWhen, const bool& aOnlyPrivateBrowsing) override;
   virtual void ActorDestroy(ActorDestroyReason aWhy) override;
 
+  RefPtr<PrincipalKeyPromise> GetPrincipalKeyAsync(
+      const mozilla::ipc::PrincipalInfo& aPrincipalInfo, bool aPersist);
+
   Parent();
 
  private:

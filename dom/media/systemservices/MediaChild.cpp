@@ -23,12 +23,8 @@ RefPtr<PrincipalKeyPromise> GetPrincipalKey(
   MOZ_ASSERT(mgr);
 
   if (XRE_GetProcessType() == GeckoProcessType_Default) {
-    auto p = MakeRefPtr<PrincipalKeyPromise::Private>(__func__);
-
-    mgr->GetNonE10sParent()->RecvGetPrincipalKey(
-        aPrincipalInfo, aPersist,
-        [p](const nsACString& aKey) { p->Resolve(aKey, __func__); });
-    return p;
+    return mgr->GetNonE10sParent()->GetPrincipalKeyAsync(aPrincipalInfo,
+                                                         aPersist);
   }
   return Child::Get()
       ->SendGetPrincipalKey(aPrincipalInfo, aPersist)

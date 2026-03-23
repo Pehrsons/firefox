@@ -409,9 +409,8 @@ class OriginKeyStore {
 OriginKeyStore* OriginKeyStore::sOriginKeyStore = nullptr;
 
 template <class Super>
-mozilla::ipc::IPCResult Parent<Super>::RecvGetPrincipalKey(
-    const ipc::PrincipalInfo& aPrincipalInfo, const bool& aPersist,
-    PMediaParent::GetPrincipalKeyResolver&& aResolve) {
+RefPtr<PrincipalKeyPromise> Parent<Super>::GetPrincipalKeyAsync(
+    const ipc::PrincipalInfo& aPrincipalInfo, bool aPersist) {
   MOZ_ASSERT(NS_IsMainThread());
 
   // First, get profile dir.
@@ -420,24 +419,19 @@ mozilla::ipc::IPCResult Parent<Super>::RecvGetPrincipalKey(
   nsresult rv = NS_GetSpecialDirectory(NS_APP_USER_PROFILE_50_DIR,
                                        getter_AddRefs(profileDir));
   if (NS_WARN_IF(NS_FAILED(rv))) {
-    return IPCResult(this, false);
+    return PrincipalKeyPromise::CreateAndReject(rv, __func__);
   }
 
-  // Resolver has to be called in MainThread but the key is discovered
-  // in a different thread. We wrap the resolver around a MozPromise to make
-  // it more flexible and pass it to the new task. When this is done the
-  // resolver is resolved in MainThread.
-
   // Then over to stream-transport thread (a thread pool) to do the actual
-  // file io. Stash a promise to hold the answer and get an id for this request.
+  // file io.
 
   nsCOMPtr<nsIEventTarget> sts =
       do_GetService(NS_STREAMTRANSPORTSERVICE_CONTRACTID);
   MOZ_ASSERT(sts);
-  auto taskQueue = TaskQueue::Create(sts.forget(), "RecvGetPrincipalKey");
+  auto taskQueue = TaskQueue::Create(sts.forget(), "GetPrincipalKeyAsync");
   RefPtr<Parent<Super>> that(this);
 
-  InvokeAsync(
+  return InvokeAsync(
       taskQueue, __func__,
       [this, that, profileDir, aPrincipalInfo, aPersist]() {
         MOZ_ASSERT(!NS_IsMainThread());
@@ -460,7 +454,16 @@ mozilla::ipc::IPCResult Parent<Super>::RecvGetPrincipalKey(
         }
         return PrincipalKeyPromise::CreateAndResolve(std::move(result),
                                                      __func__);
-      })
+      });
+}
+
+template <class Super>
+mozilla::ipc::IPCResult Parent<Super>::RecvGetPrincipalKey(
+    const ipc::PrincipalInfo& aPrincipalInfo, const bool& aPersist,
+    PMediaParent::GetPrincipalKeyResolver&& aResolve) {
+  MOZ_ASSERT(NS_IsMainThread());
+
+  GetPrincipalKeyAsync(aPrincipalInfo, aPersist)
       ->Then(GetCurrentSerialEventTarget(), __func__,
              [aResolve = std::move(aResolve)](
                  const PrincipalKeyPromise::ResolveOrRejectValue& aValue) {
