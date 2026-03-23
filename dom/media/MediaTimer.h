@@ -79,11 +79,9 @@ class MediaTimer {
 
   struct Entry {
     T mTimeStamp;
-    RefPtr<MediaTimerPromise::Private> mPromise;
+    mutable MozPromiseHolder<MediaTimerPromise> mHolder;
 
-    explicit Entry(const T& aTimeStamp, StaticString aCallSite)
-        : mTimeStamp(aTimeStamp),
-          mPromise(new MediaTimerPromise::Private(aCallSite)) {}
+    explicit Entry(const T& aTimeStamp) : mTimeStamp(aTimeStamp) {}
 
     // Define a < overload that reverses ordering because std::priority_queue
     // provides access to the largest element, and we want the smallest

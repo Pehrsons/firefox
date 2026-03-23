@@ -79,9 +79,9 @@ RefPtr<MediaTimerPromise> MediaTimer<T>::WaitUntil(const T& aTimeStamp,
                                                    StaticString aCallSite) {
   MonitorAutoLock mon(mMonitor);
   TIMER_LOG("MediaTimer::WaitUntil {}", RelativeMicroseconds(aTimeStamp));
-  Entry e(aTimeStamp, aCallSite);
-  RefPtr<MediaTimerPromise> p = e.mPromise.get();
-  mEntries.push(e);
+  Entry e(aTimeStamp);
+  RefPtr<MediaTimerPromise> p = e.mHolder.Ensure(aCallSite);
+  mEntries.push(std::move(e));
   ScheduleUpdate();
   return p;
 }
@@ -138,7 +138,7 @@ void MediaTimer<T>::UpdateLocked() {
   // Resolve all the promises whose time is up.
   T now = T::Now();
   while (!mEntries.empty() && IsExpired(mEntries.top().mTimeStamp, now)) {
-    mEntries.top().mPromise->Resolve(true, __func__);
+    mEntries.top().mHolder.Resolve(true, __func__);
     DebugOnly<T> poppedTimeStamp = mEntries.top().mTimeStamp;
     mEntries.pop();
     MOZ_ASSERT_IF(!mEntries.empty(),
@@ -163,7 +163,7 @@ template <typename T>
 void MediaTimer<T>::Reject() {
   mMonitor.AssertCurrentThreadOwns();
   while (!mEntries.empty()) {
-    mEntries.top().mPromise->Reject(false, __func__);
+    mEntries.top().mHolder.Reject(false, __func__);
     mEntries.pop();
   }
 }
