@@ -585,7 +585,8 @@ RefPtr<ToastHandledPromise> ToastNotification::VerifyTagPresentOrFallback(
           ("External windowsTag '%s' is not handled",
            NS_ConvertUTF16toUTF8(aWindowsTag).get()));
 
-  auto fallbackPromise = MakeRefPtr<ToastHandledPromise::Private>(__func__);
+  MozPromiseHolder<ToastHandledPromise> holder;
+  RefPtr<ToastHandledPromise> fallbackPromise = holder.Ensure(__func__);
 
   // TODO: Bug 1806005 - At time of writing this function is called in a call
   // stack containing `WndProc` callback on an STA thread. As a result attempts
@@ -593,9 +594,11 @@ RefPtr<ToastHandledPromise> ToastNotification::VerifyTagPresentOrFallback(
   // `RPC_E_CANTCALLOUT_ININPUTSYNCCALL` error. We can simplify the the XPCOM
   // interface and synchronize the COM interactions if notification fallback
   // handling were no longer handled in a `WndProc` context.
-  NS_DispatchBackgroundTask(NS_NewRunnableFunction(
+  MOZ_ALWAYS_SUCCEEDS(NS_DispatchBackgroundTask(NS_NewRunnableFunction(
       "VerifyTagPresentOrFallback fallback background task",
-      [fallbackPromise]() { fallbackPromise->Resolve(false, __func__); }));
+      [holder = std::move(holder)]() mutable {
+        holder.Resolve(false, __func__);
+      })));
 
   return fallbackPromise;
 }
