@@ -366,17 +366,16 @@ class XDGTokenRequest {
  public:
   void SetTokenID(const char* aTokenID) {
     LOGW("RequestWaylandFocusPromise() SetTokenID %s", aTokenID);
-    mTransferPromise->Resolve(aTokenID, __func__);
+    mTransferPromise.Resolve(nsCString(aTokenID), __func__);
   }
   void Cancel() {
     LOGW("RequestWaylandFocusPromise() canceled");
-    mTransferPromise->Reject(false, __func__);
+    mTransferPromise.Reject(false, __func__);
     mActivationTimeoutID = 0;
   }
 
-  XDGTokenRequest(xdg_activation_token_v1* aXdgToken,
-                  RefPtr<FocusRequestPromise::Private> aTransferPromise)
-      : mXdgToken(aXdgToken), mTransferPromise(std::move(aTransferPromise)) {
+  explicit XDGTokenRequest(xdg_activation_token_v1* aXdgToken)
+      : mXdgToken(aXdgToken) {
     mActivationTimeoutID =
         g_timeout_add(sActivationTimeout, token_failed, this);
   }
@@ -387,9 +386,13 @@ class XDGTokenRequest {
     }
   }
 
+  RefPtr<FocusRequestPromise> Promise() {
+    return mTransferPromise.Ensure(__func__);
+  }
+
  private:
   xdg_activation_token_v1* mXdgToken;
-  RefPtr<FocusRequestPromise::Private> mTransferPromise;
+  MozPromiseHolder<FocusRequestPromise> mTransferPromise;
   guint mActivationTimeoutID;
   // Reject FocusRequestPromise if we don't get XDG token in 0.5 sec.
   static constexpr int sActivationTimeout = 500;
@@ -427,13 +430,12 @@ RefPtr<FocusRequestPromise> RequestWaylandFocusPromise() {
     return nullptr;
   }
 
-  auto transferPromise = MakeRefPtr<FocusRequestPromise::Private>(__func__);
-
-  xdg_activation_token_v1* aXdgToken =
+  xdg_activation_token_v1* xdgToken =
       xdg_activation_v1_get_activation_token(xdg_activation);
-  xdg_activation_token_v1_add_listener(
-      aXdgToken, &token_listener,
-      new XDGTokenRequest(aXdgToken, transferPromise));
+  auto request = std::make_unique<XDGTokenRequest>(xdgToken);
+  RefPtr<FocusRequestPromise> transferPromise = request->Promise();
+  xdg_activation_token_v1_add_listener(xdgToken, &token_listener,
+                                       request.release());
 
   // If a Firefox window already has focus use it as the activation source so
   // the token carries full focus-transfer rights.  On first launch there is
@@ -446,10 +448,10 @@ RefPtr<FocusRequestPromise> RequestWaylandFocusPromise() {
     wl_surface* surface =
         gdkWindow ? gdk_wayland_window_get_wl_surface(gdkWindow) : nullptr;
     if (surface) {
-      xdg_activation_token_v1_set_serial(aXdgToken,
+      xdg_activation_token_v1_set_serial(xdgToken,
                                          nsWaylandDisplay::GetLastEventSerial(),
                                          WaylandDisplayGet()->GetSeat());
-      xdg_activation_token_v1_set_surface(aXdgToken, surface);
+      xdg_activation_token_v1_set_surface(xdgToken, surface);
     }
   } else {
     LOGW(
@@ -457,7 +459,7 @@ RefPtr<FocusRequestPromise> RequestWaylandFocusPromise() {
         "requesting bare token for workspace placement");
   }
 
-  xdg_activation_token_v1_commit(aXdgToken);
+  xdg_activation_token_v1_commit(xdgToken);
 
   LOGW("RequestWaylandFocusPromise() XDG Token sent");
 
