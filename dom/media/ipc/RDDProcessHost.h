@@ -145,8 +145,8 @@ class RDDProcessHost final : public mozilla::ipc::GeckoChildProcessHost {
   // While a reference to mLiveToken can be taken on any thread; its value can
   // only be read on the main thread.
   const RefPtr<media::Refcountable<bool>> mLiveToken;
-  RefPtr<GenericNonExclusivePromise::Private> mLaunchPromise;
-  bool mLaunchPromiseSettled = false;
+  MozPromiseHolder<GenericNonExclusivePromise> mLaunchHolder;
+  RefPtr<GenericNonExclusivePromise> mLaunchPromise;
   // Will be set to true if we've exceeded the allowed startup time or if the
   // RDD process as successfully started. This is used to determine if the
   // timeout runnable needs to execute code or not.

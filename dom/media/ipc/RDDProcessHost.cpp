@@ -96,7 +96,7 @@ RefPtr<GenericNonExclusivePromise> RDDProcessHost::LaunchPromise() {
   if (mLaunchPromise) {
     return mLaunchPromise;
   }
-  mLaunchPromise = MakeRefPtr<GenericNonExclusivePromise::Private>(__func__);
+  mLaunchPromise = mLaunchHolder.Ensure(__func__);
   WhenProcessHandleReady()->Then(
       GetCurrentSerialEventTarget(), __func__,
       [this, liveToken = mLiveToken](
@@ -254,10 +254,7 @@ void RDDProcessHost::DestroyProcess() {
 void RDDProcessHost::ResolvePromise() {
   MOZ_ASSERT(NS_IsMainThread());
 
-  if (mLaunchPromise && !mLaunchPromiseSettled) {
-    mLaunchPromise->Resolve(true, __func__);
-    mLaunchPromiseSettled = true;
-  }
+  mLaunchHolder.ResolveIfExists(true, __func__);
   // We have already acted on the promise; the timeout runnable no longer needs
   // to interrupt anything.
   mTimerChecked = true;
@@ -266,10 +263,7 @@ void RDDProcessHost::ResolvePromise() {
 void RDDProcessHost::RejectPromise() {
   MOZ_ASSERT(NS_IsMainThread());
 
-  if (mLaunchPromise && !mLaunchPromiseSettled) {
-    mLaunchPromise->Reject(NS_ERROR_FAILURE, __func__);
-    mLaunchPromiseSettled = true;
-  }
+  mLaunchHolder.RejectIfExists(NS_ERROR_FAILURE, __func__);
   // We have already acted on the promise; the timeout runnable no longer needs
   // to interrupt anything.
   mTimerChecked = true;
