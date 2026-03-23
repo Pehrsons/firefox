@@ -404,35 +404,31 @@ RefPtr<RemoteStreamPromise> PageIconProtocolHandler::NewStream(
   // the child, but we don't force the child process to be terminated.
   *aTerminateSender = false;
 
-  RefPtr<RemoteStreamPromise::Private> outerPromise =
-      new RemoteStreamPromise::Private(__func__);
   nsCOMPtr<nsIURI> uri(aChildURI);
   nsCOMPtr<nsILoadInfo> loadInfo(aLoadInfo);
   RefPtr<PageIconProtocolHandler> self = this;
 
-  GetFaviconData(uri)->Then(
+  return GetFaviconData(uri)->Then(
       GetMainThreadSerialEventTarget(), __func__,
-      [self, uri, loadInfo, outerPromise, childURI = nsCOMPtr{aChildURI}](
-          const FaviconPromise::ResolveOrRejectValue& aResult) {
+      [self, uri, loadInfo, childURI = nsCOMPtr{aChildURI}](
+          const FaviconPromise::ResolveOrRejectValue& aResult) mutable {
         FaviconMetadata metadata;
         if (NS_SUCCEEDED(GetFaviconMetadata(aResult, metadata))) {
           RecordIconSizeTelemetry(childURI, metadata);
           RemoteStreamInfo info(metadata.mStream, metadata.mContentType,
                                 metadata.mContentLength);
-          outerPromise->Resolve(std::move(info), __func__);
-        } else {
-          nsCOMPtr<nsIAsyncInputStream> pipeIn;
-          nsCOMPtr<nsIAsyncOutputStream> pipeOut;
-          self->GetStreams(getter_AddRefs(pipeIn), getter_AddRefs(pipeOut));
-
-          RemoteStreamInfo info(pipeIn,
-                                nsLiteralCString(FAVICON_DEFAULT_MIMETYPE), -1);
-          (void)StreamDefaultFavicon(uri, loadInfo, pipeOut);
-          outerPromise->Resolve(std::move(info), __func__);
+          return RemoteStreamPromise::CreateAndResolve(std::move(info),
+                                                       __func__);
         }
-      });
+        nsCOMPtr<nsIAsyncInputStream> pipeIn;
+        nsCOMPtr<nsIAsyncOutputStream> pipeOut;
+        self->GetStreams(getter_AddRefs(pipeIn), getter_AddRefs(pipeOut));
 
-  return outerPromise;
+        RemoteStreamInfo info(pipeIn,
+                              nsLiteralCString(FAVICON_DEFAULT_MIMETYPE), -1);
+        (void)StreamDefaultFavicon(uri, loadInfo, pipeOut);
+        return RemoteStreamPromise::CreateAndResolve(std::move(info), __func__);
+      });
 }
 
 void PageIconProtocolHandler::GetStreams(nsIAsyncInputStream** inStream,

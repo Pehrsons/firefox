@@ -500,30 +500,27 @@ RefPtr<FaviconPromise> nsFaviconService::AsyncGetFaviconForPage(
 
   nsCOMPtr<nsIURI> pageURI = GetExposableURI(aPageURI);
 
-  RefPtr<FaviconPromise::Private> promise =
-      new FaviconPromise::Private(__func__);
-
-  RefPtr<AsyncGetFaviconForPageRunnable> runnable =
-      new AsyncGetFaviconForPageRunnable(pageURI, aPreferredWidth, promise,
-                                         aOnConcurrentConn);
-
   if (!aOnConcurrentConn) {
     RefPtr<Database> DB = Database::GetDatabase();
     if (MOZ_UNLIKELY(!DB)) {
-      promise->Reject(NS_ERROR_UNEXPECTED, __func__);
-    } else {
-      DB->DispatchToAsyncThread(runnable);
+      return FaviconPromise::CreateAndReject(NS_ERROR_UNEXPECTED, __func__);
     }
-  } else {
-    auto conn = ConcurrentConnection::GetInstance();
-    if (MOZ_UNLIKELY(!conn.isSome())) {
-      promise->Reject(NS_ERROR_UNEXPECTED, __func__);
-    } else {
-      conn.value()->Queue(runnable);
-    }
+    RefPtr<AsyncGetFaviconForPageRunnable> runnable =
+        new AsyncGetFaviconForPageRunnable(pageURI, aPreferredWidth,
+                                           aOnConcurrentConn);
+    DB->DispatchToAsyncThread(runnable);
+    return runnable->Promise();
   }
 
-  return promise;
+  auto conn = ConcurrentConnection::GetInstance();
+  if (MOZ_UNLIKELY(!conn.isSome())) {
+    return FaviconPromise::CreateAndReject(NS_ERROR_UNEXPECTED, __func__);
+  }
+  RefPtr<AsyncGetFaviconForPageRunnable> runnable =
+      new AsyncGetFaviconForPageRunnable(pageURI, aPreferredWidth,
+                                         aOnConcurrentConn);
+  conn.value()->Queue(runnable);
+  return runnable->Promise();
 }
 
 NS_IMETHODIMP
@@ -540,47 +537,38 @@ nsFaviconService::TryCopyFavicons(nsIURI* aFromPageURI, nsIURI* aToPageURI,
     return errorResult.StealNSResult();
   }
 
-  RefPtr<mozilla::places::BoolPromise> result =
+  RefPtr<GenericPromise> result =
       AsyncTryCopyFavicons(aFromPageURI, aToPageURI, aFaviconLoadType);
-  result->Then(
-      GetMainThreadSerialEventTarget(), __func__,
-      [promise](
-          const mozilla::places::BoolPromise::ResolveOrRejectValue& aValue) {
-        if (aValue.IsResolve()) {
-          promise->MaybeResolve(aValue.ResolveValue());
-        } else {
-          promise->MaybeReject(aValue.RejectValue());
-        }
-      });
+  result->Then(GetMainThreadSerialEventTarget(), __func__,
+               [promise](const GenericPromise::ResolveOrRejectValue& aValue) {
+                 if (aValue.IsResolve()) {
+                   promise->MaybeResolve(aValue.ResolveValue());
+                 } else {
+                   promise->MaybeReject(aValue.RejectValue());
+                 }
+               });
 
   promise.forget(_retval);
   return NS_OK;
 }
 
-RefPtr<mozilla::places::BoolPromise> nsFaviconService::AsyncTryCopyFavicons(
+RefPtr<GenericPromise> nsFaviconService::AsyncTryCopyFavicons(
     nsCOMPtr<nsIURI> aFromPageURI, nsCOMPtr<nsIURI> aToPageURI,
     uint32_t aFaviconLoadType) {
   MOZ_ASSERT(NS_IsMainThread());
 
-  RefPtr<mozilla::places::BoolPromise::Private> promise =
-      new mozilla::places::BoolPromise::Private(__func__);
-
   if (MOZ_UNLIKELY(!aFromPageURI)) {
-    promise->Reject(NS_ERROR_INVALID_ARG, __func__);
-    return promise;
+    return GenericPromise::CreateAndReject(NS_ERROR_INVALID_ARG, __func__);
   }
   if (MOZ_UNLIKELY(!aToPageURI)) {
-    promise->Reject(NS_ERROR_INVALID_ARG, __func__);
-    return promise;
+    return GenericPromise::CreateAndReject(NS_ERROR_INVALID_ARG, __func__);
   }
   if (MOZ_UNLIKELY(!canStoreIconForPage(aToPageURI))) {
-    promise->Reject(NS_ERROR_INVALID_ARG, __func__);
-    return promise;
+    return GenericPromise::CreateAndReject(NS_ERROR_INVALID_ARG, __func__);
   }
   if (!(aFaviconLoadType >= nsIFaviconService::FAVICON_LOAD_PRIVATE &&
         aFaviconLoadType <= nsIFaviconService::FAVICON_LOAD_NON_PRIVATE)) {
-    promise->Reject(NS_ERROR_INVALID_ARG, __func__);
-    return promise;
+    return GenericPromise::CreateAndReject(NS_ERROR_INVALID_ARG, __func__);
   }
 
   nsCOMPtr<nsIURI> fromPageURI = GetExposableURI(aFromPageURI);
@@ -588,20 +576,17 @@ RefPtr<mozilla::places::BoolPromise> nsFaviconService::AsyncTryCopyFavicons(
 
   if ((!fromPageURI->SchemeIs("http") && !fromPageURI->SchemeIs("https")) ||
       (!toPageURI->SchemeIs("http") && !toPageURI->SchemeIs("https"))) {
-    promise->Resolve(false, __func__);
-    return promise;
+    return GenericPromise::CreateAndResolve(false, __func__);
   }
 
   bool canAddToHistory;
   nsNavHistory* navHistory = nsNavHistory::GetHistoryService();
   if (MOZ_UNLIKELY(!navHistory)) {
-    promise->Reject(NS_ERROR_OUT_OF_MEMORY, __func__);
-    return promise;
+    return GenericPromise::CreateAndReject(NS_ERROR_OUT_OF_MEMORY, __func__);
   }
   nsresult rv = navHistory->CanAddURI(toPageURI, &canAddToHistory);
   if (NS_FAILED(rv)) {
-    promise->Reject(rv, __func__);
-    return promise;
+    return GenericPromise::CreateAndReject(rv, __func__);
   }
   canAddToHistory = !!canAddToHistory &&
                     aFaviconLoadType != nsIFaviconService::FAVICON_LOAD_PRIVATE;
@@ -613,8 +598,7 @@ RefPtr<mozilla::places::BoolPromise> nsFaviconService::AsyncTryCopyFavicons(
   nsCOMPtr<nsIEffectiveTLDService> tldService =
       do_GetService(NS_EFFECTIVETLDSERVICE_CONTRACTID);
   if (!tldService) {
-    promise->Resolve(false, __func__);
-    return promise;
+    return GenericPromise::CreateAndResolve(false, __func__);
   }
   nsAutoCString fromBaseDomain, toBaseDomain;
   if (NS_FAILED(tldService->GetBaseDomain(fromPageURI, 0, fromBaseDomain))) {
@@ -624,21 +608,18 @@ RefPtr<mozilla::places::BoolPromise> nsFaviconService::AsyncTryCopyFavicons(
     toPageURI->GetAsciiHost(toBaseDomain);
   }
   if (!fromBaseDomain.Equals(toBaseDomain)) {
-    promise->Resolve(false, __func__);
-    return promise;
+    return GenericPromise::CreateAndResolve(false, __func__);
   }
 
-  RefPtr<AsyncTryCopyFaviconsRunnable> runnable =
-      new AsyncTryCopyFaviconsRunnable(fromPageURI, toPageURI, canAddToHistory,
-                                       promise);
   RefPtr<Database> DB = Database::GetDatabase();
   if (MOZ_UNLIKELY(!DB)) {
-    promise->Reject(NS_ERROR_UNEXPECTED, __func__);
-    return promise;
+    return GenericPromise::CreateAndReject(NS_ERROR_UNEXPECTED, __func__);
   }
+  RefPtr<AsyncTryCopyFaviconsRunnable> runnable =
+      new AsyncTryCopyFaviconsRunnable(fromPageURI, toPageURI, canAddToHistory);
   DB->DispatchToAsyncThread(runnable);
 
-  return promise;
+  return runnable->Promise();
 }
 
 nsresult nsFaviconService::GetFaviconLinkForIcon(nsIURI* aFaviconURI,

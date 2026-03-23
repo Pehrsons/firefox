@@ -155,7 +155,6 @@ class AsyncSetIconForPage final : public Runnable {
 
 using FaviconPromise =
     mozilla::MozPromise<nsCOMPtr<nsIFavicon>, nsresult, true>;
-using BoolPromise = mozilla::MozPromise<bool, nsresult, true>;
 
 /**
  * Asynchronously tries to get the URL and data of a page's favicon, then
@@ -173,19 +172,24 @@ class AsyncGetFaviconForPageRunnable final : public Runnable {
    * @param aPreferredWidth
    *        The preferred size of the icon.  We will try to return an icon close
    *        to this size.
-   * @param aPromise
-   *        Promise that returns the result.
    */
-  AsyncGetFaviconForPageRunnable(
-      const nsCOMPtr<nsIURI>& aPageURI, uint16_t aPreferredWidth,
-      const RefPtr<FaviconPromise::Private>& aPromise, bool aOnConcurrentConn);
+  AsyncGetFaviconForPageRunnable(const nsCOMPtr<nsIURI>& aPageURI,
+                                 uint16_t aPreferredWidth,
+                                 bool aOnConcurrentConn);
+
+  /**
+   * @return MozPromise<nsCOMPtr<nsIFavicon>, nsresult>
+   *         Promise that returns the result.
+   */
+  FaviconPromise* Promise() const { return mPromise; }
 
  private:
   ~AsyncGetFaviconForPageRunnable();
 
   nsCOMPtr<nsIURI> mPageURI;
   uint16_t mPreferredWidth;
-  nsMainThreadPtrHandle<FaviconPromise::Private> mPromise;
+  mozilla::MozPromiseHolder<FaviconPromise> mHolder;
+  RefPtr<FaviconPromise> mPromise;
   bool mOnConcurrentConn;
 };
 
@@ -243,19 +247,25 @@ class AsyncTryCopyFaviconsRunnable final : public Runnable {
    *        The destination URI.
    * @param aCanAddToHistoryForToPage
    *        Whether or not can add history to aToPageURI.
-   * @param aPromise
-   *        Promise that returns the result.
    */
   AsyncTryCopyFaviconsRunnable(const nsCOMPtr<nsIURI>& aFromPageURI,
                                const nsCOMPtr<nsIURI>& aToPageURI,
-                               const bool aCanAddToHistoryForToPage,
-                               const RefPtr<BoolPromise::Private>& aPromise);
+                               const bool aCanAddToHistoryForToPage);
+
+  /**
+   * @return MozPromise<bool, nsresult>
+   *         Promise that returns the result.
+   */
+  GenericPromise* Promise() const { return mPromise; }
 
  private:
+  ~AsyncTryCopyFaviconsRunnable();
+
   nsCOMPtr<nsIURI> mFromPageURI;
   nsCOMPtr<nsIURI> mToPageURI;
   bool mCanAddToHistoryForToPage;
-  nsMainThreadPtrHandle<BoolPromise::Private> mPromise;
+  mozilla::MozPromiseHolder<GenericPromise> mHolder;
+  RefPtr<GenericPromise> mPromise;
 };
 
 /**

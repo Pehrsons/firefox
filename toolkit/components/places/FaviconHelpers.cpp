@@ -908,12 +908,11 @@ AsyncSetIconForPage::Run() {
 
 AsyncGetFaviconForPageRunnable::AsyncGetFaviconForPageRunnable(
     const nsCOMPtr<nsIURI>& aPageURI, uint16_t aPreferredWidth,
-    const RefPtr<FaviconPromise::Private>& aPromise, bool aOnConcurrentConn)
+    bool aOnConcurrentConn)
     : Runnable("places::AsyncGetFaviconForPage"),
       mPageURI(aPageURI),
       mPreferredWidth(aPreferredWidth == 0 ? UINT16_MAX : aPreferredWidth),
-      mPromise(new nsMainThreadPtrHolder<FaviconPromise::Private>(
-          "AsyncGetFaviconForPageRunnable::Promise", aPromise, false)),
+      mPromise(mHolder.Ensure(__func__)),
       mOnConcurrentConn(aOnConcurrentConn) {
   MOZ_ASSERT(NS_IsMainThread());
 }
@@ -927,20 +926,20 @@ AsyncGetFaviconForPageRunnable::Run() {
 
   auto guard = MakeScopeExit([&]() {
     if (NS_FAILED(rv)) {
-      mPromise->Reject(rv, __func__);
+      mHolder.Reject(rv, __func__);
       return;
     }
 
     if (iconData.payloads.Length() == 0) {
       // Not found.
-      mPromise->Resolve(nullptr, __func__);
+      mHolder.Resolve(nullptr, __func__);
       return;
     }
 
     IconPayload& payload = iconData.payloads[0];
     nsCOMPtr<nsIFavicon> favicon = new Favicon(iconData.spec, payload.data,
                                                payload.mimeType, payload.width);
-    mPromise->Resolve(favicon.forget(), __func__);
+    mHolder.Resolve(favicon.forget(), __func__);
   });
 
   UniquePtr<ConnectionAdapter> adapter;
@@ -973,22 +972,26 @@ AsyncGetFaviconForPageRunnable::~AsyncGetFaviconForPageRunnable() {
   // otherwise this is a no-op.
   // This may happen for example when the runnable is enqueued in
   // ConcurrentConnection and it skips unnecessary work on shutdown.
-  mPromise->Reject(NS_ERROR_ABORT, __func__);
+  mHolder.RejectIfExists(NS_ERROR_ABORT, __func__);
 }
 
 ////////////////////////////////////////////////////////////////////////////////
 //// AsyncTryCopyFaviconsRunnable
 
+AsyncTryCopyFaviconsRunnable::~AsyncTryCopyFaviconsRunnable() {
+  // Reject the promise if the runnable is dropped without running, e.g. when
+  // the database has already been closed.
+  mHolder.RejectIfExists(NS_ERROR_ABORT, __func__);
+}
+
 AsyncTryCopyFaviconsRunnable::AsyncTryCopyFaviconsRunnable(
     const nsCOMPtr<nsIURI>& aFromPageURI, const nsCOMPtr<nsIURI>& aToPageURI,
-    const bool aCanAddToHistoryForToPage,
-    const RefPtr<BoolPromise::Private>& aPromise)
+    const bool aCanAddToHistoryForToPage)
     : Runnable("places::AsyncTryCopyFaviconsRunnable"),
       mFromPageURI(aFromPageURI),
       mToPageURI(aToPageURI),
       mCanAddToHistoryForToPage(aCanAddToHistoryForToPage),
-      mPromise(new nsMainThreadPtrHolder<BoolPromise::Private>(
-          "AsyncTryCopyFaviconsRunnable::Promise", aPromise, false)) {
+      mPromise(mHolder.Ensure(__func__)) {
   MOZ_ASSERT(NS_IsMainThread());
 }
 
@@ -1001,12 +1004,12 @@ NS_IMETHODIMP AsyncTryCopyFaviconsRunnable::Run() {
 
   auto guard = MakeScopeExit([&]() {
     if (NS_FAILED(rv)) {
-      mPromise->Reject(rv, __func__);
+      mHolder.Reject(rv, __func__);
       return;
     }
 
     bool copied = fromIconData.status & ICON_STATUS_ASSOCIATED;
-    mPromise->Resolve(copied, __func__);
+    mHolder.Resolve(copied, __func__);
 
     if (!copied) {
       return;

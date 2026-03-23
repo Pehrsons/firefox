@@ -95,7 +95,7 @@ class nsFaviconService final : public nsIFaviconService {
    * @return MozPromise<bool, nsresult>
    *         If it could copy, resolved with true.
    */
-  RefPtr<mozilla::places::BoolPromise> AsyncTryCopyFavicons(
+  RefPtr<mozilla::GenericPromise> AsyncTryCopyFavicons(
       nsCOMPtr<nsIURI> aFromPageURI, nsCOMPtr<nsIURI> aToPageURI,
       uint32_t aFaviconLoadType);
 
