@@ -60,8 +60,7 @@ UtilityProcessHost::UtilityProcessHost(SandboxingKind aSandbox,
                                        RefPtr<Listener> aListener)
     : GeckoChildProcessHost(GeckoProcessType_Utility),
       mListener(std::move(aListener)),
-      mLiveToken(new media::Refcountable<bool>(true)),
-      mLaunchPromise(MakeRefPtr<LaunchPromiseType::Private>(__func__)) {
+      mLiveToken(new media::Refcountable<bool>(true)) {
   MOZ_COUNT_CTOR(UtilityProcessHost);
   LOGD("[%p] UtilityProcessHost::UtilityProcessHost sandboxingKind=%" PRIu64,
        this, aSandbox);
@@ -124,7 +123,7 @@ RefPtr<UtilityProcessHost::LaunchPromiseType>
 UtilityProcessHost::LaunchPromise() {
   MOZ_ASSERT(NS_IsMainThread());
 
-  if (mLaunchPromiseLaunched) {
+  if (mLaunchPromise) {
     return mLaunchPromise;
   }
 
@@ -149,8 +148,7 @@ UtilityProcessHost::LaunchPromise() {
         // connected (or failed to) later.
       });
 
-  mLaunchPromiseLaunched = true;
-  return mLaunchPromise;
+  return (mLaunchPromise = mLaunchHolder.Ensure(__func__));
 }
 
 void UtilityProcessHost::OnChannelConnected(base::ProcessId peer_pid) {
@@ -393,11 +391,7 @@ void UtilityProcessHost::ResolvePromise() {
   MOZ_ASSERT(NS_IsMainThread());
   LOGD("[%p] UtilityProcessHost connected - resolving launch promise", this);
 
-  if (!mLaunchPromiseSettled) {
-    mLaunchPromise->Resolve(Ok{}, __func__);
-    mLaunchPromiseSettled = true;
-  }
-
+  mLaunchHolder.ResolveIfExists(Ok{}, __func__);
   mLaunchCompleted = true;
 }
 
@@ -406,11 +400,7 @@ void UtilityProcessHost::RejectPromise(LaunchError err) {
   LOGD("[%p] UtilityProcessHost connection failed - rejecting launch promise",
        this);
 
-  if (!mLaunchPromiseSettled) {
-    mLaunchPromise->Reject(std::move(err), __func__);
-    mLaunchPromiseSettled = true;
-  }
-
+  mLaunchHolder.RejectIfExists(std::move(err), __func__);
   mLaunchCompleted = true;
 }
 

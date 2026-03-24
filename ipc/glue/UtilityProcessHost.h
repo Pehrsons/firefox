@@ -162,9 +162,8 @@ class UtilityProcessHost final : public mozilla::ipc::GeckoChildProcessHost {
   // only be read or written on the main thread.
   const RefPtr<media::Refcountable<bool>> mLiveToken;
 
-  RefPtr<LaunchPromiseType::Private> mLaunchPromise{};
-  bool mLaunchPromiseSettled = false;
-  bool mLaunchPromiseLaunched = false;
+  MozPromiseHolder<LaunchPromiseType> mLaunchHolder;
+  RefPtr<LaunchPromiseType> mLaunchPromise;
   // Will be set to true if the Utility process as successfully started.
   bool mLaunchCompleted = false;
 
