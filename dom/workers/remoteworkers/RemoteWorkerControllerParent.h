@@ -5,8 +5,6 @@
 #ifndef mozilla_dom_remoteworkercontrollerparent_h_
 #define mozilla_dom_remoteworkercontrollerparent_h_
 
-#include <functional>
-
 #include "RemoteWorkerController.h"
 #include "mozilla/RefPtr.h"
 #include "mozilla/dom/PRemoteWorkerControllerParent.h"
@@ -33,8 +31,7 @@ class RemoteWorkerControllerParent final : public PRemoteWorkerControllerParent,
   // Returns the corresponding RemoteWorkerParent (if any).
   RefPtr<RemoteWorkerParent> GetRemoteWorkerParent() const;
 
-  void MaybeSendSetServiceWorkerSkipWaitingFlag(
-      std::function<void(bool)>&& aCallback);
+  RefPtr<GenericPromise> MaybeSendSetServiceWorkerSkipWaitingFlag();
 
  private:
   ~RemoteWorkerControllerParent();

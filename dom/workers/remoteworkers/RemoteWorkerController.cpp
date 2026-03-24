@@ -349,14 +349,8 @@ RefPtr<GenericPromise> RemoteWorkerController::SetServiceWorkerSkipWaitingFlag()
     return GenericPromise::CreateAndResolve(false, __func__);
   }
 
-  RefPtr<GenericPromise::Private> promise =
-      new GenericPromise::Private(__func__);
-
-  static_cast<RemoteWorkerControllerParent*>(mObserver.get())
-      ->MaybeSendSetServiceWorkerSkipWaitingFlag(
-          [promise](bool aOk) { promise->Resolve(aOk, __func__); });
-
-  return promise;
+  return static_cast<RemoteWorkerControllerParent*>(mObserver.get())
+      ->MaybeSendSetServiceWorkerSkipWaitingFlag();
 }
 
 bool RemoteWorkerController::IsTerminated() const {
