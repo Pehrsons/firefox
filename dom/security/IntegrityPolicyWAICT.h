@@ -83,7 +83,8 @@ class IntegrityPolicyWAICT : public nsIStreamLoaderObserver {
   uint64_t mMaxAge = 0;
   IntegrityPolicy::Destinations mDestinations;
   nsTArray<nsCString> mEndpoints;
-  RefPtr<WAICTManifestLoadedPromise::Private> mPromise;
+  MozPromiseHolder<WAICTManifestLoadedPromise> mHolder;
+  const RefPtr<WAICTManifestLoadedPromise> mPromise;
   // TODO(Bug 2017655): Use an nsURI as key.
   nsTHashMap<nsCString, nsCString> mHashes;
   nsTHashSet<nsCString> mAnyHashes;

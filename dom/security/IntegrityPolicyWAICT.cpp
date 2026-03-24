@@ -29,10 +29,11 @@ IntegrityPolicyWAICT::IntegrityPolicyWAICT(Document* aDocument)
     // do_GetWeakReference internally guards against null aDocument.
     : mDocument(do_GetWeakReference(aDocument)),
       mDocumentURI(aDocument ? aDocument->GetDocumentURI() : nullptr),
-      mPrincipal(aDocument ? aDocument->NodePrincipal() : nullptr) {}
+      mPrincipal(aDocument ? aDocument->NodePrincipal() : nullptr),
+      mPromise(mHolder.Ensure(__func__)) {}
 
 IntegrityPolicyWAICT::~IntegrityPolicyWAICT() {
-  if (mPromise) {
+  if (!mHolder.IsEmpty()) {
     ResolvePromiseInvalidManifest();
   }
 }
@@ -349,13 +350,13 @@ NS_IMETHODIMP IntegrityPolicyWAICT::OnStreamComplete(nsIStreamLoader* aLoader,
   }
 
   mManifestValid = true;
-  mPromise->Resolve(true, __func__);
+  mHolder.Resolve(true, __func__);
   return NS_OK;
 }
 
 void IntegrityPolicyWAICT::ResolvePromiseInvalidManifest() {
   mManifestValid = false;
-  mPromise->Resolve(true, __func__);
+  mHolder.Resolve(true, __func__);
 }
 
 void IntegrityPolicyWAICT::FetchManifest() {
@@ -363,8 +364,7 @@ void IntegrityPolicyWAICT::FetchManifest() {
               "IntegrityPolicyWAICT::FetchManifest: mManifestURL={}",
               mManifestURL.get());
 
-  MOZ_ASSERT(!mPromise);
-  mPromise = MakeRefPtr<WAICTManifestLoadedPromise::Private>(__func__);
+  MOZ_ASSERT(!mHolder.IsEmpty());
 
   nsCOMPtr<nsIURI> uri;
   nsresult rv =
