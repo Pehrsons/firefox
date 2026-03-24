@@ -408,9 +408,10 @@ RefPtr<CCGCScheduler::MayGCPromise> CCGCScheduler::MayGCNow(
   // We use synchronous task dispatch here to avoid a trip through the event
   // loop if we're on the parent process or it's a GC reason that does not
   // require permission to GC.
-  RefPtr<MayGCPromise::Private> p = MakeRefPtr<MayGCPromise::Private>(__func__);
-  p->UseSynchronousTaskDispatch(__func__);
-  p->Resolve(true, __func__);
+  MozPromiseHolder<MayGCPromise> holder;
+  RefPtr<MayGCPromise> p = holder.Ensure(__func__);
+  holder.UseSynchronousTaskDispatch(__func__);
+  holder.Resolve(true, __func__);
   return p;
 }
 
