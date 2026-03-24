@@ -1260,10 +1260,9 @@ nsresult BounceTrackingProtection::PurgeStateForHostAndOriginAttributes(
   MOZ_ASSERT(!aHost.IsEmpty());
   MOZ_ASSERT(aClearPromise);
 
-  RefPtr<ClearDataMozPromise::Private> clearPromise =
-      new ClearDataMozPromise::Private(__func__);
-  RefPtr<ClearDataCallback> cb = new ClearDataCallback(
-      clearPromise, aOriginAttributes, aHost, bounceTime, aChainRecord);
+  RefPtr<ClearDataCallback> cb =
+      new ClearDataCallback(aOriginAttributes, aHost, bounceTime, aChainRecord);
+  RefPtr<ClearDataMozPromise> clearPromise = cb->Promise();
 
   if (StaticPrefs::privacy_bounceTrackingProtection_mode() ==
       nsIBounceTrackingProtection::MODE_ENABLED_DRY_RUN) {

@@ -28,10 +28,11 @@ class ClearDataCallback final : public nsIClearDataCallback,
   NS_DECL_NSICLEARDATACALLBACK
   NS_DECL_NSIURLCLASSIFIERFEATURECALLBACK
 
-  explicit ClearDataCallback(ClearDataMozPromise::Private* aPromise,
-                             const OriginAttributes& aOriginAttributes,
+  explicit ClearDataCallback(const OriginAttributes& aOriginAttributes,
                              const nsACString& aHost, PRTime aBounceTime,
                              BounceTrackingRecord* aChainRecord = nullptr);
+
+  ClearDataMozPromise* Promise() const { return mPromise; }
 
  private:
   virtual ~ClearDataCallback();
@@ -41,7 +42,8 @@ class ClearDataCallback final : public nsIClearDataCallback,
   RefPtr<BounceTrackingPurgeEntry> mEntry;
 
   // Promise which is resolved or rejected when the clear operation completes.
-  RefPtr<ClearDataMozPromise::Private> mPromise;
+  MozPromiseHolder<ClearDataMozPromise> mHolder;
+  RefPtr<ClearDataMozPromise> mPromise;
 
   // Clear duration telemetry
   void RecordClearDurationTelemetry();

@@ -39,12 +39,11 @@ static StaticAutoPtr<nsTArray<RefPtr<nsIUrlClassifierFeature>>>
 NS_IMPL_ISUPPORTS(ClearDataCallback, nsIClearDataCallback,
                   nsIUrlClassifierFeatureCallback);
 
-ClearDataCallback::ClearDataCallback(ClearDataMozPromise::Private* aPromise,
-                                     const OriginAttributes& aOriginAttributes,
+ClearDataCallback::ClearDataCallback(const OriginAttributes& aOriginAttributes,
                                      const nsACString& aHost,
                                      PRTime aBounceTime,
                                      BounceTrackingRecord* aChainRecord)
-    : mPromise(aPromise), mClearDurationTimer(0) {
+    : mPromise(mHolder.Ensure(__func__)), mClearDurationTimer(0) {
   MOZ_ASSERT(!aHost.IsEmpty(), "Host must not be empty");
 
   mEntry =
@@ -84,7 +83,7 @@ ClearDataCallback::ClearDataCallback(ClearDataMozPromise::Private* aPromise,
 };
 
 ClearDataCallback::~ClearDataCallback() {
-  mPromise->Reject(0, __func__);
+  mHolder.RejectIfExists(0, __func__);
   if (mClearDurationTimer) {
     glean::bounce_tracking_protection::purge_duration.Cancel(
         std::move(mClearDurationTimer));
@@ -94,14 +93,14 @@ ClearDataCallback::~ClearDataCallback() {
 // nsIClearDataCallback implementation
 NS_IMETHODIMP ClearDataCallback::OnDataDeleted(uint32_t aFailedFlags) {
   if (aFailedFlags) {
-    mPromise->Reject(aFailedFlags, __func__);
+    mHolder.Reject(aFailedFlags, __func__);
   } else {
     MOZ_LOG_FMT(gBounceTrackingProtectionLog, LogLevel::Debug,
                 "{}: Cleared host: {}, bounceTime: {}", __FUNCTION__,
                 mEntry->SiteHostRef(), mEntry->TimeStampRef());
 
     mEntry->PurgeTimeRef() = PR_Now();
-    mPromise->Resolve(mEntry, __func__);
+    mHolder.Resolve(mEntry, __func__);
 
     // Only record classifications on successful deletion.
     RecordURLClassifierTelemetry();
