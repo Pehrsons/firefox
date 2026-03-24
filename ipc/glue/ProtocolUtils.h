@@ -792,11 +792,21 @@ class IPDLAsyncReturnsCallbacks : public HasResultCodes {
   // the IPC::MessageReader* argument.
   using Callback =
       mozilla::MoveOnlyFunction<Result(IPC::MessageReader* IProtocol)>;
+  // Combined callback for promise-based async returns. Called with non-null
+  // aReader on resolve, null aReader on reject. The callback owns the promise
+  // and must settle it on every path, including deserialization failure, and
+  // must call EndRead() on aReader itself.
+  using PromiseCallback = mozilla::MoveOnlyFunction<Result(
+      IPC::MessageReader*, ResponseRejectReason)>;
   using seqno_t = IPC::Message::seqno_t;
   using msgid_t = IPC::Message::msgid_t;
 
+  ~IPDLAsyncReturnsCallbacks() { MOZ_ASSERT(mMap.IsEmpty()); }
+
   void AddCallback(seqno_t aSeqno, msgid_t aType, Callback aResolve,
                    RejectCallback aReject);
+  void AddPromiseCallback(seqno_t aSeqno, msgid_t aType,
+                          PromiseCallback aCallback);
   Result GotReply(IProtocol* aActor, const IPC::Message& aMessage);
   void RejectPendingResponses(ResponseRejectReason aReason);
 
@@ -811,6 +821,7 @@ class IPDLAsyncReturnsCallbacks : public HasResultCodes {
   struct Entry : EntryKey {
     Callback mResolve;
     RejectCallback mReject;
+    PromiseCallback mPromiseCallback;
   };
 
   // NOTE: We expect this table to be quite small most of the time (usually 0-1

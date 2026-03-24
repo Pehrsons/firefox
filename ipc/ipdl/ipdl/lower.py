@@ -261,21 +261,18 @@ def _tuple(types, const=False, ref=False):
     return Type("std::tuple", T=types, const=const, ref=ref)
 
 
-def _promise(resolvetype, rejecttype, tail, resolver=False):
-    inner = Type("Private") if resolver else None
-    return Type("MozPromise", T=[resolvetype, rejecttype, tail], inner=inner)
+def _promise(resolvetype, rejecttype, tail):
+    return Type("MozPromise", T=[resolvetype, rejecttype, tail])
 
 
-def _makePromise(returns, side, resolver=False):
+def _makePromise(returns, side):
     if len(returns) > 1:
         resolvetype = _tuple([d.bareType(side) for d in returns])
     else:
         resolvetype = returns[0].bareType(side)
 
     # MozPromise is purposefully made to be exclusive only. Really, we mean it.
-    return _promise(
-        resolvetype, _ResponseRejectReason.Type(), ExprLiteral.TRUE, resolver=resolver
-    )
+    return _promise(resolvetype, _ResponseRejectReason.Type(), ExprLiteral.TRUE)
 
 
 def _resolveType(returns, side):
@@ -4609,8 +4606,9 @@ class _GenerateProtocolActorCode(ipdl.ast.Visitor):
             if "VirtualSendImpl" in md.attributes:
                 decl.methodspec = MethodSpec.VIRTUAL
             promisemethod = MethodDefn(decl)
-            stmts = self.sendAsyncWithPromise(md, decl.params)
-            promisemethod.addstmts(stmts)
+            msgvar, serstmts = self.makeMessage(md, errfnSend)
+            promisestmts = self.sendAsyncWithPromise(md, msgvar)
+            promisemethod.addstmts(serstmts + [Whitespace.NL] + promisestmts)
 
             (lbl, case) = self.genRecvAsyncReplyCase(md)
         else:
@@ -5161,47 +5159,129 @@ class _GenerateProtocolActorCode(ipdl.ast.Visitor):
             ),
         )
 
-    def sendAsyncWithPromise(self, md, params):
-        # Create a new promise, and forward to the callback send overload.
-        promise = _makePromise(md.returns, self.side, resolver=True)
+    def asyncPromiseCallbackImpl(self, md, side):
+        assert md.returns
+
+        readervar = ExprVar("aReader")
+
+        def errfn(msg, errcode=_Result.ValuError):
+            return [
+                StmtExpr(
+                    ExprCall(
+                        ExprSelect(readervar, "->", "FatalError"),
+                        args=[ExprLiteral.String(msg)],
+                    )
+                ),
+                StmtExpr(
+                    ExprCode(
+                        "holder__.Reject(ResponseRejectReason::HandlerRejected, __func__)"
+                    )
+                ),
+                StmtReturn(errcode),
+            ]
+
+        def promiseErrfnSentinel(msg):
+            return [
+                _sentinelReadError(msg),
+                StmtExpr(
+                    ExprCode(
+                        "holder__.Reject(ResponseRejectReason::HandlerRejected, __func__)"
+                    )
+                ),
+                StmtReturn(_Result.ValuError),
+            ]
+
+        reads = [
+            _ParamTraits.checkedRead(
+                p.ipdltype,
+                p.bareType(side),
+                p.var(),
+                readervar,
+                errfn,
+                "'%s'" % p.ipdltype.name(),
+                sentinelKey=p.name,
+                errfnSentinel=promiseErrfnSentinel,
+            )
+            for p in md.returns
+        ]
 
         if len(md.returns) > 1:
-            resolvetype = _tuple([d.bareType(self.side) for d in md.returns])
+            resolvearg = ExprCall(
+                ExprVar("std::make_tuple"),
+                args=[ExprMove(p.var()) for p in md.returns],
+            )
         else:
-            resolvetype = md.returns[0].bareType(self.side)
+            resolvearg = ExprMove(md.returns[0].var())
 
-        resolve = ExprCode(
+        return ExprCode(
             """
-            [promise__](${resolvetype}&& aValue) {
-                promise__->Resolve(std::move(aValue), __func__);
+            [holder__ = std::move(holder__)](IPC::MessageReader* aReader, ResponseRejectReason aReason) mutable {
+                if (!aReader) {
+                    holder__.Reject(aReason, __func__);
+                    return MsgProcessed;
+                }
+                $*{reads}
+
+                aReader->EndRead();
+
+                holder__.Resolve(${resolvearg}, __func__);
+                return MsgProcessed;
             }
             """,
-            resolvetype=resolvetype,
-        )
-        reject = ExprCode(
-            """
-            [promise__](ResponseRejectReason&& aReason) {
-                promise__->Reject(std::move(aReason), __func__);
-            }
-            """,
-            resolvetype=resolvetype,
+            reads=reads,
+            resolvearg=resolvearg,
         )
 
-        args = [
-            ExprCode("std::forward<${t}>(${n})", t=p.type, n=p.name) for p in params
-        ] + [resolve, reject]
-        stmt = StmtCode(
-            """
-            RefPtr<${promise}> promise__ = new ${promise}(__func__);
-            promise__->UseDirectTaskDispatch(__func__);
-            ${send}($,{args});
-            return promise__;
-            """,
-            promise=promise,
-            send=md.sendMethod(),
-            args=args,
+    def sendAsyncWithPromise(self, md, msgvar):
+        promise = _makePromise(md.returns, self.side)
+        seqno = ExprVar("seqno__")
+
+        callback = self.asyncPromiseCallbackImpl(md, self.side)
+
+        stmts = [
+            StmtCode(
+                """
+                MozPromiseHolder<${promise}> holder__;
+                RefPtr promise__ = holder__.Ensure(__func__);
+                holder__.UseDirectTaskDispatch(__func__);
+                """,
+                promise=promise,
+            ),
+            Whitespace.NL,
+            self.logMessage(md, msgvar, "Sending "),
+            self.profilerLabel(md),
+            Whitespace.NL,
+            StmtDecl(
+                Decl(Type("IPC::Message::seqno_t"), seqno.name),
+                init=ExprLiteral.ZERO,
+            ),
+        ]
+
+        ifsendok = StmtIf(
+            ExprCall(ExprVar("ChannelSend"), args=[ExprMove(msgvar), ExprAddrOf(seqno)])
         )
-        return [stmt]
+        ifsendok.addifstmt(
+            StmtCode(
+                """
+                mAsyncCallbacks.AddPromiseCallback(${seqno}, ${replyid}, ${callback});
+                """,
+                seqno=seqno,
+                replyid=md.pqReplyId(),
+                callback=callback,
+            )
+        )
+        ifsendok.addelsestmt(
+            StmtCode(
+                """
+                holder__.Reject(::mozilla::ipc::ResponseRejectReason::SendError, __func__);
+                """
+            )
+        )
+
+        stmts.append(ifsendok)
+        stmts.append(StmtReturn(ExprVar("promise__")))
+
+        return stmts
 
     def callAllocActor(self, md, retsems, side):
         actortype = md.actorDecl().bareType(self.side)

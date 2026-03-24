@@ -879,7 +879,15 @@ bool IPDLAsyncReturnsCallbacks::EntryKey::operator<(
 void IPDLAsyncReturnsCallbacks::AddCallback(IPC::Message::seqno_t aSeqno,
                                             msgid_t aType, Callback aResolve,
                                             RejectCallback aReject) {
-  Entry entry{{aSeqno, aType}, std::move(aResolve), std::move(aReject)};
+  Entry entry{{aSeqno, aType}, std::move(aResolve), std::move(aReject), {}};
+  MOZ_ASSERT(!mMap.ContainsSorted(entry));
+  mMap.InsertElementSorted(std::move(entry));
+}
+
+void IPDLAsyncReturnsCallbacks::AddPromiseCallback(IPC::Message::seqno_t aSeqno,
+                                                   msgid_t aType,
+                                                   PromiseCallback aCallback) {
+  Entry entry{{aSeqno, aType}, {}, {}, std::move(aCallback)};
   MOZ_ASSERT(!mMap.ContainsSorted(entry));
   mMap.InsertElementSorted(std::move(entry));
 }
@@ -903,8 +911,27 @@ auto IPDLAsyncReturnsCallbacks::GotReply(IProtocol* aActor,
   IPC::MessageReader reader{aMessage, aActor};
   bool resolve = false;
   if (!IPC::ReadParam(&reader, &resolve)) {
-    entry.mReject(ResponseRejectReason::HandlerRejected);
+    if (entry.mPromiseCallback) {
+      entry.mPromiseCallback(nullptr, ResponseRejectReason::HandlerRejected);
+    } else {
+      entry.mReject(ResponseRejectReason::HandlerRejected);
+    }
     return MsgValueError;
+  }
+
+  if (entry.mPromiseCallback) {
+    if (resolve) {
+      return entry.mPromiseCallback(&reader,
+                                    ResponseRejectReason::HandlerRejected);
+    }
+    ResponseRejectReason reason;
+    if (!IPC::ReadParam(&reader, &reason)) {
+      entry.mPromiseCallback(nullptr, ResponseRejectReason::HandlerRejected);
+      return MsgValueError;
+    }
+    reader.EndRead();
+    entry.mPromiseCallback(nullptr, reason);
+    return MsgProcessed;
   }
 
   if (resolve) {
@@ -932,7 +959,11 @@ void IPDLAsyncReturnsCallbacks::RejectPendingResponses(
     ResponseRejectReason aReason) {
   nsTArray<Entry> pending = std::move(mMap);
   for (auto& entry : pending) {
-    entry.mReject(aReason);
+    if (entry.mPromiseCallback) {
+      entry.mPromiseCallback(nullptr, aReason);
+    } else {
+      entry.mReject(aReason);
+    }
   }
 }
 
