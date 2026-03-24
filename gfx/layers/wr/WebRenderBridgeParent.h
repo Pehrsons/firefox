@@ -543,7 +543,7 @@ class WebRenderBridgeParent final : public PWebRenderBridgeParent,
   struct ScreenPixelsRequest {
     gfx::IntRect mSourceRect;
     RefPtr<layers::AndroidHardwareBuffer> mHardwareBuffer;
-    RefPtr<ScreenPixelsPromise::Private> mPromise;
+    MozPromiseHolder<ScreenPixelsPromise> mHolder;
   };
   Maybe<ScreenPixelsRequest> mScreenPixelsRequest;
 #endif

@@ -561,7 +561,7 @@ void WebRenderBridgeParent::Destroy() {
   ClearResources();
 #ifdef MOZ_WIDGET_ANDROID
   if (mScreenPixelsRequest) {
-    mScreenPixelsRequest->mPromise->Reject(NS_ERROR_ABORT, __func__);
+    mScreenPixelsRequest->mHolder.Reject(NS_ERROR_ABORT, __func__);
     mScreenPixelsRequest.reset();
   }
 #endif
@@ -2005,14 +2005,13 @@ WebRenderBridgeParent::RequestScreenPixels(
   // If a new request is made we no longer care about the result of the previous
   // one, so just reject it if it exists.
   if (mScreenPixelsRequest) {
-    mScreenPixelsRequest.extract().mPromise->Reject(NS_ERROR_ABORT, __func__);
+    mScreenPixelsRequest.extract().mHolder.Reject(NS_ERROR_ABORT, __func__);
   }
   mScreenPixelsRequest.emplace(ScreenPixelsRequest{
       .mSourceRect = aSourceRect,
       .mHardwareBuffer = std::move(aHardwareBuffer),
-      .mPromise = new ScreenPixelsPromise::Private(__func__),
   });
-  return mScreenPixelsRequest->mPromise;
+  return mScreenPixelsRequest->mHolder.Ensure(__func__);
 }
 
 void WebRenderBridgeParent::MaybeCaptureScreenPixels() {
@@ -2032,7 +2031,7 @@ void WebRenderBridgeParent::MaybeCaptureScreenPixels() {
   mLateInit->mApi
       ->RequestScreenPixels(request.mSourceRect,
                             std::move(request.mHardwareBuffer))
-      ->ChainTo(request.mPromise.forget(), __func__);
+      ->ChainTo(std::move(request.mHolder), __func__);
 }
 #endif
 

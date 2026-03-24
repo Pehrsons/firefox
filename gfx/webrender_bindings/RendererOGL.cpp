@@ -136,7 +136,7 @@ RendererOGL::~RendererOGL() {
   MOZ_COUNT_DTOR(RendererOGL);
 #ifdef MOZ_WIDGET_ANDROID
   if (mPendingScreenPixelsRequest) {
-    mPendingScreenPixelsRequest->mPromise->Reject(NS_ERROR_ABORT, __func__);
+    mPendingScreenPixelsRequest->mHolder.Reject(NS_ERROR_ABORT, __func__);
   }
 #endif
   if (!mCompositor->MakeCurrent()) {
@@ -507,15 +507,14 @@ RefPtr<RendererOGL::ScreenPixelsPromise> RendererOGL::RequestScreenPixels(
   // If a new request is made we no longer care about the result of the previous
   // one, so just reject it if it exists.
   if (mPendingScreenPixelsRequest) {
-    mPendingScreenPixelsRequest.extract().mPromise->Reject(NS_ERROR_ABORT,
-                                                           __func__);
+    mPendingScreenPixelsRequest.extract().mHolder.Reject(NS_ERROR_ABORT,
+                                                         __func__);
   }
   mPendingScreenPixelsRequest.emplace(ScreenPixelsRequest{
       .mSourceRect = aSourceRect,
       .mHardwareBuffer = std::move(aHardwareBuffer),
-      .mPromise = new ScreenPixelsPromise::Private(__func__),
   });
-  return mPendingScreenPixelsRequest->mPromise;
+  return mPendingScreenPixelsRequest->mHolder.Ensure(__func__);
 }
 
 void RendererOGL::MaybeCaptureScreenPixels() {
@@ -527,7 +526,7 @@ void RendererOGL::MaybeCaptureScreenPixels() {
 
   if (mCompositor->MaybeCaptureScreenPixels(request.mSourceRect,
                                             request.mHardwareBuffer)) {
-    request.mPromise->Resolve(Ok{}, __func__);
+    request.mHolder.Resolve(Ok{}, __func__);
     return;
   }
 
@@ -565,7 +564,7 @@ void RendererOGL::MaybeCaptureScreenPixels() {
     egl->fDestroySync(sync);
   }
 
-  request.mPromise->Resolve(Ok{}, __func__);
+  request.mHolder.Resolve(Ok{}, __func__);
 }
 #endif
 

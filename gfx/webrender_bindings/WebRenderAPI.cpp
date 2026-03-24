@@ -1001,24 +1001,26 @@ RefPtr<WebRenderAPI::ScreenPixelsPromise> WebRenderAPI::RequestScreenPixels(
    public:
     explicit ScreenshotEvent(
         gfx::IntRect aSourceRect,
-        RefPtr<layers::AndroidHardwareBuffer> aHardwareBuffer,
-        RefPtr<ScreenPixelsPromise::Private> aPromise)
+        RefPtr<layers::AndroidHardwareBuffer> aHardwareBuffer)
         : mSourceRect(aSourceRect),
-          mHardwareBuffer(std::move(aHardwareBuffer)),
-          mPromise(aPromise) {
+          mHardwareBuffer(std::move(aHardwareBuffer)) {
       MOZ_COUNT_CTOR(ScreenshotEvent);
     }
 
     MOZ_COUNTED_DTOR(ScreenshotEvent);
 
+    ScreenPixelsPromise* Promise() {
+      return RefPtr(mHolder.Ensure(__func__)).get();
+    }
+
     void Run(RenderThread& aRenderThread, WindowId aWindowId) override {
       RendererOGL* const renderer = aRenderThread.GetRenderer(aWindowId);
       if (!renderer) {
-        mPromise->Reject(NS_ERROR_FAILURE, __func__);
+        mHolder.Reject(NS_ERROR_FAILURE, __func__);
         return;
       }
       renderer->RequestScreenPixels(mSourceRect, std::move(mHardwareBuffer))
-          ->ChainTo(mPromise.forget(), __func__);
+          ->ChainTo(std::move(mHolder), __func__);
     }
 
     const char* Name() override { return "ScreenshotEvent"; }
@@ -1026,12 +1028,12 @@ RefPtr<WebRenderAPI::ScreenPixelsPromise> WebRenderAPI::RequestScreenPixels(
    private:
     const gfx::IntRect mSourceRect;
     RefPtr<layers::AndroidHardwareBuffer> mHardwareBuffer;
-    RefPtr<ScreenPixelsPromise::Private> mPromise;
+    MozPromiseHolder<ScreenPixelsPromise> mHolder;
   };
 
-  auto promise = MakeRefPtr<ScreenPixelsPromise::Private>(__func__);
-  auto event = MakeUnique<ScreenshotEvent>(aSourceRect,
-                                           std::move(aHardwareBuffer), promise);
+  auto event =
+      MakeUnique<ScreenshotEvent>(aSourceRect, std::move(aHardwareBuffer));
+  RefPtr<ScreenPixelsPromise> promise = event->Promise();
 
   RenderThread::Get()->PostEvent(mId, std::move(event));
   return promise;
