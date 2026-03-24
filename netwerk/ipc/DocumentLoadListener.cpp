@@ -1500,7 +1500,7 @@ void DocumentLoadListener::CleanupParentLoadAttempt() {
   mOpenPromise->Then(
       GetMainThreadSerialEventTarget(), __func__,
       [](DocumentLoadListener::OpenPromiseSucceededType&& aResolveValue) {
-        aResolveValue.mPromise->Resolve(NS_BINDING_ABORTED, __func__);
+        aResolveValue.mHolder.Resolve(NS_BINDING_ABORTED, __func__);
       },
       []() {});
 
@@ -2555,17 +2555,11 @@ DocumentLoadListener::RedirectToRealChannel(
         CreateAndResolve(NS_BINDING_ABORTED, __func__);
   }
 
-  // This promise will be passed on the promise listener which will
-  // resolve this promise for us.
-  auto promise =
-      MakeRefPtr<PDocumentChannelParent::RedirectToRealChannelPromise::Private>(
-          __func__);
-
-  mOpenPromiseHolder.Resolve(
-      OpenPromiseSucceededType({std::move(aStreamFilterEndpoints),
-                                aRedirectFlags, aLoadFlags,
-                                mEarlyHintsService.LinkType(), promise}),
-      __func__);
+  OpenPromiseSucceededType resolveValue(std::move(aStreamFilterEndpoints),
+                                        aRedirectFlags, aLoadFlags,
+                                        mEarlyHintsService.LinkType());
+  RefPtr promise = resolveValue.mHolder.Ensure(__func__);
+  mOpenPromiseHolder.Resolve(std::move(resolveValue), __func__);
 
   // There is no way we could come back here if the promise had been resolved
   // previously. But for clarity and to avoid all doubt, we set this boolean to

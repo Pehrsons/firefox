@@ -234,7 +234,7 @@ NS_IMETHODIMP ParentProcessDocumentChannel::AsyncOpen(
         // We chain the promise the DLL is waiting on to the one returned by
         // RedirectToRealChannel. As soon as the promise returned is
         // resolved or rejected, so will the DLL's promise.
-        p->ChainTo(aResolveValue.mPromise.forget(), __func__);
+        p->ChainTo(std::move(aResolveValue.mHolder), __func__);
       },
       [self](DocumentLoadListener::OpenPromiseFailedType&& aRejectValue) {
         // If this is a normal failure, then we want to disconnect our listeners

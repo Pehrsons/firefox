@@ -96,7 +96,7 @@ bool DocumentChannelParent::Init(dom::CanonicalBrowsingContext* aContext,
         // We chain the promise the DLL is waiting on to the one returned by
         // RedirectToRealChannel. As soon as the promise returned is resolved
         // or rejected, so will the DLL's promise.
-        promise->ChainTo(aResolveValue.mPromise.forget(), __func__);
+        promise->ChainTo(std::move(aResolveValue.mHolder), __func__);
         self->mDocumentLoadListener = nullptr;
       },
       [self](DocumentLoadListener::OpenPromiseFailedType&& aRejectValue) {

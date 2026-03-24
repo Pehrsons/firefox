@@ -103,8 +103,8 @@ class DocumentLoadListener : public nsIInterfaceRequestor,
     uint32_t mRedirectFlags;
     uint32_t mLoadFlags;
     uint32_t mEarlyHintLinkType;
-    RefPtr<PDocumentChannelParent::RedirectToRealChannelPromise::Private>
-        mPromise;
+    MozPromiseHolder<PDocumentChannelParent::RedirectToRealChannelPromise>
+        mHolder;
   };
   struct OpenPromiseFailedType {
     nsresult mStatus;
