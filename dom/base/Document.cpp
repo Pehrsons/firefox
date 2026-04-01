@@ -20230,13 +20230,11 @@ Document::CreatePermissionGrantPromise(nsPIDOMWindowInner* aInnerWindow,
   RefPtr<Document> self(this);
   RefPtr<nsPIDOMWindowInner> inner(aInnerWindow);
   RefPtr<nsIPrincipal> principal(aPrincipal);
+  using GrantPromise =
+      StorageAccessAPIHelper::StorageAccessPermissionGrantPromise;
 
   return [inner, self, principal, aHasUserInteraction, aRequireUserInteraction,
-          aFrameOnly]() {
-    RefPtr<StorageAccessAPIHelper::StorageAccessPermissionGrantPromise::Private>
-        p = new StorageAccessAPIHelper::StorageAccessPermissionGrantPromise::
-            Private(__func__);
-
+          aFrameOnly]() -> RefPtr<GrantPromise> {
     RefPtr<PWindowGlobalChild::GetStorageAccessPermissionPromise> promise;
     // Test the permission
     MOZ_ASSERT(XRE_IsContentProcess());
@@ -20246,17 +20244,16 @@ Document::CreatePermissionGrantPromise(nsPIDOMWindowInner* aInnerWindow,
 
     promise = wgc->SendGetStorageAccessPermission(true);
     MOZ_ASSERT(promise);
-    promise->Then(
+    return promise->Then(
         GetCurrentSerialEventTarget(), __func__,
-        [self, p, inner, principal, aHasUserInteraction,
-         aRequireUserInteraction, aFrameOnly](uint32_t aAction) {
+        [self, inner, principal, aHasUserInteraction, aRequireUserInteraction,
+         aFrameOnly](uint32_t aAction) -> RefPtr<GrantPromise> {
           if (aAction == nsIPermissionManager::ALLOW_ACTION) {
-            p->Resolve(StorageAccessAPIHelper::eAllow, __func__);
-            return;
+            return GrantPromise::CreateAndResolve(
+                StorageAccessAPIHelper::eAllow, __func__);
           }
           if (aAction == nsIPermissionManager::DENY_ACTION) {
-            p->Reject(false, __func__);
-            return;
+            return GrantPromise::CreateAndReject(false, __func__);
           }
 
           // We require user activation before conducting a permission request
@@ -20272,28 +20269,39 @@ Document::CreatePermissionGrantPromise(nsPIDOMWindowInner* aInnerWindow,
                 nsLiteralCString("requestStorageAccess"), self,
                 PropertiesFile::DOM_PROPERTIES,
                 "RequestStorageAccessUserGesture");
-            p->Reject(false, __func__);
-            return;
+            return GrantPromise::CreateAndReject(false, __func__);
           }
 
           // Create the user prompt
-          RefPtr<StorageAccessPermissionRequest> sapr =
-              StorageAccessPermissionRequest::Create(
-                  inner, principal, aFrameOnly,
-                  // Allow
-                  [p] {
+          RefPtr<StorageAccessPermissionRequest> sapr;
+          RefPtr<GrantPromise> promptPromise;
+          {
+            MozPromiseHolder<GrantPromise> holder;
+            promptPromise =
+                holder.Ensure("Document::CreatePermissionGrantPromise");
+            sapr = StorageAccessPermissionRequest::Create(
+                inner, principal, aFrameOnly,
+                [holder = std::move(holder)](
+                    const StorageAccessPermissionRequest::Response&
+                        aResponse) mutable {
+                  if (aResponse ==
+                      StorageAccessPermissionRequest::Response::Allow) {
+                    // Allow
                     glean::dom::storage_access_api_ui
                         .EnumGet(glean::dom::StorageAccessApiUiLabel::eAllow)
                         .Add();
-                    p->Resolve(StorageAccessAPIHelper::eAllow, __func__);
-                  },
+                    holder.Resolve(StorageAccessAPIHelper::eAllow, __func__);
+                    return;
+                  }
+                  MOZ_ASSERT(aResponse ==
+                             StorageAccessPermissionRequest::Response::Cancel);
                   // Block
-                  [p] {
-                    glean::dom::storage_access_api_ui
-                        .EnumGet(glean::dom::StorageAccessApiUiLabel::eDeny)
-                        .Add();
-                    p->Reject(false, __func__);
-                  });
+                  glean::dom::storage_access_api_ui
+                      .EnumGet(glean::dom::StorageAccessApiUiLabel::eDeny)
+                      .Add();
+                  holder.Reject(false, __func__);
+                });
+          }
 
           using PromptResult = ContentPermissionRequestBase::PromptResult;
           PromptResult pr = sapr->CheckPromptPrefs();
@@ -20310,27 +20318,25 @@ Document::CreatePermissionGrantPromise(nsPIDOMWindowInner* aInnerWindow,
 
           // Try to auto-grant the storage access so the user doesn't see the
           // prompt.
-          self->AutomaticStorageAccessPermissionCanBeGranted(
+          return self
+              ->AutomaticStorageAccessPermissionCanBeGranted(
                   aHasUserInteraction, isThirdPartyTracker)
               ->Then(
                   GetCurrentSerialEventTarget(), __func__,
                   // If the autogrant check didn't fail, call this function
-                  [p, pr, sapr,
-                   inner](const Document::
-                              AutomaticStorageAccessPermissionGrantPromise::
-                                  ResolveOrRejectValue& aValue) -> void {
-                    // Make a copy because we can't modified copy-captured
-                    // lambda variables.
-                    PromptResult pr2 = pr;
-
+                  [pr, sapr, inner, promptPromise](
+                      const Document::
+                          AutomaticStorageAccessPermissionGrantPromise::
+                              ResolveOrRejectValue& aValue) mutable
+                      -> RefPtr<GrantPromise> {
                     // If the user didn't already click "allow" and we can
                     // autogrant, do that!
                     bool storageAccessCanBeGrantedAutomatically =
                         aValue.IsResolve() && aValue.ResolveValue();
                     bool autoGrant = false;
-                    if (pr2 == PromptResult::Pending &&
+                    if (pr == PromptResult::Pending &&
                         storageAccessCanBeGrantedAutomatically) {
-                      pr2 = PromptResult::Granted;
+                      pr = PromptResult::Granted;
                       autoGrant = true;
 
                       glean::dom::storage_access_api_ui
@@ -20340,31 +20346,33 @@ Document::CreatePermissionGrantPromise(nsPIDOMWindowInner* aInnerWindow,
                     }
 
                     // If we can complete the permission request, do so.
-                    if (pr2 != PromptResult::Pending) {
-                      MOZ_ASSERT_IF(pr2 != PromptResult::Granted,
-                                    pr2 == PromptResult::Denied);
-                      if (pr2 == PromptResult::Granted) {
+                    if (pr != PromptResult::Pending) {
+                      MOZ_ASSERT_IF(pr != PromptResult::Granted,
+                                    pr == PromptResult::Denied);
+                      if (pr == PromptResult::Granted) {
                         StorageAccessAPIHelper::StorageAccessPromptChoices
                             choice = StorageAccessAPIHelper::eAllow;
                         if (autoGrant) {
                           choice = StorageAccessAPIHelper::eAllowAutoGrant;
                         }
                         if (!autoGrant) {
-                          p->Resolve(choice, __func__);
-                        } else {
+                          return GrantPromise::CreateAndResolve(choice,
+                                                                __func__);
                           // We capture sapr here to prevent it from destructing
                           // before the callbacks complete.
-                          sapr->MaybeDelayAutomaticGrants()->Then(
-                              GetCurrentSerialEventTarget(), __func__,
-                              [p, sapr, choice] {
-                                p->Resolve(choice, __func__);
-                              },
-                              [p, sapr] { p->Reject(false, __func__); });
                         }
-                        return;
+                        return sapr->MaybeDelayAutomaticGrants()->Then(
+                            GetCurrentSerialEventTarget(), __func__,
+                            [sapr, choice] {
+                              return GrantPromise::CreateAndResolve(choice,
+                                                                    __func__);
+                            },
+                            [sapr] {
+                              return GrantPromise::CreateAndReject(false,
+                                                                   __func__);
+                            });
                       }
-                      p->Reject(false, __func__);
-                      return;
+                      return GrantPromise::CreateAndReject(false, __func__);
                     }
 
                     // If we get here, the auto-decision failed and we need to
@@ -20372,14 +20380,12 @@ Document::CreatePermissionGrantPromise(nsPIDOMWindowInner* aInnerWindow,
                     sapr->RequestDelayedTask(
                         GetMainThreadSerialEventTarget(),
                         ContentPermissionRequestBase::DelayedTaskType::Request);
+                    return promptPromise;
                   });
         },
-        [p](mozilla::ipc::ResponseRejectReason aError) {
-          p->Reject(false, __func__);
-          return p;
+        [](mozilla::ipc::ResponseRejectReason aError) {
+          return GrantPromise::CreateAndReject(false, __func__);
         });
-
-    return p;
   };
 }
 

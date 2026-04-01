@@ -19,12 +19,11 @@ NS_IMPL_ISUPPORTS_CYCLE_COLLECTION_INHERITED_0(StorageAccessPermissionRequest,
 
 StorageAccessPermissionRequest::StorageAccessPermissionRequest(
     nsPIDOMWindowInner* aWindow, nsIPrincipal* aNodePrincipal, bool aFrameOnly,
-    AllowCallback&& aAllowCallback, CancelCallback&& aCancelCallback)
+    Callback&& aCallback)
     : ContentPermissionRequestBase(aNodePrincipal, aWindow,
                                    "dom.storage_access"_ns,
                                    "storage-access"_ns),
-      mAllowCallback(std::move(aAllowCallback)),
-      mCancelCallback(std::move(aCancelCallback)),
+      mCallback(std::move(aCallback)),
       mCallbackCalled(false) {
   mOptions.SetLength(2);
   // Location 0 is no longer sent
@@ -38,7 +37,7 @@ NS_IMETHODIMP
 StorageAccessPermissionRequest::Cancel() {
   if (!mCallbackCalled) {
     mCallbackCalled = true;
-    mCancelCallback();
+    mCallback(Response::Cancel);
   }
   return NS_OK;
 }
@@ -57,7 +56,7 @@ StorageAccessPermissionRequest::Allow(JS::Handle<JS::Value> aChoices) {
   if (!mCallbackCalled) {
     mCallbackCalled = true;
     if (choices.Length() == 1 && choices[0].choice().EqualsLiteral("allow")) {
-      mAllowCallback();
+      mCallback(Response::Allow);
     }
   }
   return NS_OK;
@@ -71,65 +70,61 @@ StorageAccessPermissionRequest::GetTypes(nsIArray** aTypes) {
 
 RefPtr<StorageAccessPermissionRequest::AutoGrantDelayPromise>
 StorageAccessPermissionRequest::MaybeDelayAutomaticGrants() {
-  RefPtr<AutoGrantDelayPromise::Private> p =
-      new AutoGrantDelayPromise::Private(__func__);
+  MozPromiseHolder<AutoGrantDelayPromise> holder;
+  RefPtr<AutoGrantDelayPromise> p = holder.Ensure(__func__);
 
   unsigned simulatedDelay = CalculateSimulatedDelay();
   if (simulatedDelay) {
+    // Rejects the promise if the timer callback is destroyed without firing,
+    // e.g. when the timer could not be created or is cancelled at shutdown.
+    struct DelayHolder {
+      explicit DelayHolder(MozPromiseHolder<AutoGrantDelayPromise>&& aHolder)
+          : mHolder(std::move(aHolder)) {}
+      DelayHolder(DelayHolder&&) = default;
+      ~DelayHolder() { mHolder.RejectIfExists(false, __func__); }
+      MozPromiseHolder<AutoGrantDelayPromise> mHolder;
+    };
     nsCOMPtr<nsITimer> timer;
-    RefPtr<AutoGrantDelayPromise::Private> promise = p;
-    nsresult rv = NS_NewTimerWithFuncCallback(
+    nsresult rv = NS_NewTimerWithCallback(
         getter_AddRefs(timer),
-        [](nsITimer* aTimer, void* aClosure) -> void {
-          auto* promise =
-              static_cast<AutoGrantDelayPromise::Private*>(aClosure);
-          promise->Resolve(true, __func__);
+        [delay = DelayHolder(std::move(holder))](nsITimer* aTimer) mutable {
+          delay.mHolder.Resolve(true, __func__);
           NS_RELEASE(aTimer);
-          NS_RELEASE(promise);
         },
-        promise, simulatedDelay, nsITimer::TYPE_ONE_SHOT,
+        simulatedDelay, nsITimer::TYPE_ONE_SHOT,
         "DelayedAllowAutoGrantCallback"_ns);
-    if (NS_WARN_IF(NS_FAILED(rv))) {
-      p->Reject(false, __func__);
-    } else {
-      // Leak the references here! We'll release them inside the callback.
+    if (!NS_WARN_IF(NS_FAILED(rv))) {
+      // Leak the timer reference; it will be released inside the callback.
       timer.forget().leak();
-      promise.forget().leak();
     }
   } else {
-    p->Resolve(false, __func__);
+    holder.Resolve(false, __func__);
   }
   return p;
 }
 
 already_AddRefed<StorageAccessPermissionRequest>
 StorageAccessPermissionRequest::Create(nsPIDOMWindowInner* aWindow,
-                                       AllowCallback&& aAllowCallback,
-                                       CancelCallback&& aCancelCallback) {
+                                       Callback&& aCallback) {
   if (!aWindow) {
     return nullptr;
   }
   nsGlobalWindowInner* win = nsGlobalWindowInner::Cast(aWindow);
 
-  return Create(aWindow, win->GetPrincipal(), std::move(aAllowCallback),
-                std::move(aCancelCallback));
+  return Create(aWindow, win->GetPrincipal(), std::move(aCallback));
 }
 
 already_AddRefed<StorageAccessPermissionRequest>
 StorageAccessPermissionRequest::Create(nsPIDOMWindowInner* aWindow,
                                        nsIPrincipal* aPrincipal,
-                                       AllowCallback&& aAllowCallback,
-                                       CancelCallback&& aCancelCallback) {
-  return Create(aWindow, aPrincipal, true, std::move(aAllowCallback),
-                std::move(aCancelCallback));
+                                       Callback&& aCallback) {
+  return Create(aWindow, aPrincipal, true, std::move(aCallback));
 }
 
 already_AddRefed<StorageAccessPermissionRequest>
 StorageAccessPermissionRequest::Create(nsPIDOMWindowInner* aWindow,
                                        nsIPrincipal* aPrincipal,
-                                       bool aFrameOnly,
-                                       AllowCallback&& aAllowCallback,
-                                       CancelCallback&& aCancelCallback) {
+                                       bool aFrameOnly, Callback&& aCallback) {
   if (!aWindow) {
     return nullptr;
   }
@@ -140,8 +135,7 @@ StorageAccessPermissionRequest::Create(nsPIDOMWindowInner* aWindow,
 
   RefPtr<StorageAccessPermissionRequest> request =
       new StorageAccessPermissionRequest(aWindow, aPrincipal, aFrameOnly,
-                                         std::move(aAllowCallback),
-                                         std::move(aCancelCallback));
+                                         std::move(aCallback));
   return request.forget();
 }
 

@@ -5,8 +5,7 @@
 #ifndef StorageAccessPermissionRequest_h_
 #define StorageAccessPermissionRequest_h_
 
-#include <functional>
-
+#include "mozilla/MoveOnlyFunction.h"
 #include "mozilla/MozPromise.h"
 #include "nsContentPermissionHelper.h"
 
@@ -24,20 +23,19 @@ class StorageAccessPermissionRequest final
   NS_IMETHOD Allow(JS::Handle<JS::Value> choices) override;
   NS_IMETHOD GetTypes(nsIArray** aTypes) override;
 
-  using AllowCallback = std::function<void()>;
-  using CancelCallback = std::function<void()>;
+  enum class Response { Allow, Cancel };
+  using Callback = MoveOnlyFunction<void(Response)>;
 
   static already_AddRefed<StorageAccessPermissionRequest> Create(
-      nsPIDOMWindowInner* aWindow, AllowCallback&& aAllowCallback,
-      CancelCallback&& aCancelCallback);
+      nsPIDOMWindowInner* aWindow, Callback&& aCallback);
 
   static already_AddRefed<StorageAccessPermissionRequest> Create(
       nsPIDOMWindowInner* aWindow, nsIPrincipal* aPrincipal,
-      AllowCallback&& aAllowCallback, CancelCallback&& aCancelCallback);
+      Callback&& aCallback);
 
   static already_AddRefed<StorageAccessPermissionRequest> Create(
       nsPIDOMWindowInner* aWindow, nsIPrincipal* aPrincipal, bool aFrameOnly,
-      AllowCallback&& aAllowCallback, CancelCallback&& aCancelCallback);
+      Callback&& aCallback);
 
   using AutoGrantDelayPromise = MozPromise<bool, bool, true>;
   RefPtr<AutoGrantDelayPromise> MaybeDelayAutomaticGrants();
@@ -45,8 +43,7 @@ class StorageAccessPermissionRequest final
  private:
   StorageAccessPermissionRequest(nsPIDOMWindowInner* aWindow,
                                  nsIPrincipal* aNodePrincipal, bool aFrameOnly,
-                                 AllowCallback&& aAllowCallback,
-                                 CancelCallback&& aCancelCallback);
+                                 Callback&& aCallback);
   ~StorageAccessPermissionRequest() {
     // Invoke Cancel() to ensure we call a callback even if the request has
     // been destroyed before the request is completed.
@@ -55,8 +52,7 @@ class StorageAccessPermissionRequest final
 
   unsigned CalculateSimulatedDelay();
 
-  AllowCallback mAllowCallback;
-  CancelCallback mCancelCallback;
+  Callback mCallback;
   nsTArray<nsString> mOptions;
   nsTArray<PermissionRequest> mPermissionRequests;
   bool mCallbackCalled;
