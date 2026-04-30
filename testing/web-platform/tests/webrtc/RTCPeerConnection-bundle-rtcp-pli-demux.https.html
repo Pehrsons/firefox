@@ -1,0 +1,157 @@
+<!doctype html>
+<head>
+<meta charset=utf-8>
+<meta name="timeout" content="long">
+<title>RTCP PLI from recvonly m-section is demuxed to matching sendonly m-section in BUNDLE</title>
+<script src=/resources/testharness.js></script>
+<script src=/resources/testharnessreport.js></script>
+<script src="RTCPeerConnection-helper.js"></script>
+</head>
+<body>
+<script>
+'use strict';
+
+// Regression test for BUNDLE RTCP demux with a recvonly m-section.
+//
+// When a side negotiates recvonly+sendrecv video m-sections, the RTCP sender
+// SSRC used for feedback (e.g. PLI) on the recvonly m-section must be unique
+// within the BUNDLE group per RFC 8843 s9.2 so the remote end can demux it
+// to the correct sendonly m-section.
+//
+// To capture the on-wire SSRC behavior, run this test under tcpdump/Wireshark
+// and inspect the PLI packets: the sender SSRC must differ between the
+// recvonly and sendrecv m-sections.
+
+// Worker that drops incoming keyframes, preventing the decoder from
+// reconstructing the video and causing it to emit continuous PLI requests.
+const dropKeyframesScript = `
+  onrtctransform = ({transformer}) => {
+    const reader = transformer.readable.getReader();
+    const writer = transformer.writable.getWriter();
+    (async () => {
+      try {
+        for (;;) {
+          const {done, value: frame} = await reader.read();
+          if (done) return;
+          if (frame.type !== 'key') {
+            await writer.write(frame);
+          }
+        }
+      } catch (e) {}
+    })();
+  };
+`;
+
+promise_test(async t => {
+  // pc2 is the recvonly+sendrecv side; pc1 is the sendonly+sendrecv side.
+  const pc1 = new RTCPeerConnection();
+  t.add_cleanup(() => pc1.close());
+  const pc2 = new RTCPeerConnection();
+  t.add_cleanup(() => pc2.close());
+
+  // getUserMedia uses the WPT fake video device (media.navigator.streams.fake=true).
+  const stream = await navigator.mediaDevices.getUserMedia({video: true, audio: false});
+  const [videoTrack] = stream.getVideoTracks();
+  t.add_cleanup(() => videoTrack.stop());
+  const videoTrack2 = videoTrack.clone();
+  t.add_cleanup(() => videoTrack2.stop());
+
+  const workerBlob = new Blob([dropKeyframesScript], {type: 'application/javascript'});
+  const workerUrl = URL.createObjectURL(workerBlob);
+  const dropKeyframesWorker = new Worker(workerUrl);
+  t.add_cleanup(() => { dropKeyframesWorker.terminate(); URL.revokeObjectURL(workerUrl); });
+
+  const codecs = RTCRtpSender.getCapabilities('video').codecs.filter(
+    ({mimeType}) => !['video/rtx', 'video/red', 'video/ulpfec', 'video/flexfec-03']
+      .includes(mimeType.toLowerCase())
+  );
+
+  // pc2 negotiates: recvonly (first) + sendrecv (second) video m-sections.
+  const recvTransceiver = pc2.addTransceiver('video', {direction: 'recvonly'});
+  const sendrecvTransceiver = pc2.addTransceiver(videoTrack2, {direction: 'sendrecv'});
+  recvTransceiver.setCodecPreferences(codecs);
+  sendrecvTransceiver.setCodecPreferences(codecs);
+
+  // Drop keyframes on pc2's recvonly receiver to force continuous PLI requests.
+  recvTransceiver.receiver.transform = new RTCRtpScriptTransform(dropKeyframesWorker);
+
+  exchangeIceCandidates(pc1, pc2);
+
+  // pc2 creates the offer; pc1 auto-creates transceivers to match.
+  // Firefox sets the auto-created transceiver direction to match the remote's,
+  // so we override it to 'sendonly' to match pc2's recvonly m-section.
+  const offer = await pc2.createOffer();
+  await pc2.setLocalDescription(offer);
+  await pc1.setRemoteDescription(pc2.localDescription);
+
+  const [pc1SendonlyTransceiver, pc1SendrecvTransceiver] = pc1.getTransceivers();
+  pc1SendonlyTransceiver.direction = 'sendonly';
+  pc1SendonlyTransceiver.setCodecPreferences(codecs);
+  pc1SendrecvTransceiver.setCodecPreferences(codecs);
+  await pc1SendonlyTransceiver.sender.replaceTrack(videoTrack);
+
+  const answer = await pc1.createAnswer();
+  await pc1.setLocalDescription(answer);
+  await pc2.setRemoteDescription(pc1.localDescription);
+
+  await listenToConnected(pc1);
+
+  // Poll pc1's sendonly sender stats until a PLI is received. The recvonly
+  // receiver on pc2 drops keyframes so its decoder continuously requests new
+  // ones via PLI. This verifies the PLI is correctly demuxed to pc1's sendonly
+  // m-section rather than dropped or misrouted to the sendrecv one.
+  await new Promise((resolve, reject) => {
+    const deadline = t.step_timeout(
+      () => reject(new Error('PLI was not received on pc1 sendonly sender')),
+      15000
+    );
+    const poll = () => {
+      pc1SendonlyTransceiver.sender.getStats().then(stats => {
+        for (const stat of stats.values()) {
+          if (stat.type === 'outbound-rtp' && (stat.pliCount ?? 0) > 0) {
+            clearTimeout(deadline);
+            resolve();
+            return;
+          }
+        }
+        t.step_timeout(poll, 250);
+      }).catch(e => { clearTimeout(deadline); reject(e); });
+    };
+    t.step_timeout(poll, 500);
+  });
+
+  // Verify that pc2's recvonly receiver was the source of the PLIs.
+  const recvStats = await recvTransceiver.receiver.getStats();
+  let recvPliCount = 0;
+  for (const stat of recvStats.values()) {
+    if (stat.type === 'inbound-rtp') {
+      recvPliCount = stat.pliCount ?? 0;
+    }
+  }
+  assert_greater_than(recvPliCount, 0,
+    'pc2 recvonly receiver should have sent PLIs');
+
+  const sendonlyStats = await pc1SendonlyTransceiver.sender.getStats();
+  let sendonlyPliCount = 0;
+  for (const stat of sendonlyStats.values()) {
+    if (stat.type === 'outbound-rtp') {
+      sendonlyPliCount = stat.pliCount ?? 0;
+    }
+  }
+  assert_greater_than(sendonlyPliCount, 0,
+    'PLI for recvonly m-section must be demuxed to the sendonly sender');
+
+  // Sanity check: PLIs for the recvonly m-section must not be misrouted to
+  // the sendrecv sender.
+  const sendrecvStats = await pc1SendrecvTransceiver.sender.getStats();
+  let sendrecvPliCount = 0;
+  for (const stat of sendrecvStats.values()) {
+    if (stat.type === 'outbound-rtp') {
+      sendrecvPliCount = stat.pliCount ?? 0;
+    }
+  }
+  assert_equals(sendrecvPliCount, 0,
+    'PLI for recvonly m-section must not be demuxed to the sendrecv sender');
+}, 'RTCP PLI from recvonly m-section is demuxed to matching sendonly m-section in BUNDLE');
+</script>
+</body>
