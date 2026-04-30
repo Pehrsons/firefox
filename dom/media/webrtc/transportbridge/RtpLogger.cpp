@@ -48,11 +48,11 @@ void RtpLogger::LogPacket(const MediaPacket& packet, bool input,
 #ifdef _WIN32
     struct timeb tb;
     ftime(&tb);
-    ss << "." << (tb.millitm) << " ";
+    ss << "." << std::setw(3) << (tb.millitm) << " ";
 #else
     struct timeval tv;
     gettimeofday(&tv, NULL);
-    ss << "." << (tv.tv_usec) << " ";
+    ss << "." << std::setw(6) << (tv.tv_usec) << " ";
 #endif
     ss << " 000000";
     ss << std::hex << std::setfill('0');
