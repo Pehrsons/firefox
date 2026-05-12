@@ -82,15 +82,15 @@ CacheOpChild::CacheOpChild(SafeRefPtr<CacheWorkerRef> aWorkerRef,
 
 CacheOpChild::CacheOpChild(SafeRefPtr<CacheWorkerRef> aWorkerRef,
                            nsIGlobalObject* aGlobal, nsISupports* aParent,
-                           RefPtr<CacheStoragePromise>& aPromise,
+                           std::unique_ptr<CacheStoragePromise> aPromise,
                            ActorChild* aParentActor)
     : mGlobal(aGlobal),
       mParent(aParent),
-      mPromise(aPromise),
+      mPromise(std::move(aPromise)),
       mParentActor(aParentActor) {
   MOZ_DIAGNOSTIC_ASSERT(mGlobal);
   MOZ_DIAGNOSTIC_ASSERT(mParent);
-  MOZ_DIAGNOSTIC_ASSERT(aPromise);
+  MOZ_DIAGNOSTIC_ASSERT(mPromise->as<std::unique_ptr<CacheStoragePromise>>());
 
   MOZ_ASSERT_IF(!NS_IsMainThread(), aWorkerRef);
 
@@ -121,16 +121,15 @@ using StorageOpenResultType = std::pair<CacheChild*, Namespace>;
 template <CacheOpResult::Type OP_TYPE, typename ResultType>
 void CacheOpChild::SettlePromise(
     ResultType&& aRes, ErrorResult&& aRv,
-    const RefPtr<CacheStoragePromise>& aThePromise) {
+    const std::unique_ptr<CacheStoragePromise>& aThePromise) {
   // picks the correct promise type using traits defined in BoundStorageKey.h
   // and BoundStorageKeyCache.h
-  using TargetPromiseType =
-      typename dom::cachestorage_traits<OP_TYPE>::PromiseType;
-  auto* target = static_cast<TargetPromiseType*>(aThePromise.get());
+  using TargetType = typename dom::cachestorage_traits<OP_TYPE>::PromiseType;
+  auto* target = static_cast<TargetType*>(aThePromise.get());
   auto&& res = std::forward<ResultType>(aRes);
 
   if (aRv.Failed()) {
-    target->Reject(std::move(aRv), __func__);
+    target->mHolder.Reject(std::move(aRv), __func__);
     return;
   }
 
@@ -140,16 +139,15 @@ void CacheOpChild::SettlePromise(
     // into their raw types here. Since this is internal private method and
     // based on it's usage yet; just expecting Undefined or null values here.
     MOZ_ASSERT(res.isNullOrUndefined());
-    target->Resolve(nullptr /*implicitly converts to false for boolean types */,
-                    __func__);
+    target->mHolder.Resolve(typename TargetType::ResolveValueType{}, __func__);
   } else if constexpr (std::is_same_v<ValueType, StorageOpenResultType>) {
     // result would be of type CacheChild here and we need to properly wrap into
     // holder class BoundStorageKeyCache before resolving promise
     auto [cacheChild, ns] = res;
     auto* cache = new BoundStorageKeyCache(mGlobal, cacheChild, ns);
-    target->Resolve(RefPtr(cache), __func__);
+    target->mHolder.Resolve(RefPtr(cache), __func__);
   } else {
-    target->Resolve(std::forward<ResultType>(aRes), __func__);
+    target->mHolder.Resolve(std::forward<ResultType>(aRes), __func__);
   }
 }
 
@@ -182,8 +180,9 @@ void CacheOpChild::Settle(ResultType&& aRes, ErrorResult&& aRv) {
 
     SettlePromise<OP_TYPE>(std::forward<ResultType>(aRes), std::move(aRv),
                            targetPromise);
-  } else if (mPromise->is<RefPtr<CacheStoragePromise>>()) {
-    auto targetPromise = mPromise->as<RefPtr<CacheStoragePromise>>();
+  } else if (mPromise->is<std::unique_ptr<CacheStoragePromise>>()) {
+    const auto& targetPromise =
+        mPromise->as<std::unique_ptr<CacheStoragePromise>>();
     MOZ_ASSERT(targetPromise);
 
     SettlePromise<OP_TYPE>(std::forward<ResultType>(aRes), std::move(aRv),

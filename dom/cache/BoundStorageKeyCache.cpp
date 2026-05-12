@@ -45,7 +45,7 @@ auto BoundStorageKeyCache::Match(JSContext* aCx,
                                  const RequestOrUTF8String& aRequest,
                                  const CacheQueryOptions& aOptions,
                                  ErrorResult& aRv)
-    -> already_AddRefed<CachePromise> {
+    -> already_AddRefed<MatchResultPromise> {
   if (NS_WARN_IF(!mActor)) {
     aRv.Throw(NS_ERROR_UNEXPECTED);
     return nullptr;
@@ -70,15 +70,17 @@ auto BoundStorageKeyCache::Match(JSContext* aCx,
     return nullptr;
   }
 
-  RefPtr<CachePromise> promise = new MatchResultPromise::Private(__func__);
-  ExecuteOp(args, promise, aRv);
-  return promise.forget();
+  auto settler =
+      std::make_unique<CachePromiseHolderSettler<MatchResultPromise>>();
+  RefPtr<MatchResultPromise> result = settler->Init(__func__);
+  ExecuteOp(args, std::move(settler), aRv);
+  return result.forget();
 }
 
 auto BoundStorageKeyCache::MatchAll(
     JSContext* aCx, const Optional<RequestOrUTF8String>& aRequest,
     const CacheQueryOptions& aOptions, ErrorResult& aRv)
-    -> already_AddRefed<CachePromise> {
+    -> already_AddRefed<MatchAllResultPromise> {
   if (NS_WARN_IF(!mActor)) {
     aRv.Throw(NS_ERROR_UNEXPECTED);
     return nullptr;
@@ -105,16 +107,17 @@ auto BoundStorageKeyCache::MatchAll(
     }
   }
 
-  RefPtr<CachePromise> promise{new MatchAllResultPromise::Private(__func__)};
-  ExecuteOp(args, promise, aRv);
-
-  return promise.forget();
+  auto settler =
+      std::make_unique<CachePromiseHolderSettler<MatchAllResultPromise>>();
+  RefPtr<MatchAllResultPromise> result = settler->Init(__func__);
+  ExecuteOp(args, std::move(settler), aRv);
+  return result.forget();
 }
 
 auto BoundStorageKeyCache::Add(JSContext* aContext,
                                const RequestOrUTF8String& aRequest,
                                CallerType aCallerType, ErrorResult& aRv)
-    -> already_AddRefed<CachePromise> {
+    -> already_AddRefed<AddResultPromise> {
   if (NS_WARN_IF(!mActor)) {
     aRv.Throw(NS_ERROR_UNEXPECTED);
     return nullptr;
@@ -150,7 +153,7 @@ auto BoundStorageKeyCache::AddAll(
     JSContext* aContext,
     const Sequence<OwningRequestOrUTF8String>& aRequestList,
     CallerType aCallerType, ErrorResult& aRv)
-    -> already_AddRefed<CachePromise> {
+    -> already_AddRefed<AddAllResultPromise> {
   if (NS_WARN_IF(!mActor)) {
     aRv.Throw(NS_ERROR_UNEXPECTED);
     return nullptr;
@@ -196,7 +199,7 @@ auto BoundStorageKeyCache::AddAll(
 auto BoundStorageKeyCache::Put(JSContext* aCx,
                                const RequestOrUTF8String& aRequest,
                                Response& aResponse, ErrorResult& aRv)
-    -> already_AddRefed<CachePromise> {
+    -> already_AddRefed<PutResultPromise> {
   if (NS_WARN_IF(!mActor)) {
     aRv.Throw(NS_ERROR_UNEXPECTED);
     return nullptr;
@@ -236,17 +239,18 @@ auto BoundStorageKeyCache::Put(JSContext* aCx,
     return nullptr;
   }
 
-  RefPtr<CachePromise> promise{new PutResultPromise::Private(__func__)};
-  ExecuteOp(args, promise, aRv);
-
-  return promise.forget();
+  auto settler =
+      std::make_unique<CachePromiseHolderSettler<PutResultPromise>>();
+  RefPtr<PutResultPromise> result = settler->Init(__func__);
+  ExecuteOp(args, std::move(settler), aRv);
+  return result.forget();
 }
 
 auto BoundStorageKeyCache::Delete(JSContext* aCx,
                                   const RequestOrUTF8String& aRequest,
                                   const CacheQueryOptions& aOptions,
                                   ErrorResult& aRv)
-    -> already_AddRefed<CachePromise> {
+    -> already_AddRefed<DeleteResultPromise> {
   if (NS_WARN_IF(!mActor)) {
     aRv.Throw(NS_ERROR_UNEXPECTED);
     return nullptr;
@@ -270,17 +274,18 @@ auto BoundStorageKeyCache::Delete(JSContext* aCx,
     return nullptr;
   }
 
-  RefPtr<CachePromise> promise{new DeleteResultPromise::Private(__func__)};
-  ExecuteOp(args, promise, aRv);
-
-  return promise.forget();
+  auto settler =
+      std::make_unique<CachePromiseHolderSettler<DeleteResultPromise>>();
+  RefPtr<DeleteResultPromise> result = settler->Init(__func__);
+  ExecuteOp(args, std::move(settler), aRv);
+  return result.forget();
 }
 
 auto BoundStorageKeyCache::Keys(JSContext* aCx,
                                 const Optional<RequestOrUTF8String>& aRequest,
                                 const CacheQueryOptions& aOptions,
                                 ErrorResult& aRv)
-    -> already_AddRefed<CachePromise> {
+    -> already_AddRefed<KeysResultPromise> {
   if (NS_WARN_IF(!mActor)) {
     aRv.Throw(NS_ERROR_UNEXPECTED);
     return nullptr;
@@ -307,10 +312,11 @@ auto BoundStorageKeyCache::Keys(JSContext* aCx,
     }
   }
 
-  RefPtr<CachePromise> promise{new KeysResultPromise::Private(__func__)};
-  ExecuteOp(args, promise, aRv);
-
-  return promise.forget();
+  auto settler =
+      std::make_unique<CachePromiseHolderSettler<KeysResultPromise>>();
+  RefPtr<KeysResultPromise> result = settler->Init(__func__);
+  ExecuteOp(args, std::move(settler), aRv);
+  return result.forget();
 }
 
 void BoundStorageKeyCache::OnActorDestroy(CacheChild* aActor) {
@@ -342,28 +348,28 @@ BoundStorageKeyCache::~BoundStorageKeyCache() {
 }
 
 void BoundStorageKeyCache::ExecuteOp(AutoChildOpArgs& aOpArgs,
-                                     RefPtr<CachePromise>& aPromise,
+                                     std::unique_ptr<CachePromise> aPromise,
                                      ErrorResult& aRv) {
   MOZ_DIAGNOSTIC_ASSERT(mActor);
-  mActor->ExecuteOp(mGlobal, aPromise, this, aOpArgs.SendAsOpArgs());
+  mActor->ExecuteOp(mGlobal, std::move(aPromise), this, aOpArgs.SendAsOpArgs());
 }
 
 auto BoundStorageKeyCache::AddAll(const GlobalObject& aGlobal,
                                   nsTArray<SafeRefPtr<Request>>&& aRequestList,
                                   CallerType aCallerType, ErrorResult& aRv)
-    -> already_AddRefed<CachePromise> {
+    -> already_AddRefed<AddAllResultPromise> {
   MOZ_DIAGNOSTIC_ASSERT(mActor);
 
   // Fetch doesn't work on non-main threads yet.
-  RefPtr<CachePromise> promise = AddAllResultPromise::CreateAndReject(
-      ErrorResult(NS_ERROR_FAILURE), __func__);
-  return promise.forget();
+  return AddAllResultPromise::CreateAndReject(ErrorResult(NS_ERROR_FAILURE),
+                                              __func__)
+      .forget();
 }
 
 auto BoundStorageKeyCache::PutAll(
     JSContext* aCx, const nsTArray<SafeRefPtr<Request>>& aRequestList,
     const nsTArray<RefPtr<Response>>& aResponseList, ErrorResult& aRv)
-    -> already_AddRefed<CachePromise> {
+    -> already_AddRefed<PutResultPromise> {
   MOZ_DIAGNOSTIC_ASSERT(aRequestList.Length() == aResponseList.Length());
 
   if (NS_WARN_IF(!mActor)) {
@@ -384,10 +390,11 @@ auto BoundStorageKeyCache::PutAll(
     }
   }
 
-  RefPtr<CachePromise> promise{new PutResultPromise::Private(__func__)};
-  ExecuteOp(args, promise, aRv);
-
-  return promise.forget();
+  auto settler =
+      std::make_unique<CachePromiseHolderSettler<PutResultPromise>>();
+  RefPtr<PutResultPromise> result = settler->Init(__func__);
+  ExecuteOp(args, std::move(settler), aRv);
+  return result.forget();
 }
 
 OpenMode BoundStorageKeyCache::GetOpenMode() const {

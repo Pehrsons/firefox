@@ -40,11 +40,11 @@ class CacheStorageChild final : public PCacheStorageChild,
   void ClearListener();
 
   template <typename PromiseType>
-  void ExecuteOp(nsIGlobalObject* aGlobal, PromiseType& aPromise,
+  void ExecuteOp(nsIGlobalObject* aGlobal, PromiseType&& aPromise,
                  nsISupports* aParent, const CacheOpArgs& aArgs) {
     (void)SendPCacheOpConstructor(
         new CacheOpChild(GetWorkerRefPtr().clonePtr(), aGlobal, aParent,
-                         aPromise, this),
+                         std::forward<PromiseType>(aPromise), this),
         aArgs);
   }
 

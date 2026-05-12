@@ -5,6 +5,7 @@
 #ifndef mozilla_dom_cache_BoundStorageKeyCache_h
 #define mozilla_dom_cache_BoundStorageKeyCache_h
 
+#include "mozilla/dom/cache/BoundStorageKey.h"
 #include "mozilla/dom/cache/CacheTypes.h"
 #include "mozilla/dom/cache/TypeUtils.h"
 #include "mozilla/dom/cache/Types.h"
@@ -33,7 +34,7 @@ namespace cache {
 class AutoChildOpArgs;
 class CacheChild;
 
-using CachePromise = MozPromiseBase;
+using CachePromise = CachePromiseSettler;
 
 /* This is similar to Cache class as BoundStorageKeyCacheStorage is to
  * CacheStorage i.e.
@@ -73,34 +74,33 @@ class BoundStorageKeyCache final : public nsISupports,
 
   static bool CachesEnabled(JSContext* aCx, JSObject*);
 
-  already_AddRefed<CachePromise> Match(JSContext* aCx,
-                                       const RequestOrUTF8String& aRequest,
-                                       const CacheQueryOptions& aOptions,
-                                       ErrorResult& aRv);
+  already_AddRefed<MatchResultPromise> Match(
+      JSContext* aCx, const RequestOrUTF8String& aRequest,
+      const CacheQueryOptions& aOptions, ErrorResult& aRv);
 
-  already_AddRefed<CachePromise> MatchAll(
+  already_AddRefed<MatchAllResultPromise> MatchAll(
       JSContext* aCx, const Optional<RequestOrUTF8String>& aRequest,
       const CacheQueryOptions& aOptions, ErrorResult& aRv);
 
-  already_AddRefed<CachePromise> Add(JSContext* aContext,
-                                     const RequestOrUTF8String& aRequest,
-                                     CallerType aCallerType, ErrorResult& aRv);
+  already_AddRefed<AddResultPromise> Add(JSContext* aContext,
+                                         const RequestOrUTF8String& aRequest,
+                                         CallerType aCallerType,
+                                         ErrorResult& aRv);
 
-  already_AddRefed<CachePromise> AddAll(
+  already_AddRefed<AddAllResultPromise> AddAll(
       JSContext* aContext,
       const Sequence<OwningRequestOrUTF8String>& aRequestList,
       CallerType aCallerType, ErrorResult& aRv);
 
-  already_AddRefed<CachePromise> Put(JSContext* aCx,
-                                     const RequestOrUTF8String& aRequest,
-                                     Response& aResponse, ErrorResult& aRv);
+  already_AddRefed<PutResultPromise> Put(JSContext* aCx,
+                                         const RequestOrUTF8String& aRequest,
+                                         Response& aResponse, ErrorResult& aRv);
 
-  already_AddRefed<CachePromise> Delete(JSContext* aCx,
-                                        const RequestOrUTF8String& aRequest,
-                                        const CacheQueryOptions& aOptions,
-                                        ErrorResult& aRv);
+  already_AddRefed<DeleteResultPromise> Delete(
+      JSContext* aCx, const RequestOrUTF8String& aRequest,
+      const CacheQueryOptions& aOptions, ErrorResult& aRv);
 
-  already_AddRefed<CachePromise> Keys(
+  already_AddRefed<KeysResultPromise> Keys(
       JSContext* aCx, const Optional<RequestOrUTF8String>& aRequest,
       const CacheQueryOptions& aOptions, ErrorResult& aRv);
 
@@ -120,14 +120,14 @@ class BoundStorageKeyCache final : public nsISupports,
   // Called when we're destroyed or CCed.
   void DisconnectFromActor();
 
-  void ExecuteOp(AutoChildOpArgs& aOpArgs, RefPtr<CachePromise>& aPromise,
-                 ErrorResult& aRv);
+  void ExecuteOp(AutoChildOpArgs& aOpArgs,
+                 std::unique_ptr<CachePromise> aPromise, ErrorResult& aRv);
 
-  already_AddRefed<CachePromise> AddAll(
+  already_AddRefed<AddAllResultPromise> AddAll(
       const GlobalObject& aGlobal, nsTArray<SafeRefPtr<Request>>&& aRequestList,
       CallerType aCallerType, ErrorResult& aRv);
 
-  already_AddRefed<CachePromise> PutAll(
+  already_AddRefed<PutResultPromise> PutAll(
       JSContext* aCx, const nsTArray<SafeRefPtr<Request>>& aRequestList,
       const nsTArray<RefPtr<Response>>& aResponseList, ErrorResult& aRv);
 
@@ -145,31 +145,35 @@ struct cachestorage_traits;
 
 template <>
 struct cachestorage_traits<dom::cache::CacheOpResult::Type::TCacheMatchResult> {
-  using PromiseType = cache::BoundStorageKeyCache::MatchResultPromise::Private;
+  using PromiseType = cache::CachePromiseHolderSettler<
+      cache::BoundStorageKeyCache::MatchResultPromise>;
 };
 
 template <>
 struct cachestorage_traits<
     dom::cache::CacheOpResult::Type::TCacheMatchAllResult> {
-  using PromiseType =
-      cache::BoundStorageKeyCache::MatchAllResultPromise::Private;
+  using PromiseType = cache::CachePromiseHolderSettler<
+      cache::BoundStorageKeyCache::MatchAllResultPromise>;
 };
 
 template <>
 struct cachestorage_traits<
     dom::cache::CacheOpResult::Type::TCachePutAllResult> {
-  using PromiseType = cache::BoundStorageKeyCache::PutAllResultPromise::Private;
+  using PromiseType = cache::CachePromiseHolderSettler<
+      cache::BoundStorageKeyCache::PutAllResultPromise>;
 };
 
 template <>
 struct cachestorage_traits<
     dom::cache::CacheOpResult::Type::TCacheDeleteResult> {
-  using PromiseType = cache::BoundStorageKeyCache::DeleteResultPromise::Private;
+  using PromiseType = cache::CachePromiseHolderSettler<
+      cache::BoundStorageKeyCache::DeleteResultPromise>;
 };
 
 template <>
 struct cachestorage_traits<dom::cache::CacheOpResult::Type::TCacheKeysResult> {
-  using PromiseType = cache::BoundStorageKeyCache::KeysResultPromise::Private;
+  using PromiseType = cache::CachePromiseHolderSettler<
+      cache::BoundStorageKeyCache::KeysResultPromise>;
 };
 
 }  // namespace dom

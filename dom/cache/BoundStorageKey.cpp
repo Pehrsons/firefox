@@ -22,7 +22,7 @@ NS_IMPL_ISUPPORTS(BoundStorageKey, nsISupports)
 
 template <typename PromiseType>
 struct BoundStorageKeyCacheStorage::Entry final {
-  RefPtr<PromiseType> mPromise;
+  std::unique_ptr<PromiseType> mPromise;
   CacheOpArgs mArgs;
 };
 
@@ -218,12 +218,12 @@ void BoundStorageKeyCacheStorage::RunRequest(EntryType&& aEntry) {
   MOZ_ASSERT(mCacheStorageChild);
 
   AutoChildOpArgs args(this, aEntry.mArgs, 1);
-  RefPtr<CacheStoragePromise> p{aEntry.mPromise.forget()};
-  mCacheStorageChild->ExecuteOp(mGlobal, p, this, args.SendAsOpArgs());
+  mCacheStorageChild->ExecuteOp(mGlobal, std::move(aEntry.mPromise), this,
+                                args.SendAsOpArgs());
 }
 
 auto BoundStorageKeyCacheStorage::Open(const nsAString& aKey, ErrorResult& aRv)
-    -> already_AddRefed<CacheStoragePromise> {
+    -> already_AddRefed<OpenResultPromise> {
   AssertOwningThread();
 
   if (NS_WARN_IF(NS_FAILED(mStatus))) {
@@ -231,16 +231,16 @@ auto BoundStorageKeyCacheStorage::Open(const nsAString& aKey, ErrorResult& aRv)
     return nullptr;
   }
 
-  RefPtr<OpenResultPromise::Private> promise{
-      new OpenResultPromise::Private(__func__)};
-  RunRequest(Entry<OpenResultPromise::Private>{
-      promise, StorageOpenArgs{nsString(aKey)}});
-
-  return promise.forget();
+  auto settler =
+      std::make_unique<CachePromiseHolderSettler<OpenResultPromise>>();
+  RefPtr<OpenResultPromise> result = settler->Init(__func__);
+  RunRequest(Entry<CachePromiseHolderSettler<OpenResultPromise>>{
+      std::move(settler), StorageOpenArgs{nsString(aKey)}});
+  return result.forget();
 }
 
 auto BoundStorageKeyCacheStorage::Has(const nsAString& aKey, ErrorResult& aRv)
-    -> already_AddRefed<CacheStoragePromise> {
+    -> already_AddRefed<HasResultPromise> {
   AssertOwningThread();
 
   if (NS_WARN_IF(NS_FAILED(mStatus))) {
@@ -248,17 +248,17 @@ auto BoundStorageKeyCacheStorage::Has(const nsAString& aKey, ErrorResult& aRv)
     return nullptr;
   }
 
-  RefPtr<HasResultPromise::Private> promise{
-      new HasResultPromise::Private(__func__)};
-  RunRequest(Entry<HasResultPromise::Private>{promise,
-                                              StorageHasArgs(nsString(aKey))});
-
-  return promise.forget();
+  auto settler =
+      std::make_unique<CachePromiseHolderSettler<HasResultPromise>>();
+  RefPtr<HasResultPromise> result = settler->Init(__func__);
+  RunRequest(Entry<CachePromiseHolderSettler<HasResultPromise>>{
+      std::move(settler), StorageHasArgs(nsString(aKey))});
+  return result.forget();
 }
 
 auto BoundStorageKeyCacheStorage::Delete(const nsAString& aKey,
                                          ErrorResult& aRv)
-    -> already_AddRefed<CacheStoragePromise> {
+    -> already_AddRefed<DeleteResultPromise> {
   AssertOwningThread();
 
   if (NS_WARN_IF(NS_FAILED(mStatus))) {
@@ -266,16 +266,16 @@ auto BoundStorageKeyCacheStorage::Delete(const nsAString& aKey,
     return nullptr;
   }
 
-  RefPtr<DeleteResultPromise::Private> promise{
-      new DeleteResultPromise::Private(__func__)};
-  RunRequest(Entry<DeleteResultPromise::Private>{
-      promise, StorageDeleteArgs{nsString(aKey)}});
-
-  return promise.forget();
+  auto settler =
+      std::make_unique<CachePromiseHolderSettler<DeleteResultPromise>>();
+  RefPtr<DeleteResultPromise> result = settler->Init(__func__);
+  RunRequest(Entry<CachePromiseHolderSettler<DeleteResultPromise>>{
+      std::move(settler), StorageDeleteArgs{nsString(aKey)}});
+  return result.forget();
 }
 
 auto BoundStorageKeyCacheStorage::Keys(ErrorResult& aRv)
-    -> already_AddRefed<CacheStoragePromise> {
+    -> already_AddRefed<KeysResultPromise> {
   AssertOwningThread();
 
   if (NS_WARN_IF(NS_FAILED(mStatus))) {
@@ -283,11 +283,12 @@ auto BoundStorageKeyCacheStorage::Keys(ErrorResult& aRv)
     return nullptr;
   }
 
-  RefPtr<KeysResultPromise::Private> promise{
-      new KeysResultPromise::Private(__func__)};
-  RunRequest(Entry<KeysResultPromise::Private>{promise, StorageKeysArgs()});
-
-  return promise.forget();
+  auto settler =
+      std::make_unique<CachePromiseHolderSettler<KeysResultPromise>>();
+  RefPtr<KeysResultPromise> result = settler->Init(__func__);
+  RunRequest(Entry<CachePromiseHolderSettler<KeysResultPromise>>{
+      std::move(settler), StorageKeysArgs()});
+  return result.forget();
 }
 
 }  // namespace mozilla::dom::cache

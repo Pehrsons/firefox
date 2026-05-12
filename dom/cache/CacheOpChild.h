@@ -33,8 +33,8 @@ class CacheOpChild final : public PCacheOpChild,
   // It can handle two promise types; where Cache works with dom::Promise,
   // BoundStorageKey APIs works with MozPromise (represented by
   // CacheStoragePromise below)
-  using PromiseType =
-      Variant<RefPtr<mozilla::dom::Promise>, RefPtr<CacheStoragePromise>>;
+  using PromiseType = Variant<RefPtr<mozilla::dom::Promise>,
+                              std::unique_ptr<CacheStoragePromise>>;
 
   template <typename T>
   struct PromiseTrait;
@@ -48,7 +48,8 @@ class CacheOpChild final : public PCacheOpChild,
   // Below overload is used by BoundStorageKey APIs; passing in
   // CacheStoragePromise
   CacheOpChild(SafeRefPtr<CacheWorkerRef> aWorkerRef, nsIGlobalObject* aGlobal,
-               nsISupports* aParent, RefPtr<CacheStoragePromise>& aPromise,
+               nsISupports* aParent,
+               std::unique_ptr<CacheStoragePromise> aPromise,
                ActorChild* aParentActor);
 
   ~CacheOpChild();
@@ -85,7 +86,7 @@ class CacheOpChild final : public PCacheOpChild,
   // settles promise for BoundStorageKeyCache; which is of type MozPromise
   template <CacheOpResult::Type OP_TYPE, typename ResultType>
   void SettlePromise(ResultType&& aRes, ErrorResult&& aRv,
-                     const RefPtr<CacheStoragePromise>& aThePromise);
+                     const std::unique_ptr<CacheStoragePromise>& aThePromise);
 
   // settles promise for cache, which is of type dom::Promise
   template <typename CacheOpResult::Type OP_TYPE, typename ResultType>

@@ -34,11 +34,11 @@ class CacheChild final : public PCacheChild, public CacheActorChild {
   void ClearListener();
 
   template <typename PromiseType>
-  void ExecuteOp(nsIGlobalObject* aGlobal, PromiseType& aPromise,
+  void ExecuteOp(nsIGlobalObject* aGlobal, PromiseType&& aPromise,
                  nsISupports* aParent, const CacheOpArgs& aArgs) {
     MOZ_ALWAYS_TRUE(SendPCacheOpConstructor(
         new CacheOpChild(GetWorkerRefPtr().clonePtr(), aGlobal, aParent,
-                         aPromise, this),
+                         std::forward<PromiseType>(aPromise), this),
         aArgs));
   }
 

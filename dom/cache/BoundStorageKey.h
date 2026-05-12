@@ -65,7 +65,23 @@ class BoundStorageKey : public nsISupports,
   nsresult mStatus;
 };
 
-using CacheStoragePromise = MozPromiseBase;
+class CachePromiseSettler {
+ public:
+  virtual ~CachePromiseSettler() = default;
+};
+
+template <typename PromiseType>
+class CachePromiseHolderSettler final : public CachePromiseSettler {
+ public:
+  using ResolveValueType = typename PromiseType::ResolveValueType;
+  MozPromiseHolder<PromiseType> mHolder;
+  RefPtr<PromiseType> Init(StaticString aSite) { return mHolder.Ensure(aSite); }
+  ~CachePromiseHolderSettler() override {
+    mHolder.RejectIfExists(ErrorResult(NS_ERROR_ABORT), __func__);
+  }
+};
+
+using CacheStoragePromise = CachePromiseSettler;
 using OpenResultPromise =
     mozilla::MozPromise<RefPtr<BoundStorageKeyCache>, ErrorResult,
                         true /*IsExclusive=*/>;
@@ -117,16 +133,16 @@ class BoundStorageKeyCacheStorage final : public BoundStorageKey,
 
   // Below methods declares the APIs that this class exposes, which looks
   // similar to CacheStorage but return type is different
-  already_AddRefed<CacheStoragePromise> Match(
+  already_AddRefed<MatchResultPromise> Match(
       JSContext* aCx, const RequestOrUTF8String& aRequest,
       const MultiCacheQueryOptions& aOptions, ErrorResult& aRv);
-  already_AddRefed<CacheStoragePromise> Has(const nsAString& aKey,
-                                            ErrorResult& aRv);
-  already_AddRefed<CacheStoragePromise> Open(const nsAString& aKey,
-                                             ErrorResult& aRv);
-  already_AddRefed<CacheStoragePromise> Delete(const nsAString& aKey,
+  already_AddRefed<HasResultPromise> Has(const nsAString& aKey,
+                                         ErrorResult& aRv);
+  already_AddRefed<OpenResultPromise> Open(const nsAString& aKey,
+                                           ErrorResult& aRv);
+  already_AddRefed<DeleteResultPromise> Delete(const nsAString& aKey,
                                                ErrorResult& aRv);
-  already_AddRefed<CacheStoragePromise> Keys(ErrorResult& aRv);
+  already_AddRefed<KeysResultPromise> Keys(ErrorResult& aRv);
 
   nsIGlobalObject* GetGlobalObject() const override { return mGlobal; }
 
@@ -166,37 +182,41 @@ struct cachestorage_traits;
 template <>
 struct cachestorage_traits<
     dom::cache::CacheOpResult::Type::TStorageMatchResult> {
-  using PromiseType = cache::MatchResultPromise::Private;
+  using PromiseType =
+      cache::CachePromiseHolderSettler<cache::MatchResultPromise>;
 };
 
 template <>
 struct cachestorage_traits<dom::cache::CacheOpResult::Type::TStorageHasResult> {
-  using PromiseType = cache::HasResultPromise::Private;
+  using PromiseType = cache::CachePromiseHolderSettler<cache::HasResultPromise>;
 };
 
 template <>
 struct cachestorage_traits<
     dom::cache::CacheOpResult::Type::TStorageOpenResult> {
-  using PromiseType = cache::OpenResultPromise::Private;
+  using PromiseType =
+      cache::CachePromiseHolderSettler<cache::OpenResultPromise>;
 };
 
 template <>
 struct cachestorage_traits<
     dom::cache::CacheOpResult::Type::TStorageDeleteResult> {
-  using PromiseType = cache::DeleteResultPromise::Private;
+  using PromiseType =
+      cache::CachePromiseHolderSettler<cache::DeleteResultPromise>;
 };
 
 template <>
 struct cachestorage_traits<
     dom::cache::CacheOpResult::Type::TStorageKeysResult> {
-  using PromiseType = cache::KeysResultPromise::Private;
+  using PromiseType =
+      cache::CachePromiseHolderSettler<cache::KeysResultPromise>;
 };
 
 template <>
 struct cachestorage_traits<dom::cache::CacheOpResult::Type::Tvoid_t> {
   // Tvoid_t is only used to report errors, Resolve value doesn't matter much
   // here. Just using HasResultPromise has it has simple Resolve value
-  using PromiseType = cache::HasResultPromise::Private;
+  using PromiseType = cache::CachePromiseHolderSettler<cache::HasResultPromise>;
 };
 
 }  // namespace dom
