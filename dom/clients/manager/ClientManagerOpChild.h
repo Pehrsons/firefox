@@ -14,7 +14,7 @@ class ClientManager;
 
 class ClientManagerOpChild final : public PClientManagerOpChild {
   RefPtr<ClientManager> mClientManager;
-  RefPtr<ClientOpPromise::Private> mPromise;
+  MozPromiseHolder<ClientOpPromise> mHolder;
 
   // PClientManagerOpChild interface
   void ActorDestroy(ActorDestroyReason aReason) override;
@@ -24,10 +24,9 @@ class ClientManagerOpChild final : public PClientManagerOpChild {
 
  public:
   ClientManagerOpChild(ClientManager* aClientManager,
-                       const ClientOpConstructorArgs& aArgs,
-                       ClientOpPromise::Private* aPromise);
+                       const ClientOpConstructorArgs& aArgs);
 
-  ~ClientManagerOpChild();
+  const RefPtr<ClientOpPromise> mPromise;
 };
 
 }  // namespace mozilla::dom

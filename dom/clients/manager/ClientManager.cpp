@@ -174,8 +174,7 @@ already_AddRefed<ClientHandle> ClientManager::CreateHandleInternal(
 RefPtr<ClientOpPromise> ClientManager::StartOp(
     const ClientOpConstructorArgs& aArgs,
     nsISerialEventTarget* aSerialEventTarget) {
-  RefPtr<ClientOpPromise::Private> promise =
-      new ClientOpPromise::Private(__func__);
+  RefPtr<ClientOpPromise> promise;
 
   // Hold a ref to the client until the remote operation completes.  Otherwise
   // the ClientHandle might get de-refed and teardown the actor before we
@@ -183,18 +182,17 @@ RefPtr<ClientOpPromise> ClientManager::StartOp(
   RefPtr<ClientManager> kungFuGrip = this;
 
   MaybeExecute(
-      [&aArgs, promise, kungFuGrip](ClientManagerChild* aActor) {
+      [&aArgs, &promise, kungFuGrip](ClientManagerChild* aActor) {
         ClientManagerOpChild* actor =
-            new ClientManagerOpChild(kungFuGrip, aArgs, promise);
-        if (!aActor->SendPClientManagerOpConstructor(actor, aArgs)) {
-          // Constructor failure will reject promise via ActorDestroy()
-          return;
-        }
+            new ClientManagerOpChild(kungFuGrip, aArgs);
+        promise = actor->mPromise;
+        // Constructor failure will reject promise via ActorDestroy()
+        aActor->SendPClientManagerOpConstructor(actor, aArgs);
       },
-      [promise] {
+      [&promise] {
         CopyableErrorResult rv;
         rv.ThrowInvalidStateError("Client has been destroyed");
-        promise->Reject(rv, __func__);
+        promise = ClientOpPromise::CreateAndReject(rv, __func__);
       });
 
   return promise;

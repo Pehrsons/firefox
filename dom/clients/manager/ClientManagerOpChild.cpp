@@ -11,11 +11,10 @@ namespace mozilla::dom {
 
 void ClientManagerOpChild::ActorDestroy(ActorDestroyReason aReason) {
   mClientManager = nullptr;
-  if (mPromise) {
+  if (!mHolder.IsEmpty()) {
     CopyableErrorResult rv;
     rv.ThrowAbortError("Client aborted");
-    mPromise->Reject(rv, __func__);
-    mPromise = nullptr;
+    mHolder.Reject(rv, __func__);
   }
 }
 
@@ -24,25 +23,17 @@ mozilla::ipc::IPCResult ClientManagerOpChild::Recv__delete__(
   mClientManager = nullptr;
   if (aResult.type() == ClientOpResult::TCopyableErrorResult &&
       aResult.get_CopyableErrorResult().Failed()) {
-    mPromise->Reject(aResult.get_CopyableErrorResult(), __func__);
-    mPromise = nullptr;
+    mHolder.Reject(aResult.get_CopyableErrorResult(), __func__);
     return IPC_OK();
   }
-  mPromise->Resolve(aResult, __func__);
-  mPromise = nullptr;
+  mHolder.Resolve(aResult, __func__);
   return IPC_OK();
 }
 
 ClientManagerOpChild::ClientManagerOpChild(ClientManager* aClientManager,
-                                           const ClientOpConstructorArgs& aArgs,
-                                           ClientOpPromise::Private* aPromise)
-    : mClientManager(aClientManager), mPromise(aPromise) {
+                                           const ClientOpConstructorArgs& aArgs)
+    : mClientManager(aClientManager), mPromise(mHolder.Ensure(__func__)) {
   MOZ_DIAGNOSTIC_ASSERT(mClientManager);
-  MOZ_DIAGNOSTIC_ASSERT(mPromise);
-}
-
-ClientManagerOpChild::~ClientManagerOpChild() {
-  MOZ_DIAGNOSTIC_ASSERT(!mPromise);
 }
 
 }  // namespace mozilla::dom

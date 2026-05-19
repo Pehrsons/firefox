@@ -46,9 +46,7 @@ class ClientHandle final : public ClientThing<ClientHandleChild> {
 
   void Shutdown();
 
-  void StartOp(const ClientOpConstructorArgs& aArgs,
-               const ClientOpCallback&& aResolveCallback,
-               const ClientOpCallback&& aRejectCallback);
+  RefPtr<ClientOpPromise> StartOp(const ClientOpConstructorArgs& aArgs);
 
   // ClientThing interface
   void OnShutdownThing() override;

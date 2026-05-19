@@ -13,8 +13,7 @@ class ClientHandle;
 
 class ClientHandleOpChild final : public PClientHandleOpChild {
   RefPtr<ClientHandle> mClientHandle;
-  const ClientOpCallback mResolveCallback;
-  const ClientOpCallback mRejectCallback;
+  MozPromiseHolder<ClientOpPromise> mHolder;
 
   // PClientHandleOpChild interface
   void ActorDestroy(ActorDestroyReason aReason) override;
@@ -24,11 +23,9 @@ class ClientHandleOpChild final : public PClientHandleOpChild {
 
  public:
   ClientHandleOpChild(ClientHandle* aClientHandle,
-                      const ClientOpConstructorArgs& aArgs,
-                      const ClientOpCallback&& aResolveCallback,
-                      const ClientOpCallback&& aRejectCallback);
+                      const ClientOpConstructorArgs& aArgs);
 
-  ~ClientHandleOpChild() = default;
+  const RefPtr<ClientOpPromise> mPromise;
 };
 
 }  // namespace mozilla::dom

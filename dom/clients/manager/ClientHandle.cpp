@@ -30,31 +30,30 @@ void ClientHandle::Shutdown() {
   mManager = nullptr;
 }
 
-void ClientHandle::StartOp(const ClientOpConstructorArgs& aArgs,
-                           const ClientOpCallback&& aResolveCallback,
-                           const ClientOpCallback&& aRejectCallback) {
+RefPtr<ClientOpPromise> ClientHandle::StartOp(
+    const ClientOpConstructorArgs& aArgs) {
+  RefPtr<ClientOpPromise> promise;
+
   // Hold a ref to the client until the remote operation completes.  Otherwise
   // the ClientHandle might get de-refed and teardown the actor before we
   // get an answer.
   RefPtr<ClientHandle> kungFuGrip = this;
 
   MaybeExecute(
-      [&aArgs, kungFuGrip, aRejectCallback,
-       resolve = std::move(aResolveCallback)](ClientHandleChild* aActor) {
+      [&aArgs, &promise, kungFuGrip](ClientHandleChild* aActor) {
         MOZ_DIAGNOSTIC_ASSERT(aActor);
-        ClientHandleOpChild* actor = new ClientHandleOpChild(
-            kungFuGrip, aArgs, std::move(resolve), std::move(aRejectCallback));
-        if (!aActor->SendPClientHandleOpConstructor(actor, aArgs)) {
-          // Constructor failure will call reject callback via ActorDestroy()
-          return;
-        }
+        ClientHandleOpChild* actor = new ClientHandleOpChild(kungFuGrip, aArgs);
+        promise = actor->mPromise;
+        // Constructor failure will reject via ActorDestroy()
+        aActor->SendPClientHandleOpConstructor(actor, aArgs);
       },
-      [aRejectCallback] {
-        MOZ_DIAGNOSTIC_ASSERT(aRejectCallback);
+      [&promise] {
         CopyableErrorResult rv;
         rv.ThrowInvalidStateError("Client has been destroyed");
-        aRejectCallback(rv);
+        promise = ClientOpPromise::CreateAndReject(rv, __func__);
       });
+
+  return promise;
 }
 
 void ClientHandle::OnShutdownThing() {
@@ -100,41 +99,33 @@ const ClientInfo& ClientHandle::Info() const { return mClientInfo; }
 
 RefPtr<GenericErrorResultPromise> ClientHandle::Control(
     const ServiceWorkerDescriptor& aServiceWorker) {
-  RefPtr<GenericErrorResultPromise::Private> outerPromise =
-      new GenericErrorResultPromise::Private(__func__);
-
   // We should never have a cross-origin controller.  Since this would be
   // same-origin policy violation we do a full release assertion here.
   MOZ_RELEASE_ASSERT(ClientMatchPrincipalInfo(mClientInfo.PrincipalInfo(),
                                               aServiceWorker.PrincipalInfo()));
 
-  StartOp(
-      ClientControlledArgs(aServiceWorker.ToIPC()),
-      [outerPromise](const ClientOpResult& aResult) {
-        outerPromise->Resolve(true, __func__);
-      },
-      [outerPromise](const ClientOpResult& aResult) {
-        outerPromise->Reject(aResult.get_CopyableErrorResult(), __func__);
-      });
-
-  return outerPromise;
+  return StartOp(ClientControlledArgs(aServiceWorker.ToIPC()))
+      ->Then(
+          mSerialEventTarget, __func__,
+          [](const ClientOpResult&) {
+            return GenericErrorResultPromise::CreateAndResolve(true, __func__);
+          },
+          [](const CopyableErrorResult& aRv) {
+            return GenericErrorResultPromise::CreateAndReject(aRv, __func__);
+          });
 }
 
 RefPtr<ClientStatePromise> ClientHandle::Focus(CallerType aCallerType) {
-  RefPtr<ClientStatePromise::Private> outerPromise =
-      new ClientStatePromise::Private(__func__);
-
-  StartOp(
-      ClientFocusArgs(aCallerType),
-      [outerPromise](const ClientOpResult& aResult) {
-        outerPromise->Resolve(
-            ClientState::FromIPC(aResult.get_IPCClientState()), __func__);
-      },
-      [outerPromise](const ClientOpResult& aResult) {
-        outerPromise->Reject(aResult.get_CopyableErrorResult(), __func__);
-      });
-
-  return outerPromise;
+  return StartOp(ClientFocusArgs(aCallerType))
+      ->Then(
+          mSerialEventTarget, __func__,
+          [](const ClientOpResult& aResult) {
+            return ClientStatePromise::CreateAndResolve(
+                ClientState::FromIPC(aResult.get_IPCClientState()), __func__);
+          },
+          [](const CopyableErrorResult& aRv) {
+            return ClientStatePromise::CreateAndReject(aRv, __func__);
+          });
 }
 
 RefPtr<GenericErrorResultPromise> ClientHandle::PostMessage(
@@ -149,19 +140,15 @@ RefPtr<GenericErrorResultPromise> ClientHandle::PostMessage(
   ClientPostMessageArgs args(/* clonedData */ aData,
                              /* serviceWorker */ aSource.ToIPC());
 
-  RefPtr<GenericErrorResultPromise::Private> outerPromise =
-      new GenericErrorResultPromise::Private(__func__);
-
-  StartOp(
-      std::move(args),
-      [outerPromise](const ClientOpResult& aResult) {
-        outerPromise->Resolve(true, __func__);
-      },
-      [outerPromise](const ClientOpResult& aResult) {
-        outerPromise->Reject(aResult.get_CopyableErrorResult(), __func__);
-      });
-
-  return outerPromise;
+  return StartOp(std::move(args))
+      ->Then(
+          mSerialEventTarget, __func__,
+          [](const ClientOpResult&) {
+            return GenericErrorResultPromise::CreateAndResolve(true, __func__);
+          },
+          [](const CopyableErrorResult& aRv) {
+            return GenericErrorResultPromise::CreateAndReject(aRv, __func__);
+          });
 }
 
 RefPtr<GenericPromise> ClientHandle::OnDetach() {
@@ -177,11 +164,6 @@ RefPtr<GenericPromise> ClientHandle::OnDetach() {
   return mDetachPromise;
 }
 
-void ClientHandle::EvictFromBFCache() {
-  ClientEvictBFCacheArgs args;
-  StartOp(
-      std::move(args), [](const ClientOpResult& aResult) {},
-      [](const ClientOpResult& aResult) {});
-}
+void ClientHandle::EvictFromBFCache() { StartOp(ClientEvictBFCacheArgs()); }
 
 }  // namespace mozilla::dom

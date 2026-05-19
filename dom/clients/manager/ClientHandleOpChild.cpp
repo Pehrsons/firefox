@@ -10,9 +10,11 @@ namespace mozilla::dom {
 
 void ClientHandleOpChild::ActorDestroy(ActorDestroyReason aReason) {
   mClientHandle = nullptr;
-  CopyableErrorResult rv;
-  rv.ThrowAbortError("Client load aborted");
-  mRejectCallback(rv);
+  if (!mHolder.IsEmpty()) {
+    CopyableErrorResult rv;
+    rv.ThrowAbortError("Client load aborted");
+    mHolder.Reject(rv, __func__);
+  }
 }
 
 mozilla::ipc::IPCResult ClientHandleOpChild::Recv__delete__(
@@ -20,23 +22,17 @@ mozilla::ipc::IPCResult ClientHandleOpChild::Recv__delete__(
   mClientHandle = nullptr;
   if (aResult.type() == ClientOpResult::TCopyableErrorResult &&
       aResult.get_CopyableErrorResult().Failed()) {
-    mRejectCallback(aResult.get_CopyableErrorResult());
+    mHolder.Reject(aResult.get_CopyableErrorResult(), __func__);
     return IPC_OK();
   }
-  mResolveCallback(aResult);
+  mHolder.Resolve(aResult, __func__);
   return IPC_OK();
 }
 
-ClientHandleOpChild::ClientHandleOpChild(
-    ClientHandle* aClientHandle, const ClientOpConstructorArgs& aArgs,
-    const ClientOpCallback&& aResolveCallback,
-    const ClientOpCallback&& aRejectCallback)
-    : mClientHandle(aClientHandle),
-      mResolveCallback(std::move(aResolveCallback)),
-      mRejectCallback(std::move(aRejectCallback)) {
+ClientHandleOpChild::ClientHandleOpChild(ClientHandle* aClientHandle,
+                                         const ClientOpConstructorArgs& aArgs)
+    : mClientHandle(aClientHandle), mPromise(mHolder.Ensure(__func__)) {
   MOZ_DIAGNOSTIC_ASSERT(mClientHandle);
-  MOZ_DIAGNOSTIC_ASSERT(mResolveCallback);
-  MOZ_DIAGNOSTIC_ASSERT(mRejectCallback);
 }
 
 }  // namespace mozilla::dom
