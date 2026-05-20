@@ -7,6 +7,7 @@
 
 #include "nsIOpenWindowInfo.h"
 #include "nsISupportsImpl.h"
+#include "mozilla/MozPromise.h"
 #include "mozilla/OriginAttributes.h"
 #include "mozilla/RefPtr.h"
 #include "mozilla/dom/ClientOpenWindowUtils.h"
@@ -49,15 +50,17 @@ class nsBrowsingContextReadyCallback : public nsIBrowsingContextReadyCallback {
   NS_DECL_ISUPPORTS
   NS_DECL_NSIBROWSINGCONTEXTREADYCALLBACK
 
-  explicit nsBrowsingContextReadyCallback(
-      RefPtr<mozilla::dom::BrowsingContextCallbackReceivedPromise::Private>
-          aPromise);
+  nsBrowsingContextReadyCallback();
 
  private:
   virtual ~nsBrowsingContextReadyCallback();
 
-  RefPtr<mozilla::dom::BrowsingContextCallbackReceivedPromise::Private>
-      mPromise;
+  mozilla::MozPromiseHolder<
+      mozilla::dom::BrowsingContextCallbackReceivedPromise>
+      mHolder;
+
+ public:
+  RefPtr<mozilla::dom::BrowsingContextCallbackReceivedPromise> mPromise;
 };
 
 #endif  // nsOpenWindowInfo_h

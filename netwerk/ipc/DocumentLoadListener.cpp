@@ -2085,18 +2085,14 @@ static RefPtr<dom::BrowsingContextCallbackReceivedPromise> SwitchToNewTab(
                  aWhere == nsIBrowserDOMWindow::OPEN_NEWWINDOW,
              "Unsupported open location");
 
-  auto promise =
-      MakeRefPtr<dom::BrowsingContextCallbackReceivedPromise::Private>(
-          __func__);
-
   // Get the nsIBrowserDOMWindow for the given BrowsingContext's tab.
   nsCOMPtr<nsIBrowserDOMWindow> browserDOMWindow =
       aLoadingBrowsingContext->GetBrowserDOMWindow();
   if (NS_WARN_IF(!browserDOMWindow)) {
     MOZ_LOG(gProcessIsolationLog, LogLevel::Warning,
             ("Process Switch Abort: Unable to get nsIBrowserDOMWindow"));
-    promise->Reject(NS_ERROR_FAILURE, __func__);
-    return promise;
+    return dom::BrowsingContextCallbackReceivedPromise::CreateAndReject(
+        CopyableErrorResult(NS_ERROR_FAILURE), __func__);
   }
 
   // Open a new content tab by calling into frontend. We don't need to worry
@@ -2110,8 +2106,11 @@ static RefPtr<dom::BrowsingContextCallbackReceivedPromise> SwitchToNewTab(
       NullPrincipal::Create(aOriginAttributes);
 
   RefPtr<nsOpenWindowInfo> openInfo = new nsOpenWindowInfo();
-  openInfo->mBrowsingContextReadyCallback =
-      new nsBrowsingContextReadyCallback(promise);
+  RefPtr<nsBrowsingContextReadyCallback> callback =
+      new nsBrowsingContextReadyCallback();
+  RefPtr<dom::BrowsingContextCallbackReceivedPromise> promise =
+      callback->mPromise;
+  openInfo->mBrowsingContextReadyCallback = callback;
   openInfo->mParent = aLoadingBrowsingContext;
   openInfo->mForceNoOpener = true;
   openInfo->mIsRemote = true;
@@ -2120,7 +2119,7 @@ static RefPtr<dom::BrowsingContextCallbackReceivedPromise> SwitchToNewTab(
   // Do the actual work to open a new tab or window async.
   nsresult rv = NS_DispatchToMainThread(NS_NewRunnableFunction(
       "DocumentLoadListener::SwitchToNewTab",
-      [browserDOMWindow, openInfo, aWhere, triggeringPrincipal, promise] {
+      [browserDOMWindow, openInfo, aWhere, triggeringPrincipal, callback] {
         RefPtr<BrowsingContext> bc;
         nsresult rv = browserDOMWindow->CreateContentWindow(
             /* uri */ nullptr, openInfo, aWhere,
@@ -2129,14 +2128,15 @@ static RefPtr<dom::BrowsingContextCallbackReceivedPromise> SwitchToNewTab(
         if (NS_WARN_IF(NS_FAILED(rv))) {
           MOZ_LOG(gProcessIsolationLog, LogLevel::Warning,
                   ("Process Switch Abort: CreateContentWindow threw"));
-          promise->Reject(rv, __func__);
+          callback->BrowsingContextReady(nullptr);
+          return;
         }
         if (bc) {
-          promise->Resolve(bc, __func__);
+          callback->BrowsingContextReady(bc.get());
         }
       }));
   if (NS_WARN_IF(NS_FAILED(rv))) {
-    promise->Reject(NS_ERROR_UNEXPECTED, __func__);
+    callback->BrowsingContextReady(nullptr);
   }
   return promise;
 }

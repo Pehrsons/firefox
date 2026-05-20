@@ -26,17 +26,25 @@ namespace {
 
 class NavigateLoadListener final : public nsIWebProgressListener,
                                    public nsSupportsWeakReference {
-  RefPtr<ClientOpPromise::Private> mPromise;
+  MozPromiseHolder<ClientOpPromise> mHolder;
   RefPtr<nsPIDOMWindowOuter> mOuterWindow;
   nsCOMPtr<nsIURI> mBaseURL;
 
-  ~NavigateLoadListener() = default;
+  ~NavigateLoadListener() {
+    if (!mHolder.IsEmpty()) {
+      CopyableErrorResult rv;
+      rv.ThrowAbortError("Navigation aborted");
+      mHolder.Reject(rv, __func__);
+    }
+  }
 
  public:
-  NavigateLoadListener(ClientOpPromise::Private* aPromise,
-                       nsPIDOMWindowOuter* aOuterWindow, nsIURI* aBaseURL)
-      : mPromise(aPromise), mOuterWindow(aOuterWindow), mBaseURL(aBaseURL) {
-    MOZ_DIAGNOSTIC_ASSERT(mPromise);
+  const RefPtr<ClientOpPromise> mPromise;
+
+  NavigateLoadListener(nsPIDOMWindowOuter* aOuterWindow, nsIURI* aBaseURL)
+      : mOuterWindow(aOuterWindow),
+        mBaseURL(aBaseURL),
+        mPromise(mHolder.Ensure(__func__)) {
     MOZ_DIAGNOSTIC_ASSERT(mOuterWindow);
     MOZ_DIAGNOSTIC_ASSERT(mBaseURL);
   }
@@ -56,7 +64,7 @@ class NavigateLoadListener final : public nsIWebProgressListener,
       // This is not going to happen; how could it?
       CopyableErrorResult result;
       result.ThrowInvalidStateError("Bad request");
-      mPromise->Reject(result, __func__);
+      mHolder.Reject(result, __func__);
       return NS_OK;
     }
 
@@ -67,7 +75,7 @@ class NavigateLoadListener final : public nsIWebProgressListener,
       // XXXbz We can't actually get here; NS_GetFinalChannelURI never fails in
       // practice!
       result.Throw(rv);
-      mPromise->Reject(result, __func__);
+      mHolder.Reject(result, __func__);
       return NS_OK;
     }
 
@@ -81,7 +89,7 @@ class NavigateLoadListener final : public nsIWebProgressListener,
     // console you also need to update the 'aFromPrivateWindow' argument.
     rv = ssm->CheckSameOriginURI(mBaseURL, channelURL, false, false);
     if (NS_FAILED(rv)) {
-      mPromise->Resolve(CopyableErrorResult(), __func__);
+      mHolder.Resolve(CopyableErrorResult(), __func__);
       return NS_OK;
     }
 
@@ -98,7 +106,7 @@ class NavigateLoadListener final : public nsIWebProgressListener,
     // ClientInfoAndState object so we can provide a Client snapshot
     // to the caller.  This is step 6.11 and 6.12 in the Client.navigate(url)
     // spec.
-    mPromise->Resolve(
+    mHolder.Resolve(
         ClientInfoAndState(clientInfo.ref().ToIPC(), clientState.ref().ToIPC()),
         __func__);
 
@@ -294,11 +302,7 @@ RefPtr<ClientOpPromise> ClientNavigateOpChild::DoNavigate(
     return ClientOpPromise::CreateAndReject(result, __func__);
   }
 
-  RefPtr<ClientOpPromise::Private> promise =
-      new ClientOpPromise::Private(__func__);
-
-  nsCOMPtr<nsIWebProgressListener> listener =
-      new NavigateLoadListener(promise, window->GetOuterWindow(), baseURL);
+  RefPtr listener = new NavigateLoadListener(window->GetOuterWindow(), baseURL);
 
   rv = webProgress->AddProgressListener(listener,
                                         nsIWebProgress::NOTIFY_STATE_DOCUMENT);
@@ -306,11 +310,10 @@ RefPtr<ClientOpPromise> ClientNavigateOpChild::DoNavigate(
     CopyableErrorResult result;
     // XXXbz Can we throw something better here?
     result.Throw(rv);
-    promise->Reject(result, __func__);
-    return promise;
+    return ClientOpPromise::CreateAndReject(result, __func__);
   }
 
-  return promise->Then(
+  return listener->mPromise->Then(
       mSerialEventTarget, __func__,
       [listener](const ClientOpPromise::ResolveOrRejectValue& aValue) {
         return ClientOpPromise::CreateAndResolveOrReject(aValue, __func__);

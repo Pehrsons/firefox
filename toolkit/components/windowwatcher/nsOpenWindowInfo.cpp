@@ -134,31 +134,22 @@ NS_IMETHODIMP nsOpenWindowInfo::Cancel() {
 NS_IMPL_ISUPPORTS(nsBrowsingContextReadyCallback,
                   nsIBrowsingContextReadyCallback)
 
-nsBrowsingContextReadyCallback::nsBrowsingContextReadyCallback(
-    RefPtr<mozilla::dom::BrowsingContextCallbackReceivedPromise::Private>
-        aPromise)
-    : mPromise(std::move(aPromise)) {}
+nsBrowsingContextReadyCallback::nsBrowsingContextReadyCallback()
+    : mPromise(mHolder.Ensure(__func__)) {}
 
 nsBrowsingContextReadyCallback::~nsBrowsingContextReadyCallback() {
-  if (mPromise) {
-    mPromise->Reject(NS_ERROR_FAILURE, __func__);
-  }
-  mPromise = nullptr;
+  mHolder.RejectIfExists(CopyableErrorResult(NS_ERROR_FAILURE), __func__);
 }
 
 NS_IMETHODIMP nsBrowsingContextReadyCallback::BrowsingContextReady(
     mozilla::dom::BrowsingContext* aBC) {
-  MOZ_DIAGNOSTIC_ASSERT(mPromise,
-                        "The 'browsing context ready' callback is null");
-  if (!mPromise) {
-    return NS_OK;
-  }
+  // The promise may already have been settled with the browsing context that
+  // was returned synchronously, in which case this is a no-op.
   if (aBC) {
-    mPromise->Resolve(aBC, __func__);
+    mHolder.ResolveIfExists(aBC, __func__);
   } else {
-    mPromise->Reject(NS_ERROR_FAILURE, __func__);
+    mHolder.RejectIfExists(CopyableErrorResult(NS_ERROR_FAILURE), __func__);
   }
-  mPromise = nullptr;
   return NS_OK;
 }
 

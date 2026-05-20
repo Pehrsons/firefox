@@ -36,15 +36,14 @@ ClientManagerService* sClientManagerServiceInstance = nullptr;
 bool sClientManagerServiceShutdownRegistered = false;
 
 class ClientShutdownBlocker final : public nsIAsyncShutdownBlocker {
-  RefPtr<GenericPromise::Private> mPromise;
+  MozPromiseHolder<GenericPromise> mHolder;
 
-  ~ClientShutdownBlocker() = default;
+  ~ClientShutdownBlocker() { mHolder.ResolveIfExists(true, __func__); }
 
  public:
-  explicit ClientShutdownBlocker(GenericPromise::Private* aPromise)
-      : mPromise(aPromise) {
-    MOZ_DIAGNOSTIC_ASSERT(mPromise);
-  }
+  const RefPtr<GenericPromise> mPromise;
+
+  ClientShutdownBlocker() : mPromise(mHolder.Ensure(__func__)) {}
 
   NS_IMETHOD
   GetName(nsAString& aNameOut) override {
@@ -55,7 +54,7 @@ class ClientShutdownBlocker final : public nsIAsyncShutdownBlocker {
 
   NS_IMETHOD
   BlockShutdown(nsIAsyncShutdownClient* aClient) override {
-    mPromise->Resolve(true, __func__);
+    mHolder.Resolve(true, __func__);
     aClient->RemoveBlocker(this);
     return NS_OK;
   }
@@ -71,39 +70,26 @@ NS_IMPL_ISUPPORTS(ClientShutdownBlocker, nsIAsyncShutdownBlocker)
 // Helper function the resolves a MozPromise when we detect that the browser
 // has begun to shutdown.
 RefPtr<GenericPromise> OnShutdown() {
-  RefPtr<GenericPromise::Private> ref = new GenericPromise::Private(__func__);
+  return InvokeAsync(GetMainThreadSerialEventTarget(), __func__, [] {
+    nsCOMPtr<nsIAsyncShutdownService> svc =
+        components::AsyncShutdown::Service();
+    if (!svc) {
+      return GenericPromise::CreateAndResolve(true, __func__);
+    }
 
-  nsCOMPtr<nsIRunnable> r =
-      NS_NewRunnableFunction("ClientManagerServer::OnShutdown", [ref]() {
-        nsCOMPtr<nsIAsyncShutdownService> svc =
-            components::AsyncShutdown::Service();
-        if (!svc) {
-          ref->Resolve(true, __func__);
-          return;
-        }
+    nsCOMPtr<nsIAsyncShutdownClient> phase;
+    MOZ_ALWAYS_SUCCEEDS(svc->GetXpcomWillShutdown(getter_AddRefs(phase)));
+    if (!phase) {
+      return GenericPromise::CreateAndResolve(true, __func__);
+    }
 
-        nsCOMPtr<nsIAsyncShutdownClient> phase;
-        MOZ_ALWAYS_SUCCEEDS(svc->GetXpcomWillShutdown(getter_AddRefs(phase)));
-        if (!phase) {
-          ref->Resolve(true, __func__);
-          return;
-        }
+    RefPtr blocker = new ClientShutdownBlocker();
+    // If adding fails, the blocker's dtor settles the promise.
+    phase->AddBlocker(blocker, NS_LITERAL_STRING_FROM_CSTRING(__FILE__),
+                      __LINE__, u"ClientManagerService shutdown"_ns);
 
-        nsCOMPtr<nsIAsyncShutdownBlocker> blocker =
-            new ClientShutdownBlocker(ref);
-        nsresult rv =
-            phase->AddBlocker(blocker, NS_LITERAL_STRING_FROM_CSTRING(__FILE__),
-                              __LINE__, u"ClientManagerService shutdown"_ns);
-
-        if (NS_FAILED(rv)) {
-          ref->Resolve(true, __func__);
-          return;
-        }
-      });
-
-  MOZ_ALWAYS_SUCCEEDS(SchedulerGroup::Dispatch(r.forget()));
-
-  return ref;
+    return blocker->mPromise;
+  });
 }
 
 }  // anonymous namespace

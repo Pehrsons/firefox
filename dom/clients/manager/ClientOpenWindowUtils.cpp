@@ -54,11 +54,10 @@ class WebProgressListener final : public nsIWebProgressListener,
  public:
   NS_DECL_ISUPPORTS
 
-  WebProgressListener(BrowsingContext* aBrowsingContext, nsIURI* aBaseURI,
-                      already_AddRefed<ClientOpPromise::Private> aPromise)
-      : mPromise(aPromise),
-        mBaseURI(aBaseURI),
-        mBrowserId(aBrowsingContext->GetBrowserId()) {
+  WebProgressListener(BrowsingContext* aBrowsingContext, nsIURI* aBaseURI)
+      : mBaseURI(aBaseURI),
+        mBrowserId(aBrowsingContext->GetBrowserId()),
+        mPromise(mHolder.Ensure(__func__)) {
     MOZ_ASSERT(mBrowserId != 0);
     MOZ_ASSERT(aBaseURI);
     MOZ_ASSERT(NS_IsMainThread());
@@ -80,8 +79,7 @@ class WebProgressListener final : public nsIWebProgressListener,
     if (!browsingContext || browsingContext->IsDiscarded()) {
       CopyableErrorResult rv;
       rv.ThrowInvalidStateError("Unable to open window");
-      mPromise->Reject(rv, __func__);
-      mPromise = nullptr;
+      mHolder.Reject(rv, __func__);
       return NS_OK;
     }
 
@@ -97,8 +95,7 @@ class WebProgressListener final : public nsIWebProgressListener,
     if (NS_WARN_IF(!wgp)) {
       CopyableErrorResult rv;
       rv.ThrowInvalidStateError("Unable to open window");
-      mPromise->Reject(rv, __func__);
-      mPromise = nullptr;
+      mHolder.Reject(rv, __func__);
       RemoveListener();
       return NS_OK;
     }
@@ -120,8 +117,7 @@ class WebProgressListener final : public nsIWebProgressListener,
     nsresult rv = securityManager->CheckSameOriginURI(
         wgp->GetDocumentURI(), mBaseURI, false, isPrivateWin);
     if (NS_WARN_IF(NS_FAILED(rv))) {
-      mPromise->Resolve(CopyableErrorResult(), __func__);
-      mPromise = nullptr;
+      mHolder.Resolve(CopyableErrorResult(), __func__);
       return NS_OK;
     }
 
@@ -129,8 +125,7 @@ class WebProgressListener final : public nsIWebProgressListener,
     if (info.isNothing()) {
       CopyableErrorResult rv;
       rv.ThrowInvalidStateError("Unable to open window");
-      mPromise->Reject(rv, __func__);
-      mPromise = nullptr;
+      mHolder.Reject(rv, __func__);
       return NS_OK;
     }
 
@@ -138,7 +133,7 @@ class WebProgressListener final : public nsIWebProgressListener,
     const mozilla::ipc::PrincipalInfo& principal = info.ref().PrincipalInfo();
     ClientManager::GetInfoAndState(ClientGetInfoAndStateArgs(id, principal),
                                    GetCurrentSerialEventTarget())
-        ->ChainTo(mPromise.forget(), __func__);
+        ->ChainTo(std::move(mHolder), __func__);
 
     return NS_OK;
   }
@@ -182,17 +177,19 @@ class WebProgressListener final : public nsIWebProgressListener,
 
  private:
   ~WebProgressListener() {
-    if (mPromise) {
+    if (!mHolder.IsEmpty()) {
       CopyableErrorResult rv;
       rv.ThrowAbortError("openWindow aborted");
-      mPromise->Reject(rv, __func__);
-      mPromise = nullptr;
+      mHolder.Reject(rv, __func__);
     }
   }
 
-  RefPtr<ClientOpPromise::Private> mPromise;
+  MozPromiseHolder<ClientOpPromise> mHolder;
   nsCOMPtr<nsIURI> mBaseURI;
   uint64_t mBrowserId;
+
+ public:
+  const RefPtr<ClientOpPromise> mPromise;
 };
 
 NS_IMPL_ISUPPORTS(WebProgressListener, nsIWebProgressListener,
@@ -324,12 +321,11 @@ bool OpenWindow(const ClientOpenWindowArgsParsed& aArgsValidated,
 #endif
 
 MOZ_CAN_RUN_SCRIPT
-void WaitForLoad(const ClientOpenWindowArgsParsed& aArgsValidated,
-                 BrowsingContext* aBrowsingContext,
-                 ClientOpPromise::Private* aPromise, bool aShouldLoadURI) {
+RefPtr<ClientOpPromise> WaitForLoad(
+    const ClientOpenWindowArgsParsed& aArgsValidated,
+    BrowsingContext* aBrowsingContext, bool aShouldLoadURI) {
   MOZ_DIAGNOSTIC_ASSERT(aBrowsingContext);
 
-  RefPtr<ClientOpPromise::Private> promise = aPromise;
   // We can get a WebProgress off of
   // the BrowsingContext for the <xul:browser> to listen for content
   // events. Note that this WebProgress filters out events which don't have
@@ -340,13 +336,12 @@ void WaitForLoad(const ClientOpenWindowArgsParsed& aArgsValidated,
   if (NS_WARN_IF(!webProgress)) {
     CopyableErrorResult result;
     result.ThrowInvalidStateError("Unable to watch window for navigation");
-    promise->Reject(result, __func__);
-    return;
+    return ClientOpPromise::CreateAndReject(result, __func__);
   }
 
   // Add a progress listener before we start the load of the requested URI
-  RefPtr<WebProgressListener> listener = new WebProgressListener(
-      aBrowsingContext, aArgsValidated.baseURI, do_AddRef(promise));
+  RefPtr listener =
+      new WebProgressListener(aBrowsingContext, aArgsValidated.baseURI);
 
   nsresult rv = webProgress->AddProgressListener(
       listener, nsIWebProgress::NOTIFY_STATE_WINDOW);
@@ -354,8 +349,7 @@ void WaitForLoad(const ClientOpenWindowArgsParsed& aArgsValidated,
     CopyableErrorResult result;
     // XXXbz Can we throw something better here?
     result.Throw(rv);
-    promise->Reject(result, __func__);
-    return;
+    return ClientOpPromise::CreateAndReject(std::move(result), __func__);
   }
 
   if (aShouldLoadURI) {
@@ -376,16 +370,16 @@ void WaitForLoad(const ClientOpenWindowArgsParsed& aArgsValidated,
       CopyableErrorResult result;
       result.ThrowInvalidStateError(
           "Unable to start the load of the actual URI");
-      promise->Reject(result, __func__);
-      return;
+      return ClientOpPromise::CreateAndReject(std::move(result), __func__);
     }
   }
 
   // Hold the listener alive until the promise settles.
-  promise->Then(
+  listener->mPromise->Then(
       GetMainThreadSerialEventTarget(), __func__,
       [listener](const ClientOpResult& aResult) {},
       [listener](const CopyableErrorResult& aResult) {});
+  return listener->mPromise;
 }
 
 #ifdef MOZ_GECKOVIEW
@@ -445,9 +439,6 @@ RefPtr<ClientOpPromise> ClientOpenWindow(
     const ClientOpenWindowArgs& aArgs) {
   MOZ_DIAGNOSTIC_ASSERT(XRE_IsParentProcess());
 
-  RefPtr<ClientOpPromise::Private> promise =
-      new ClientOpPromise::Private(__func__);
-
   // [[1. Let url be the result of parsing url with entry settings object's API
   //   base URL.]]
   nsCOMPtr<nsIURI> baseURI;
@@ -456,8 +447,7 @@ RefPtr<ClientOpPromise> ClientOpenWindow(
     nsPrintfCString err("Invalid base URL \"%s\"", aArgs.baseURL().get());
     CopyableErrorResult errResult;
     errResult.ThrowTypeError(err);
-    promise->Reject(errResult, __func__);
-    return promise;
+    return ClientOpPromise::CreateAndReject(errResult, __func__);
   }
 
   nsCOMPtr<nsIURI> uri;
@@ -466,16 +456,14 @@ RefPtr<ClientOpPromise> ClientOpenWindow(
     nsPrintfCString err("Invalid URL \"%s\"", aArgs.url().get());
     CopyableErrorResult errResult;
     errResult.ThrowTypeError(err);
-    promise->Reject(errResult, __func__);
-    return promise;
+    return ClientOpPromise::CreateAndReject(errResult, __func__);
   }
 
   auto principalOrErr = PrincipalInfoToPrincipal(aArgs.principalInfo());
   if (NS_WARN_IF(principalOrErr.isErr())) {
     CopyableErrorResult errResult;
     errResult.ThrowTypeError("Failed to obtain principal");
-    promise->Reject(errResult, __func__);
-    return promise;
+    return ClientOpPromise::CreateAndReject(errResult, __func__);
   }
   nsCOMPtr<nsIPrincipal> principal = principalOrErr.unwrap();
   MOZ_DIAGNOSTIC_ASSERT(principal);
@@ -486,8 +474,7 @@ RefPtr<ClientOpPromise> ClientOpenWindow(
     nsPrintfCString err("Opening \"%s\" is not allowed", aArgs.url().get());
     CopyableErrorResult errResult;
     errResult.ThrowTypeError(err);
-    promise->Reject(errResult, __func__);
-    return promise;
+    return ClientOpPromise::CreateAndReject(errResult, __func__);
   }
 
   nsCOMPtr<nsIContentSecurityPolicy> csp;
@@ -505,11 +492,7 @@ RefPtr<ClientOpPromise> ClientOpenWindow(
       .originContent = aOriginContent,
   };
 
-  RefPtr<BrowsingContextCallbackReceivedPromise::Private>
-      browsingContextReadyPromise =
-          new BrowsingContextCallbackReceivedPromise::Private(__func__);
-  RefPtr<nsIBrowsingContextReadyCallback> callback =
-      new nsBrowsingContextReadyCallback(browsingContextReadyPromise);
+  RefPtr callback = new nsBrowsingContextReadyCallback();
 
   RefPtr<nsOpenWindowInfo> openInfo = new nsOpenWindowInfo();
   openInfo->mBrowsingContextReadyCallback = callback;
@@ -530,24 +513,24 @@ RefPtr<ClientOpPromise> ClientOpenWindow(
       OpenWindow(argsValidated, openInfo, getter_AddRefs(bc), errResult);
 #endif
   if (NS_WARN_IF(errResult.Failed())) {
-    promise->Reject(errResult, __func__);
-    return promise;
+    return ClientOpPromise::CreateAndReject(CopyableErrorResult(errResult),
+                                            __func__);
   }
 
-  browsingContextReadyPromise->Then(
+  RefPtr<ClientOpPromise> promise = callback->mPromise->Then(
       GetCurrentSerialEventTarget(), __func__,
-      [argsValidated, promise,
-       shouldLoadURI](const RefPtr<BrowsingContext>& aBC) MOZ_CAN_RUN_SCRIPT {
-        WaitForLoad(argsValidated, aBC, promise, shouldLoadURI);
-      },
-      [promise]() {
+      [argsValidated, shouldLoadURI](const RefPtr<BrowsingContext>& aBC)
+          MOZ_CAN_RUN_SCRIPT {
+            return WaitForLoad(argsValidated, aBC, shouldLoadURI);
+          },
+      []() {
         // in case of failure, reject the original promise
         CopyableErrorResult result;
         result.ThrowTypeError("Unable to open window");
-        promise->Reject(result, __func__);
+        return ClientOpPromise::CreateAndReject(result, __func__);
       });
   if (bc) {
-    browsingContextReadyPromise->Resolve(bc, __func__);
+    callback->BrowsingContextReady(bc);
   }
   return promise;
 }
