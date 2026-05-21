@@ -15,7 +15,6 @@
 #include "mozilla/Components.h"
 #include "mozilla/MozPromise.h"
 #include "mozilla/SchedulerGroup.h"
-#include "mozilla/ScopeExit.h"
 #include "mozilla/dom/ContentParent.h"
 #include "mozilla/dom/ServiceWorkerManager.h"
 #include "mozilla/dom/ServiceWorkerUtils.h"
@@ -556,43 +555,33 @@ namespace {
 
 RefPtr<ClientOpPromise> ClaimOnMainThread(
     const ClientInfo& aClientInfo, const ServiceWorkerDescriptor& aDescriptor) {
-  RefPtr<ClientOpPromise::Private> promise =
-      new ClientOpPromise::Private(__func__);
-
-  nsCOMPtr<nsIRunnable> r = NS_NewRunnableFunction(
-      __func__, [promise, clientInfo = std::move(aClientInfo),
-                 desc = std::move(aDescriptor)]() {
-        auto scopeExit = MakeScopeExit([&] {
+  return InvokeAsync(
+      GetMainThreadSerialEventTarget(), __func__,
+      [aClientInfo, aDescriptor]() -> RefPtr<ClientOpPromise> {
+        RefPtr<ServiceWorkerManager> swm = ServiceWorkerManager::GetInstance();
+        if (NS_WARN_IF(!swm)) {
           // This will truncate the URLs if they have embedded nulls, if that
           // can happen, but for // our purposes here that's OK.
           nsPrintfCString err(
               "Service worker at <%s> can't claim Client at <%s>",
-              desc.ScriptURL().get(), clientInfo.URL().get());
+              aDescriptor.ScriptURL().get(), aClientInfo.URL().get());
           CopyableErrorResult rv;
           rv.ThrowInvalidStateError(err);
-          promise->Reject(rv, __func__);
-        });
+          return ClientOpPromise::CreateAndReject(rv, __func__);
+        }
 
-        RefPtr<ServiceWorkerManager> swm = ServiceWorkerManager::GetInstance();
-        NS_ENSURE_TRUE_VOID(swm);
-
-        RefPtr<GenericErrorResultPromise> inner =
-            swm->MaybeClaimClient(clientInfo, desc);
-        inner->Then(
-            GetMainThreadSerialEventTarget(), __func__,
-            [promise](bool aResult) {
-              promise->Resolve(CopyableErrorResult(), __func__);
-            },
-            [promise](const CopyableErrorResult& aRv) {
-              promise->Reject(aRv, __func__);
-            });
-
-        scopeExit.release();
+        return swm->MaybeClaimClient(aClientInfo, aDescriptor)
+            ->Then(GetMainThreadSerialEventTarget(), __func__,
+                   [](const GenericErrorResultPromise::ResolveOrRejectValue&
+                          aValue) {
+                     if (aValue.IsResolve()) {
+                       return ClientOpPromise::CreateAndResolve(
+                           CopyableErrorResult(), __func__);
+                     }
+                     return ClientOpPromise::CreateAndReject(
+                         aValue.RejectValue(), __func__);
+                   });
       });
-
-  MOZ_ALWAYS_SUCCEEDS(SchedulerGroup::Dispatch(r.forget()));
-
-  return promise;
 }
 
 }  // anonymous namespace
