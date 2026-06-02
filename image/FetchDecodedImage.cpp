@@ -28,8 +28,8 @@ class FetchDecodedImageHelper : public imgIContainerCallback,
   NS_DECL_ISUPPORTS
 
   explicit FetchDecodedImageHelper(
-      gfx::IntSize aSize, RefPtr<FetchDecodedImagePromise::Private> aPromise)
-      : mSize(aSize), mPromise(aPromise) {
+      gfx::IntSize aSize, MozPromiseHolder<FetchDecodedImagePromise>&& aHolder)
+      : mSize(aSize), mHolder(std::move(aHolder)) {
     // Let's make sure we are alive until the request completes
     MOZ_ALWAYS_TRUE(gDecodeRequests.putNew(this));
   }
@@ -66,8 +66,7 @@ class FetchDecodedImageHelper : public imgIContainerCallback,
   void OnError(nsresult aStatus) {
     gDecodeRequests.remove(this);
     mImage = nullptr;
-    mPromise->Reject(aStatus, __func__);
-    mPromise = nullptr;
+    mHolder.Reject(aStatus, __func__);
   }
 
  private:
@@ -99,12 +98,11 @@ class FetchDecodedImageHelper : public imgIContainerCallback,
 
   void OnDecodeComplete() {
     gDecodeRequests.remove(this);
-    mPromise->Resolve(mImage.forget(), __func__);
-    mPromise = nullptr;
+    mHolder.Resolve(mImage.forget(), __func__);
   }
 
   gfx::IntSize mSize;
-  RefPtr<FetchDecodedImagePromise::Private> mPromise;
+  MozPromiseHolder<FetchDecodedImagePromise> mHolder;
   nsCOMPtr<imgIContainer> mImage{};
 };
 
@@ -136,9 +134,10 @@ RefPtr<FetchDecodedImagePromise> FetchDecodedImage(nsIURI* aURI,
     return FetchDecodedImagePromise::CreateAndReject(rv, __func__);
   }
 
-  auto promise = MakeRefPtr<FetchDecodedImagePromise::Private>(__func__);
+  MozPromiseHolder<FetchDecodedImagePromise> holder;
+  RefPtr<FetchDecodedImagePromise> promise = holder.Ensure(__func__);
 
-  auto helper = MakeRefPtr<FetchDecodedImageHelper>(aSize, promise);
+  auto helper = MakeRefPtr<FetchDecodedImageHelper>(aSize, std::move(holder));
 
   rv = imgTools->DecodeImageFromChannelAsync(aURI, aChannel, helper, helper);
   if (NS_FAILED(rv)) {

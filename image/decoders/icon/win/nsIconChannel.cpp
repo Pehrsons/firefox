@@ -481,67 +481,61 @@ static nsresult GetIconHandleFromURLBlocking(nsIMozIconURI* aUrl,
 }
 
 static RefPtr<HIconPromise> GetIconHandleFromURLAsync(nsIMozIconURI* aUrl) {
-  auto promise = MakeRefPtr<HIconPromise::Private>(__func__);
-
   nsAutoCString stockIcon;
   aUrl->GetStockIcon(stockIcon);
   if (!stockIcon.IsEmpty()) {
     HICON hIcon = nullptr;
     nsresult rv = GetStockHIcon(aUrl, &hIcon);
     if (NS_SUCCEEDED(rv)) {
-      promise->Resolve(hIcon, __func__);
-    } else {
-      promise->Reject(rv, __func__);
+      return HIconPromise::CreateAndResolve(hIcon, __func__);
     }
-    return promise;
+    return HIconPromise::CreateAndReject(rv, __func__);
   }
 
   IconPathInfo iconPathInfo;
   nsresult rv = ExtractIconPathInfoFromUrl(aUrl, &iconPathInfo);
   if (NS_FAILED(rv)) {
-    promise->Reject(rv, __func__);
-    return promise;
+    return HIconPromise::CreateAndReject(rv, __func__);
   }
 
-  nsCOMPtr<nsIRunnable> task = NS_NewRunnableFunction(
-      "GetIconHandleFromURLAsync", [iconPathInfo, promise] {
-        HICON hIcon = nullptr;
-        nsresult rv = GetIconHandleFromPathInfo(iconPathInfo, &hIcon);
-        if (NS_SUCCEEDED(rv)) {
-          promise->Resolve(hIcon, __func__);
-        } else {
-          promise->Reject(rv, __func__);
-        }
-      });
+  MozPromiseHolder<HIconPromise> holder;
+  RefPtr<HIconPromise> promise = holder.Ensure(__func__);
 
   RefPtr<nsIEventTarget> target = DecodePool::Singleton()->GetIOEventTarget();
 
-  rv = target->Dispatch(task.forget(), NS_DISPATCH_NORMAL);
-  if (NS_FAILED(rv)) {
-    promise->Reject(rv, __func__);
-  }
+  MOZ_ALWAYS_SUCCEEDS(target->Dispatch(
+      NS_NewRunnableFunction(
+          "GetIconHandleFromURLAsync",
+          [iconPathInfo, holder = std::move(holder)]() mutable {
+            HICON hIcon = nullptr;
+            nsresult rv = GetIconHandleFromPathInfo(iconPathInfo, &hIcon);
+            if (NS_SUCCEEDED(rv)) {
+              holder.Resolve(hIcon, __func__);
+            } else {
+              holder.Reject(rv, __func__);
+            }
+          }),
+      NS_DISPATCH_NORMAL));
 
   return promise;
 }
 
 static RefPtr<nsIconChannel::ByteBufPromise> GetIconBufferFromURLAsync(
     nsIMozIconURI* aUrl) {
-  auto promise = MakeRefPtr<nsIconChannel::ByteBufPromise::Private>(__func__);
-
-  GetIconHandleFromURLAsync(aUrl)->Then(
+  return GetIconHandleFromURLAsync(aUrl)->Then(
       GetCurrentSerialEventTarget(), __func__,
-      [promise](HICON aIcon) {
+      [](HICON aIcon) {
         ByteBuf iconBuffer;
         nsresult rv = MakeIconBuffer(aIcon, &iconBuffer);
-        if (NS_SUCCEEDED(rv)) {
-          promise->Resolve(std::move(iconBuffer), __func__);
-        } else {
-          promise->Reject(rv, __func__);
+        if (NS_FAILED(rv)) {
+          return nsIconChannel::ByteBufPromise::CreateAndReject(rv, __func__);
         }
+        return nsIconChannel::ByteBufPromise::CreateAndResolve(
+            std::move(iconBuffer), __func__);
       },
-      [promise](nsresult rv) { promise->Reject(rv, __func__); });
-
-  return promise;
+      [](nsresult aRv) {
+        return nsIconChannel::ByteBufPromise::CreateAndReject(aRv, __func__);
+      });
 }
 
 static nsresult WriteByteBufToOutputStream(const ByteBuf& aBuffer,
