@@ -146,6 +146,38 @@ TEST_F(TestAsyncBlockers, Register_WaitUntilClear_0s) {
   PROCESS_EVENTS_UNTIL(done);
 }
 
+TEST_F(TestAsyncBlockers, Register_WaitUntilClear_TimesOut) {
+  AsyncBlockers blockers;
+  bool done = false;
+
+  Blocker blocker;
+  blockers.Register(&blocker);
+
+  // The blocker is never deregistered, so only the timeout can resolve this.
+  blockers.WaitUntilClear(50)->Then(GetCurrentSerialEventTarget(), __func__,
+                                    [&]() { done = true; });
+
+  PROCESS_EVENTS_UNTIL(done);
+  blockers.Deregister(&blocker);
+}
+
+TEST_F(TestAsyncBlockers, DestroyWithTimeoutPending) {
+  {
+    AsyncBlockers blockers;
+    Blocker blocker;
+    blockers.Register(&blocker);
+    blockers.WaitUntilClear(100);
+  }
+
+  // The timeout must not fire on the destroyed AsyncBlockers.
+  bool elapsed = false;
+  NS_DelayedDispatchToCurrentThread(
+      NS_NewRunnableFunction("TestAsyncBlockers::DestroyWithTimeoutPending",
+                             [&]() { elapsed = true; }),
+      300);
+  PROCESS_EVENTS_UNTIL(elapsed);
+}
+
 #if defined(MOZ_DIAGNOSTIC_ASSERT_ENABLED) && !defined(ANDROID) && \
     !(defined(XP_DARWIN) && !defined(MOZ_DEBUG))
 static void DeregisterEmpty_Test() {
