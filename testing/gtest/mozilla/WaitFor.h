@@ -172,23 +172,23 @@ inline auto TakeN(MediaEventSourceImpl<Lp, Args...>& aEvent, size_t aN)
     -> RefPtr<TakeNPromise<Args...>> {
   using Storage = std::vector<std::tuple<Args...>>;
   using Promise = TakeNPromise<Args...>;
-  using Holder = media::Refcountable<MozPromiseHolder<Promise>>;
   using Values = media::Refcountable<Storage>;
   using Listener = media::Refcountable<MediaEventListener>;
   auto values = MakeRefPtr<Values>();
   values->reserve(aN);
   auto listener = MakeRefPtr<Listener>();
-  auto holder = MakeRefPtr<Holder>();
-  *listener = aEvent.Connect(AbstractThread::GetCurrent(),
-                             [values, listener, aN, holder](Args... aValue) {
-                               values->push_back({aValue...});
-                               if (values->size() == aN) {
-                                 listener->Disconnect();
-                                 holder->Resolve(std::move(*values),
-                                                 "TakeN listener callback");
-                               }
-                             });
-  return holder->Ensure(__func__);
+  MozPromiseHolder<Promise> holder;
+  RefPtr<Promise> promise = holder.Ensure(__func__);
+  *listener = aEvent.Connect(
+      AbstractThread::GetCurrent(),
+      [values, listener, aN, h = std::move(holder)](Args... aValue) mutable {
+        values->push_back({aValue...});
+        if (values->size() == aN) {
+          listener->Disconnect();
+          h.Resolve(std::move(*values), "TakeN listener callback");
+        }
+      });
+  return promise;
 }
 
 using TakeNVoidPromise = MozPromise<size_t, bool, true>;
@@ -198,21 +198,22 @@ inline auto TakeN(MediaEventSourceImpl<Lp, void>& aEvent, size_t aN)
     -> RefPtr<TakeNVoidPromise> {
   using Storage = Maybe<size_t>;
   using Promise = TakeNVoidPromise;
-  using Holder = media::Refcountable<MozPromiseHolder<Promise>>;
   using Values = media::Refcountable<Storage>;
   using Listener = media::Refcountable<MediaEventListener>;
   auto values = MakeRefPtr<Values>();
   *values = Some(0);
   auto listener = MakeRefPtr<Listener>();
-  auto holder = MakeRefPtr<Holder>();
-  *listener = aEvent.Connect(
-      AbstractThread::GetCurrent(), [values, listener, aN, holder]() {
-        if (++(values->ref()) == aN) {
-          listener->Disconnect();
-          holder->Resolve(**values, "TakeN (void) listener callback");
-        }
-      });
-  return holder->Ensure(__func__);
+  MozPromiseHolder<Promise> holder;
+  RefPtr<Promise> promise = holder.Ensure(__func__);
+  *listener =
+      aEvent.Connect(AbstractThread::GetCurrent(),
+                     [values, listener, aN, h = std::move(holder)]() mutable {
+                       if (++(values->ref()) == aN) {
+                         listener->Disconnect();
+                         h.Resolve(**values, "TakeN (void) listener callback");
+                       }
+                     });
+  return promise;
 }
 
 /**
