@@ -291,7 +291,7 @@ nsresult LinkAccount(nsIPrincipal* aPrincipal, const nsCString& aAccountId,
 //    Will close a dialog shown to the user.
 void CloseUserInterface(BrowsingContext* aBrowsingContext);
 
-RefPtr<MozPromise<bool, nsresult, true>> DisconnectInMainProcess(
+RefPtr<GenericPromise> DisconnectInMainProcess(
     nsIPrincipal* aDocumentPrincipal,
     const IdentityCredentialDisconnectOptions& aOptions);
 

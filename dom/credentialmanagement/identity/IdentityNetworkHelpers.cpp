@@ -4,46 +4,44 @@
 
 #include "mozilla/dom/IdentityNetworkHelpers.h"
 
+#include "mozilla/dom/PromiseNativeHandler.h"
+
 namespace mozilla::dom {
 
 RefPtr<MozPromise<IdentityProviderWellKnown, nsresult, true>>
 IdentityNetworkHelpers::FetchWellKnownHelper(
     nsIURI* aWellKnown, nsIPrincipal* aTriggeringPrincipal) {
-  RefPtr<MozPromise<IdentityProviderWellKnown, nsresult, true>::Private>
-      result =
-          new MozPromise<IdentityProviderWellKnown, nsresult, true>::Private(
-              __func__);
+  using PromiseType = MozPromise<IdentityProviderWellKnown, nsresult, true>;
   nsresult rv;
   nsCOMPtr<nsICredentialChooserService> ccService =
       mozilla::components::CredentialChooserService::Service(&rv);
   if (NS_FAILED(rv) || !ccService) {
-    result->Reject(rv, __func__);
-    return result;
+    return PromiseType::CreateAndReject(rv, __func__);
   }
 
   RefPtr<Promise> serviceResult;
   rv = ccService->FetchWellKnown(aWellKnown, aTriggeringPrincipal,
                                  getter_AddRefs(serviceResult));
   if (NS_FAILED(rv)) {
-    result->Reject(rv, __func__);
-    return result;
+    return PromiseType::CreateAndReject(rv, __func__);
   }
-  serviceResult->AddCallbacksWithCycleCollectedArgs(
-      [result](JSContext* aCx, JS::Handle<JS::Value> aValue, ErrorResult&) {
+
+  auto handler = MakeRefPtr<MozPromiseNativeHandler<PromiseType>>(
+      [](JSContext* aCx, JS::Handle<JS::Value> aValue) -> RefPtr<PromiseType> {
         IdentityProviderWellKnown value;
-        bool success = value.Init(aCx, aValue);
-        if (!success) {
+        if (!value.Init(aCx, aValue)) {
           JS_ClearPendingException(aCx);
-          result->Reject(NS_ERROR_INVALID_ARG, __func__);
-          return;
+          return PromiseType::CreateAndReject(NS_ERROR_INVALID_ARG, __func__);
         }
-        result->Resolve(value, __func__);
+        return PromiseType::CreateAndResolve(std::move(value), __func__);
       },
-      [result](JSContext* aCx, JS::Handle<JS::Value> aValue, ErrorResult&) {
-        result->Reject(Promise::TryExtractNSResultFromRejectionValue(aValue),
-                       __func__);
-      });
-  return result;
+      [](JSContext* aCx, JS::Handle<JS::Value> aValue) -> RefPtr<PromiseType> {
+        return PromiseType::CreateAndReject(
+            Promise::TryExtractNSResultFromRejectionValue(aValue), __func__);
+      },
+      __func__);
+  serviceResult->AppendNativeHandler(handler);
+  return handler->Promise();
 }
 
 RefPtr<MozPromise<
@@ -52,100 +50,89 @@ RefPtr<MozPromise<
 IdentityNetworkHelpers::FetchConfigHelper(
     nsIURI* aConfig, nsIPrincipal* aTriggeringPrincipal,
     Maybe<IdentityProviderWellKnown> aWellKnownConfig) {
-  RefPtr<MozPromise<
+  using PromiseType = MozPromise<
       std::tuple<Maybe<IdentityProviderWellKnown>, IdentityProviderAPIConfig>,
-      nsresult, true>::Private>
-      result = new MozPromise<std::tuple<Maybe<IdentityProviderWellKnown>,
-                                         IdentityProviderAPIConfig>,
-                              nsresult, true>::Private(__func__);
+      nsresult, true>;
   nsresult rv;
   nsCOMPtr<nsICredentialChooserService> ccService =
       mozilla::components::CredentialChooserService::Service(&rv);
   if (NS_FAILED(rv) || !ccService) {
-    result->Reject(rv, __func__);
-    return result;
+    return PromiseType::CreateAndReject(rv, __func__);
   }
 
   RefPtr<Promise> serviceResult;
   rv = ccService->FetchConfig(aConfig, aTriggeringPrincipal,
                               getter_AddRefs(serviceResult));
   if (NS_FAILED(rv)) {
-    result->Reject(rv, __func__);
-    return result;
+    return PromiseType::CreateAndReject(rv, __func__);
   }
-  serviceResult->AddCallbacksWithCycleCollectedArgs(
-      [result, aWellKnownConfig = std::move(aWellKnownConfig)](
-          JSContext* aCx, JS::Handle<JS::Value> aValue, ErrorResult&) {
+
+  auto handler = MakeRefPtr<MozPromiseNativeHandler<PromiseType>>(
+      [aWellKnownConfig = std::move(aWellKnownConfig)](
+          JSContext* aCx, JS::Handle<JS::Value> aValue) -> RefPtr<PromiseType> {
         IdentityProviderAPIConfig value;
-        bool success = value.Init(aCx, aValue);
-        if (!success) {
+        if (!value.Init(aCx, aValue)) {
           JS_ClearPendingException(aCx);
-          result->Reject(NS_ERROR_INVALID_ARG, __func__);
-          return;
+          return PromiseType::CreateAndReject(NS_ERROR_INVALID_ARG, __func__);
         }
-        result->Resolve(std::make_tuple(aWellKnownConfig, value), __func__);
+        return PromiseType::CreateAndResolve(
+            std::make_tuple(aWellKnownConfig, value), __func__);
       },
-      [result](JSContext* aCx, JS::Handle<JS::Value> aValue, ErrorResult&) {
-        result->Reject(Promise::TryExtractNSResultFromRejectionValue(aValue),
-                       __func__);
-      });
-  return result;
+      [](JSContext* aCx, JS::Handle<JS::Value> aValue) -> RefPtr<PromiseType> {
+        return PromiseType::CreateAndReject(
+            Promise::TryExtractNSResultFromRejectionValue(aValue), __func__);
+      },
+      __func__);
+  serviceResult->AppendNativeHandler(handler);
+  return handler->Promise();
 }
 
 RefPtr<MozPromise<IdentityProviderAccountList, nsresult, true>>
 IdentityNetworkHelpers::FetchAccountsHelper(
     nsIURI* aAccountsEndpoint, nsIPrincipal* aTriggeringPrincipal) {
-  RefPtr<MozPromise<IdentityProviderAccountList, nsresult, true>::Private>
-      result =
-          new MozPromise<IdentityProviderAccountList, nsresult, true>::Private(
-              __func__);
+  using PromiseType = MozPromise<IdentityProviderAccountList, nsresult, true>;
   nsresult rv;
   nsCOMPtr<nsICredentialChooserService> ccService =
       mozilla::components::CredentialChooserService::Service(&rv);
   if (NS_FAILED(rv) || !ccService) {
-    result->Reject(rv, __func__);
-    return result;
+    return PromiseType::CreateAndReject(rv, __func__);
   }
 
   RefPtr<Promise> serviceResult;
   rv = ccService->FetchAccounts(aAccountsEndpoint, aTriggeringPrincipal,
                                 getter_AddRefs(serviceResult));
   if (NS_FAILED(rv)) {
-    result->Reject(rv, __func__);
-    return result;
+    return PromiseType::CreateAndReject(rv, __func__);
   }
-  serviceResult->AddCallbacksWithCycleCollectedArgs(
-      [result](JSContext* aCx, JS::Handle<JS::Value> aValue, ErrorResult&) {
+
+  auto handler = MakeRefPtr<MozPromiseNativeHandler<PromiseType>>(
+      [](JSContext* aCx, JS::Handle<JS::Value> aValue) -> RefPtr<PromiseType> {
         IdentityProviderAccountList value;
-        bool success = value.Init(aCx, aValue);
-        if (!success) {
+        if (!value.Init(aCx, aValue)) {
           JS_ClearPendingException(aCx);
-          result->Reject(NS_ERROR_INVALID_ARG, __func__);
-          return;
+          return PromiseType::CreateAndReject(NS_ERROR_INVALID_ARG, __func__);
         }
-        result->Resolve(value, __func__);
+        return PromiseType::CreateAndResolve(std::move(value), __func__);
       },
-      [result](JSContext* aCx, JS::Handle<JS::Value> aValue, ErrorResult&) {
-        result->Reject(Promise::TryExtractNSResultFromRejectionValue(aValue),
-                       __func__);
-      });
-  return result;
+      [](JSContext* aCx, JS::Handle<JS::Value> aValue) -> RefPtr<PromiseType> {
+        return PromiseType::CreateAndReject(
+            Promise::TryExtractNSResultFromRejectionValue(aValue), __func__);
+      },
+      __func__);
+  serviceResult->AppendNativeHandler(handler);
+  return handler->Promise();
 }
 
 RefPtr<MozPromise<IdentityAssertionResponse, nsresult, true>>
 IdentityNetworkHelpers::FetchTokenHelper(nsIURI* aAccountsEndpoint,
                                          const nsCString& aBody,
                                          nsIPrincipal* aTriggeringPrincipal) {
-  RefPtr<MozPromise<IdentityAssertionResponse, nsresult, true>::Private>
-      result =
-          new MozPromise<IdentityAssertionResponse, nsresult, true>::Private(
-              __func__);
+  using PromiseType = MozPromise<IdentityAssertionResponse, nsresult, true>;
   nsresult rv;
   nsCOMPtr<nsICredentialChooserService> ccService =
       mozilla::components::CredentialChooserService::Service(&rv);
   if (NS_FAILED(rv) || !ccService) {
-    result->Reject(rv, __func__);
-    return result;
+    return PromiseType::CreateAndReject(rv, __func__);
   }
 
   RefPtr<Promise> serviceResult;
@@ -153,40 +140,38 @@ IdentityNetworkHelpers::FetchTokenHelper(nsIURI* aAccountsEndpoint,
                              aTriggeringPrincipal,
                              getter_AddRefs(serviceResult));
   if (NS_FAILED(rv)) {
-    result->Reject(rv, __func__);
-    return result;
+    return PromiseType::CreateAndReject(rv, __func__);
   }
-  serviceResult->AddCallbacksWithCycleCollectedArgs(
-      [result](JSContext* aCx, JS::Handle<JS::Value> aValue, ErrorResult&) {
+
+  auto handler = MakeRefPtr<MozPromiseNativeHandler<PromiseType>>(
+      [](JSContext* aCx, JS::Handle<JS::Value> aValue) -> RefPtr<PromiseType> {
         IdentityAssertionResponse value;
-        bool success = value.Init(aCx, aValue);
-        if (!success) {
+        if (!value.Init(aCx, aValue)) {
           JS_ClearPendingException(aCx);
-          result->Reject(NS_ERROR_INVALID_ARG, __func__);
-          return;
+          return PromiseType::CreateAndReject(NS_ERROR_INVALID_ARG, __func__);
         }
-        result->Resolve(value, __func__);
+        return PromiseType::CreateAndResolve(std::move(value), __func__);
       },
-      [result](JSContext* aCx, JS::Handle<JS::Value> aValue, ErrorResult&) {
+      [](JSContext* aCx, JS::Handle<JS::Value> aValue) -> RefPtr<PromiseType> {
         JS_ClearPendingException(aCx);
-        result->Reject(Promise::TryExtractNSResultFromRejectionValue(aValue),
-                       __func__);
-      });
-  return result;
+        return PromiseType::CreateAndReject(
+            Promise::TryExtractNSResultFromRejectionValue(aValue), __func__);
+      },
+      __func__);
+  serviceResult->AppendNativeHandler(handler);
+  return handler->Promise();
 }
 
 RefPtr<MozPromise<DisconnectedAccount, nsresult, true>>
 IdentityNetworkHelpers::FetchDisconnectHelper(
     nsIURI* aAccountsEndpoint, const nsCString& aBody,
     nsIPrincipal* aTriggeringPrincipal) {
-  RefPtr<MozPromise<DisconnectedAccount, nsresult, true>::Private> result =
-      new MozPromise<DisconnectedAccount, nsresult, true>::Private(__func__);
+  using PromiseType = MozPromise<DisconnectedAccount, nsresult, true>;
   nsresult rv;
   nsCOMPtr<nsICredentialChooserService> ccService =
       mozilla::components::CredentialChooserService::Service(&rv);
   if (NS_FAILED(rv) || !ccService) {
-    result->Reject(rv, __func__);
-    return result;
+    return PromiseType::CreateAndReject(rv, __func__);
   }
 
   RefPtr<Promise> serviceResult;
@@ -194,26 +179,26 @@ IdentityNetworkHelpers::FetchDisconnectHelper(
                              aTriggeringPrincipal,
                              getter_AddRefs(serviceResult));
   if (NS_FAILED(rv)) {
-    result->Reject(rv, __func__);
-    return result;
+    return PromiseType::CreateAndReject(rv, __func__);
   }
-  serviceResult->AddCallbacksWithCycleCollectedArgs(
-      [result](JSContext* aCx, JS::Handle<JS::Value> aValue, ErrorResult&) {
+
+  auto handler = MakeRefPtr<MozPromiseNativeHandler<PromiseType>>(
+      [](JSContext* aCx, JS::Handle<JS::Value> aValue) -> RefPtr<PromiseType> {
         DisconnectedAccount value;
-        bool success = value.Init(aCx, aValue);
-        if (!success) {
+        if (!value.Init(aCx, aValue)) {
           JS_ClearPendingException(aCx);
-          result->Reject(NS_ERROR_INVALID_ARG, __func__);
-          return;
+          return PromiseType::CreateAndReject(NS_ERROR_INVALID_ARG, __func__);
         }
-        result->Resolve(value, __func__);
+        return PromiseType::CreateAndResolve(std::move(value), __func__);
       },
-      [result](JSContext* aCx, JS::Handle<JS::Value> aValue, ErrorResult&) {
+      [](JSContext* aCx, JS::Handle<JS::Value> aValue) -> RefPtr<PromiseType> {
         JS_ClearPendingException(aCx);
-        result->Reject(Promise::TryExtractNSResultFromRejectionValue(aValue),
-                       __func__);
-      });
-  return result;
+        return PromiseType::CreateAndReject(
+            Promise::TryExtractNSResultFromRejectionValue(aValue), __func__);
+      },
+      __func__);
+  serviceResult->AppendNativeHandler(handler);
+  return handler->Promise();
 }
 
 }  // namespace mozilla::dom
