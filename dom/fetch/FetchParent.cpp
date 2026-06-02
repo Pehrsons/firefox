@@ -163,17 +163,16 @@ IPCResult FetchParent::RecvFetchOp(FetchOpArgs&& aArgs) {
   }
   mAssociatedBrowsingContextID = aArgs.associatedBrowsingContextID();
 
-  MOZ_ASSERT(!mPromise);
-  mPromise = new GenericPromise::Private(__func__);
+  MOZ_ASSERT(mPromiseHolder.IsEmpty());
+  RefPtr<GenericPromise> promise = mPromiseHolder.Ensure(__func__);
 
   RefPtr<FetchParent> self = this;
-  mPromise->Then(
+  promise->Then(
       mBackgroundEventTarget, __func__,
       [self](const bool&& result) mutable {
         FETCH_LOG(
             ("FetchParent::RecvFetchOp [%p] Success Callback", self.get()));
         AssertIsOnBackgroundThread();
-        self->mPromise = nullptr;
         if (self->mIsDone) {
           FETCH_LOG(("FetchParent::RecvFetchOp [%p] Fetch has already aborted",
                      self.get()));
@@ -195,7 +194,6 @@ IPCResult FetchParent::RecvFetchOp(FetchOpArgs&& aArgs) {
             ("FetchParent::RecvFetchOp [%p] Failure Callback", self.get()));
         AssertIsOnBackgroundThread();
         self->mIsDone = true;
-        self->mPromise = nullptr;
         if (!self->mActorDestroyed) {
           FETCH_LOG(("FetchParent::RecvFetchOp [%p] Send__delete__(aErr)",
                      self.get()));
@@ -209,12 +207,11 @@ IPCResult FetchParent::RecvFetchOp(FetchOpArgs&& aArgs) {
     AssertIsOnMainThread();
     if (self->mIsDone) {
       MOZ_ASSERT(!self->mResponsePromises);
-      MOZ_ASSERT(self->mPromise);
       FETCH_LOG(
           ("FetchParent::RecvFetchOp [%p], Main Thread Runnable, "
            "already aborted",
            self.get()));
-      self->mPromise->Reject(NS_ERROR_DOM_ABORT_ERR, __func__);
+      self->mPromiseHolder.Reject(NS_ERROR_DOM_ABORT_ERR, __func__);
       return;
     }
     RefPtr<FetchService> fetchService = FetchService::GetInstance();
@@ -230,8 +227,8 @@ IPCResult FetchParent::RecvFetchOp(FetchOpArgs&& aArgs) {
                self->mCSPEventListener, self->mAssociatedBrowsingContextID,
                self->mBackgroundEventTarget, self->mID,
                self->mIsThirdPartyContext,
-               MozPromiseRequestHolder<FetchServiceResponseEndPromise>(),
-               self->mPromise, self->mIsOn3PCBExceptionList})));
+               MozPromiseRequestHolder<FetchServiceResponseEndPromise>(), self,
+               self->mIsOn3PCBExceptionList})));
     } else {
       MOZ_ASSERT(self->mRequest->GetKeepalive());
       self->mResponsePromises =
@@ -258,14 +255,12 @@ IPCResult FetchParent::RecvFetchOp(FetchOpArgs&& aArgs) {
               GetMainThreadSerialEventTarget(), __func__,
               [self](ResponseEndArgs&& aArgs) mutable {
                 AssertIsOnMainThread();
-                MOZ_ASSERT(self->mPromise);
-                self->mPromise->Resolve(true, __func__);
+                self->mPromiseHolder.Resolve(true, __func__);
                 self->mResponsePromises = nullptr;
               },
               [self](CopyableErrorResult&& aErr) mutable {
                 AssertIsOnMainThread();
-                MOZ_ASSERT(self->mPromise);
-                self->mPromise->Reject(aErr.StealNSResult(), __func__);
+                self->mPromiseHolder.Reject(aErr.StealNSResult(), __func__);
                 self->mResponsePromises = nullptr;
               })
           ->Track(fetchService->GetResponseEndPromiseHolder(
@@ -275,14 +270,12 @@ IPCResult FetchParent::RecvFetchOp(FetchOpArgs&& aArgs) {
           GetMainThreadSerialEventTarget(), __func__,
           [self](ResponseEndArgs&& aArgs) mutable {
             AssertIsOnMainThread();
-            MOZ_ASSERT(self->mPromise);
-            self->mPromise->Resolve(true, __func__);
+            self->mPromiseHolder.Resolve(true, __func__);
             self->mResponsePromises = nullptr;
           },
           [self](CopyableErrorResult&& aErr) mutable {
             AssertIsOnMainThread();
-            MOZ_ASSERT(self->mPromise);
-            self->mPromise->Reject(aErr.StealNSResult(), __func__);
+            self->mPromiseHolder.Reject(aErr.StealNSResult(), __func__);
             self->mResponsePromises = nullptr;
           });
     }
@@ -452,6 +445,11 @@ void FetchParent::OnCSPViolationEvent(const nsAString& aJSON,
   MOZ_ASSERT(!mActorDestroyed);
 
   (void)SendOnCSPViolationEvent(aJSON, aReportGroupName);
+}
+
+void FetchParent::ResolveFetchParentPromise(StaticString aFunc) {
+  AssertIsOnMainThread();
+  mPromiseHolder.Resolve(true, aFunc);
 }
 
 }  // namespace mozilla::dom

@@ -75,6 +75,10 @@ class FetchParent final : public PFetchParent {
 
   void OnNotifyNetworkMonitorAlternateStack(uint64_t aChannelID);
 
+  // Resolves the promise that keeps the fetch alive, letting the actor be
+  // deleted. Main thread only.
+  void ResolveFetchParentPromise(StaticString aFunc);
+
  private:
   ~FetchParent();
 
@@ -87,7 +91,7 @@ class FetchParent final : public PFetchParent {
   nsID mID;
   SafeRefPtr<InternalRequest> mRequest;
   RefPtr<FetchServicePromises> mResponsePromises;
-  RefPtr<GenericPromise::Private> mPromise;
+  MozPromiseHolder<GenericPromise> mPromiseHolder;
   PrincipalInfo mPrincipalInfo;
   nsCString mWorkerScript;
   Maybe<ClientInfo> mClientInfo;

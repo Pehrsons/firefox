@@ -8,6 +8,7 @@
 #include "mozilla/MozPromise.h"
 #include "mozilla/RefPtr.h"
 #include "mozilla/dom/FetchDriver.h"
+#include "mozilla/dom/FetchParent.h"
 #include "mozilla/dom/FetchTypes.h"
 #include "mozilla/dom/PerformanceTimingTypes.h"
 #include "mozilla/dom/SafeRefPtr.h"
@@ -24,6 +25,7 @@ class PerformanceStorage;
 
 namespace mozilla::dom {
 
+class FetchParent;
 class InternalRequest;
 class InternalResponse;
 class ClientInfo;
@@ -122,7 +124,7 @@ class FetchService final : public nsIObserver {
     bool mIsThirdPartyContext;
     MozPromiseRequestHolder<FetchServiceResponseEndPromise>
         mResponseEndPromiseHolder;
-    RefPtr<GenericPromise::Private> mFetchParentPromise;
+    RefPtr<FetchParent> mFetchParent;
     bool mIsOn3PCBExceptionList;
   };
 

@@ -358,7 +358,7 @@ void FetchService::FetchInstance::Cancel(bool aForceAbort) {
         // Non-worker keepalive requests need actors to be active until request
         // completion, because we update request quota per load-group in
         // FetchChild::ActorDestroy.
-        MOZ_ASSERT((mArgs.as<WorkerFetchArgs>().mFetchParentPromise));
+        MOZ_ASSERT(mArgs.as<WorkerFetchArgs>().mFetchParent);
         if (mArgs.as<WorkerFetchArgs>().mResponseEndPromiseHolder.Exists()) {
           FETCH_LOG(
               ("FetchInstance::Cancel() [%p] mResponseEndPromiseHolder exists",
@@ -369,8 +369,8 @@ void FetchService::FetchInstance::Cancel(bool aForceAbort) {
           // the parent promise resolution leads to deleting of actors
           // mActorDying prevents further access to FetchParent
           mActorDying = true;
-          mArgs.as<WorkerFetchArgs>().mFetchParentPromise->Resolve(true,
-                                                                   __func__);
+          mArgs.as<WorkerFetchArgs>().mFetchParent->ResolveFetchParentPromise(
+              __func__);
         }
       }
       return;
