@@ -5,6 +5,7 @@
 #define include_gfx_ipc_UiCompositorControllerChild_h
 
 #include "mozilla/Maybe.h"
+#include "mozilla/MozPromise.h"
 #include "mozilla/RefPtr.h"
 #include "mozilla/gfx/2D.h"
 #include "mozilla/layers/PUiCompositorControllerChild.h"
@@ -117,7 +118,7 @@ class UiCompositorControllerChild final
   struct ScreenPixelsRequest {
     uint64_t mRequestId;
     RefPtr<layers::AndroidHardwareBuffer> mHardwareBuffer;
-    RefPtr<ScreenPixelsPromise::Private> mPromise;
+    MozPromiseHolder<ScreenPixelsPromise> mPromise;
   };
   Maybe<ScreenPixelsRequest> mScreenPixelsRequest;
 #endif

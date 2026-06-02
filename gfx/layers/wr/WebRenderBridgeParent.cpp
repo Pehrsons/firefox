@@ -466,7 +466,7 @@ void WebRenderBridgeParent::FinishInitializationError(nsCString&& aError) {
   mInitError = std::move(aError);
 #ifdef MOZ_WIDGET_ANDROID
   if (mScreenPixelsRequest) {
-    mScreenPixelsRequest->mPromise->Reject(NS_ERROR_ABORT, __func__);
+    mScreenPixelsRequest->mHolder.Reject(NS_ERROR_ABORT, __func__);
     mScreenPixelsRequest.reset();
   }
 #endif

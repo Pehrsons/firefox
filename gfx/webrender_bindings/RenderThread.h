@@ -473,7 +473,7 @@ class RenderThread final {
   void PostRunnable(already_AddRefed<nsIRunnable> aRunnable);
 
   void DoAccumulateMemoryReport(MemoryReport,
-                                const RefPtr<MemoryReportPromise::Private>&);
+                                MozPromiseHolder<MemoryReportPromise>&&);
 
   void AddRenderTextureOp(RenderTextureOp aOp,
                           const wr::ExternalImageId& aExternalImageId);

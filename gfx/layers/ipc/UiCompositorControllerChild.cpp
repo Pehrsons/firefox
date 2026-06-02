@@ -140,7 +140,7 @@ UiCompositorControllerChild::RequestScreenPixels(gfx::IntRect aSourceRect,
   // We only support one request at a time. If an old request is still
   // outstanding when a new request is made, just reject the old request.
   if (mScreenPixelsRequest) {
-    mScreenPixelsRequest.extract().mPromise->Reject(NS_ERROR_ABORT, __func__);
+    mScreenPixelsRequest.extract().mPromise.Reject(NS_ERROR_ABORT, __func__);
   }
 
   RefPtr<layers::AndroidHardwareBuffer> hardwareBuffer =
@@ -158,16 +158,17 @@ UiCompositorControllerChild::RequestScreenPixels(gfx::IntRect aSourceRect,
 
   static uint64_t nextRequestId = 0;
   const uint64_t requestId = nextRequestId++;
-  auto promise = MakeRefPtr<ScreenPixelsPromise::Private>(__func__);
+  MozPromiseHolder<ScreenPixelsPromise> holder;
+  RefPtr<ScreenPixelsPromise> promise = holder.Ensure(__func__);
   mScreenPixelsRequest.emplace(ScreenPixelsRequest{
       .mRequestId = requestId,
       .mHardwareBuffer = hardwareBuffer,
-      .mPromise = promise,
+      .mPromise = std::move(holder),
   });
   if (!SendRequestScreenPixels(requestId, aSourceRect,
                                ipc::FileDescriptor(std::move(bufferFd)))) {
-    mScreenPixelsRequest.extract().mPromise->Reject(NS_ERROR_NOT_AVAILABLE,
-                                                    __func__);
+    mScreenPixelsRequest.extract().mPromise.Reject(NS_ERROR_NOT_AVAILABLE,
+                                                   __func__);
   }
   return promise;
 }
@@ -222,7 +223,7 @@ void UiCompositorControllerChild::ActorDestroy(ActorDestroyReason aWhy) {
 
 #ifdef MOZ_WIDGET_ANDROID
   if (mScreenPixelsRequest) {
-    mScreenPixelsRequest->mPromise->Reject(NS_ERROR_ABORT, __func__);
+    mScreenPixelsRequest->mPromise.Reject(NS_ERROR_ABORT, __func__);
   }
 #endif
   if (mProcessToken) {
@@ -277,7 +278,7 @@ mozilla::ipc::IPCResult UiCompositorControllerChild::RecvScreenPixels(
 
   auto request = mScreenPixelsRequest.extract();
   if (!aSuccess) {
-    request.mPromise->Reject(NS_ERROR_FAILURE, __func__);
+    request.mPromise.Reject(NS_ERROR_FAILURE, __func__);
     return IPC_OK();
   }
 
@@ -285,7 +286,7 @@ mozilla::ipc::IPCResult UiCompositorControllerChild::RecvScreenPixels(
     request.mHardwareBuffer->SetAcquireFence(
         aAcquireFence->TakePlatformHandle());
   }
-  request.mPromise->Resolve(std::move(request.mHardwareBuffer), __func__);
+  request.mPromise.Resolve(std::move(request.mHardwareBuffer), __func__);
 #endif  // defined(MOZ_WIDGET_ANDROID)
 
   return IPC_OK();

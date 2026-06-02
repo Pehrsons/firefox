@@ -323,8 +323,7 @@ already_AddRefed<nsIThread> RenderThread::GetRenderThread() {
 }
 
 void RenderThread::DoAccumulateMemoryReport(
-    MemoryReport aReport,
-    const RefPtr<MemoryReportPromise::Private>& aPromise) {
+    MemoryReport aReport, MozPromiseHolder<MemoryReportPromise>&& aHolder) {
   MOZ_ASSERT(IsInRenderThread());
 
   for (auto& r : mRenderers) {
@@ -348,14 +347,14 @@ void RenderThread::DoAccumulateMemoryReport(
   }
   aReport.render_texture_hosts = renderTextureMemory;
 
-  aPromise->Resolve(aReport, __func__);
+  aHolder.Resolve(aReport, __func__);
 }
 
 // static
 RefPtr<MemoryReportPromise> RenderThread::AccumulateMemoryReport(
     MemoryReport aInitial) {
-  RefPtr<MemoryReportPromise::Private> p =
-      new MemoryReportPromise::Private(__func__);
+  MozPromiseHolder<MemoryReportPromise> holder;
+  RefPtr<MemoryReportPromise> p = holder.Ensure(__func__);
   MOZ_ASSERT(!IsInRenderThread());
   if (!Get()) {
     // This happens when the GPU process fails to start and we fall back to the
@@ -363,14 +362,15 @@ RefPtr<MemoryReportPromise> RenderThread::AccumulateMemoryReport(
     // we made the webrender detection code in gfxPlatform.cpp smarter. See bug
     // 1494430 comment 12.
     NS_WARNING("No render thread, returning empty memory report");
-    p->Resolve(aInitial, __func__);
+    holder.Resolve(aInitial, __func__);
     return p;
   }
 
   Get()->PostRunnable(
-      NewRunnableMethod<MemoryReport, RefPtr<MemoryReportPromise::Private>>(
+      NewRunnableMethod<MemoryReport, MozPromiseHolder<MemoryReportPromise>&&>(
           "wr::RenderThread::DoAccumulateMemoryReport", Get(),
-          &RenderThread::DoAccumulateMemoryReport, aInitial, p));
+          &RenderThread::DoAccumulateMemoryReport, aInitial,
+          std::move(holder)));
 
   return p;
 }
