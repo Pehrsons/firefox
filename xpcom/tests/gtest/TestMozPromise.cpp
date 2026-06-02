@@ -38,24 +38,25 @@ class MOZ_STACK_CLASS AutoTaskQueue {
 
 class DelayedResolveOrReject : public Runnable {
  public:
-  DelayedResolveOrReject(TaskQueue* aTaskQueue, TestPromise::Private* aPromise,
+  DelayedResolveOrReject(TaskQueue* aTaskQueue,
+                         MozPromiseHolder<TestPromise>&& aHolder,
                          const TestPromise::ResolveOrRejectValue& aValue,
                          int aIterations)
       : mozilla::Runnable("DelayedResolveOrReject"),
         mTaskQueue(aTaskQueue),
-        mPromise(aPromise),
+        mHolder(std::move(aHolder)),
         mValue(aValue),
         mIterations(aIterations) {}
 
   NS_IMETHOD Run() override {
     MOZ_RELEASE_ASSERT(mTaskQueue->IsCurrentThreadIn());
-    if (!mPromise) {
+    if (mHolder.IsEmpty()) {
       // Canceled.
       return NS_OK;
     }
 
     if (--mIterations == 0) {
-      mPromise->ResolveOrReject(mValue, __func__);
+      mHolder.ResolveOrReject(mValue, __func__);
       return NS_OK;
     }
 
@@ -63,14 +64,12 @@ class DelayedResolveOrReject : public Runnable {
     return mTaskQueue->Dispatch(r.forget());
   }
 
-  void Cancel() { mPromise = nullptr; }
-
  protected:
   ~DelayedResolveOrReject() = default;
 
  private:
   RefPtr<TaskQueue> mTaskQueue;
-  RefPtr<TestPromise::Private> mPromise;
+  MozPromiseHolder<TestPromise> mHolder;
   TestPromise::ResolveOrRejectValue mValue;
   int mIterations;
 };
@@ -171,16 +170,21 @@ TEST(MozPromise, AsyncResolve)
   AutoTaskQueue atq;
   RefPtr<TaskQueue> queue = atq.Queue();
   RunOnTaskQueue(queue, [queue]() -> void {
-    RefPtr p = MakeRefPtr<TestPromise::Private>(__func__);
-
-    // Kick off three racing tasks, and make sure we get the one that finishes
-    // earliest.
-    RefPtr a = MakeRefPtr<DelayedResolveOrReject>(queue, p,
-                                                  RRValue::MakeResolve(32), 10);
-    RefPtr b = MakeRefPtr<DelayedResolveOrReject>(queue, p,
-                                                  RRValue::MakeResolve(42), 5);
-    RefPtr c = MakeRefPtr<DelayedResolveOrReject>(queue, p,
-                                                  RRValue::MakeReject(32.0), 7);
+    // Kick off three tasks that settle after different delays, and make sure
+    // each settles its own promise.
+    MozPromiseHolder<TestPromise> holderA;
+    MozPromiseHolder<TestPromise> holderB;
+    MozPromiseHolder<TestPromise> holderC;
+    nsTArray<RefPtr<TestPromise>> promises;
+    promises.AppendElement(holderA.Ensure(__func__));
+    promises.AppendElement(holderB.Ensure(__func__));
+    promises.AppendElement(holderC.Ensure(__func__));
+    RefPtr<DelayedResolveOrReject> a = new DelayedResolveOrReject(
+        queue, std::move(holderA), RRValue::MakeResolve(32), 10);
+    RefPtr<DelayedResolveOrReject> b = new DelayedResolveOrReject(
+        queue, std::move(holderB), RRValue::MakeResolve(42), 5);
+    RefPtr<DelayedResolveOrReject> c = new DelayedResolveOrReject(
+        queue, std::move(holderC), RRValue::MakeReject(32.0), 7);
 
     nsCOMPtr<nsIRunnable> ref = a.get();
     (void)queue->Dispatch(ref.forget());
@@ -189,16 +193,21 @@ TEST(MozPromise, AsyncResolve)
     ref = c.get();
     (void)queue->Dispatch(ref.forget());
 
-    p->Then(
-        queue, __func__,
-        [queue, a, b, c](int aResolveValue) -> void {
-          EXPECT_EQ(aResolveValue, 42);
-          a->Cancel();
-          b->Cancel();
-          c->Cancel();
-          queue->BeginShutdown();
-        },
-        DO_FAIL);
+    TestPromise::AllSettled(queue, promises)
+        ->Then(
+            queue, __func__,
+            [queue](const TestPromise::AllSettledPromiseType::ResolveValueType&
+                        aResolveValues) -> void {
+              EXPECT_EQ(aResolveValues.Length(), 3UL);
+              EXPECT_TRUE(aResolveValues[0].IsResolve());
+              EXPECT_EQ(aResolveValues[0].ResolveValue(), 32);
+              EXPECT_TRUE(aResolveValues[1].IsResolve());
+              EXPECT_EQ(aResolveValues[1].ResolveValue(), 42);
+              EXPECT_FALSE(aResolveValues[2].IsResolve());
+              EXPECT_EQ(aResolveValues[2].RejectValue(), 32.0);
+              queue->BeginShutdown();
+            },
+            []() { EXPECT_TRUE(false); });
   });
 }
 
@@ -225,11 +234,12 @@ TEST(MozPromise, CompletionPromises)
         ->Then(
             queue, __func__,
             [queue](int aVal) -> RefPtr<TestPromise> {
-              RefPtr p = MakeRefPtr<TestPromise::Private>(__func__);
-              RefPtr resolver = MakeRefPtr<DelayedResolveOrReject>(
-                  queue, p, RRValue::MakeResolve(aVal - 8), 10);
+              MozPromiseHolder<TestPromise> holder;
+              RefPtr<TestPromise> p = holder.Ensure(__func__);
+              nsCOMPtr<nsIRunnable> resolver = new DelayedResolveOrReject(
+                  queue, std::move(holder), RRValue::MakeResolve(aVal - 8), 10);
               (void)queue->Dispatch(resolver.forget());
-              return RefPtr<TestPromise>(p);
+              return p;
             },
             DO_FAIL)
         ->Then(
@@ -600,13 +610,14 @@ TEST(MozPromise, MessageLoopEventTarget)
 TEST(MozPromise, ChainTo)
 {
   RefPtr<TestPromise> promise1 = TestPromise::CreateAndResolve(42, __func__);
-  RefPtr promise2 = MakeRefPtr<TestPromise::Private>(__func__);
+  MozPromiseHolder<TestPromise> holder2;
+  RefPtr<TestPromise> promise2 = holder2.Ensure(__func__);
   promise2->Then(
       GetCurrentSerialEventTarget(), __func__,
       [&](int aResolveValue) -> void { EXPECT_EQ(aResolveValue, 42); },
       DO_FAIL);
 
-  promise1->ChainTo(promise2.forget(), __func__);
+  promise1->ChainTo(std::move(holder2), __func__);
 
   // Spin the event loop.
   NS_ProcessPendingEvents(nullptr);
@@ -615,9 +626,10 @@ TEST(MozPromise, ChainTo)
 TEST(MozPromise, SynchronousTaskDispatch1)
 {
   bool value = false;
-  RefPtr promise = MakeRefPtr<TestPromiseExcl::Private>(__func__);
-  promise->UseSynchronousTaskDispatch(__func__);
-  promise->Resolve(42, __func__);
+  MozPromiseHolder<TestPromiseExcl> holder;
+  RefPtr<TestPromiseExcl> promise = holder.Ensure(__func__);
+  holder.UseSynchronousTaskDispatch(__func__);
+  holder.Resolve(42, __func__);
   EXPECT_EQ(value, false);
   promise->Then(
       GetCurrentSerialEventTarget(), __func__,
@@ -632,8 +644,9 @@ TEST(MozPromise, SynchronousTaskDispatch1)
 TEST(MozPromise, SynchronousTaskDispatch2)
 {
   bool value = false;
-  RefPtr promise = MakeRefPtr<TestPromiseExcl::Private>(__func__);
-  promise->UseSynchronousTaskDispatch(__func__);
+  MozPromiseHolder<TestPromiseExcl> holder;
+  RefPtr<TestPromiseExcl> promise = holder.Ensure(__func__);
+  holder.UseSynchronousTaskDispatch(__func__);
   promise->Then(
       GetCurrentSerialEventTarget(), __func__,
       [&](int aResolveValue) -> void {
@@ -642,7 +655,7 @@ TEST(MozPromise, SynchronousTaskDispatch2)
       },
       DO_FAIL);
   EXPECT_EQ(value, false);
-  promise->Resolve(42, __func__);
+  holder.Resolve(42, __func__);
   EXPECT_EQ(value, true);
 }
 
@@ -661,9 +674,10 @@ TEST(MozPromise, DirectTaskDispatch)
           value2 = true;
         }));
 
-    RefPtr promise = MakeRefPtr<TestPromise::Private>(__func__);
-    promise->UseDirectTaskDispatch(__func__);
-    promise->Resolve(42, __func__);
+    MozPromiseHolder<TestPromise> holder;
+    RefPtr<TestPromise> promise = holder.Ensure(__func__);
+    holder.UseDirectTaskDispatch(__func__);
+    holder.Resolve(42, __func__);
     EXPECT_EQ(value1, false);
     promise->Then(
         GetCurrentSerialEventTarget(), __func__,
@@ -695,9 +709,10 @@ TEST(MozPromise, ChainedDirectTaskDispatch)
           value2 = true;
         }));
 
-    RefPtr promise1 = MakeRefPtr<TestPromise::Private>(__func__);
-    promise1->UseDirectTaskDispatch(__func__);
-    promise1->Resolve(42, __func__);
+    MozPromiseHolder<TestPromise> holder1;
+    RefPtr<TestPromise> promise1 = holder1.Ensure(__func__);
+    holder1.UseDirectTaskDispatch(__func__);
+    holder1.Resolve(42, __func__);
     EXPECT_EQ(value1, false);
     promise1
         ->Then(
@@ -705,9 +720,10 @@ TEST(MozPromise, ChainedDirectTaskDispatch)
             [&](int aResolveValue) -> RefPtr<TestPromise> {
               EXPECT_EQ(aResolveValue, 42);
               EXPECT_EQ(value2, false);
-              RefPtr promise2 = MakeRefPtr<TestPromise::Private>(__func__);
-              promise2->UseDirectTaskDispatch(__func__);
-              promise2->Resolve(43, __func__);
+              MozPromiseHolder<TestPromise> holder2;
+              RefPtr<TestPromise> promise2 = holder2.Ensure(__func__);
+              holder2.UseDirectTaskDispatch(__func__);
+              holder2.Resolve(43, __func__);
               return promise2;
             },
             DO_FAIL)
@@ -741,10 +757,12 @@ TEST(MozPromise, ChainToDirectTaskDispatch)
           value2 = true;
         }));
 
-    RefPtr promise1 = MakeRefPtr<TestPromise::Private>(__func__);
-    promise1->UseDirectTaskDispatch(__func__);
+    MozPromiseHolder<TestPromise> holder1;
+    RefPtr<TestPromise> promise1 = holder1.Ensure(__func__);
+    holder1.UseDirectTaskDispatch(__func__);
 
-    RefPtr promise2 = MakeRefPtr<TestPromise::Private>(__func__);
+    MozPromiseHolder<TestPromise> holder2;
+    RefPtr<TestPromise> promise2 = holder2.Ensure(__func__);
     promise2->Then(
         GetCurrentSerialEventTarget(), __func__,
         [&](int aResolveValue) -> void {
@@ -754,9 +772,9 @@ TEST(MozPromise, ChainToDirectTaskDispatch)
         },
         DO_FAIL);
 
-    promise1->ChainTo(promise2.forget(), __func__);
+    promise1->ChainTo(std::move(holder2), __func__);
     EXPECT_EQ(value1, false);
-    promise1->Resolve(42, __func__);
+    holder1.Resolve(42, __func__);
   }));
 
   // Spin the event loop.

@@ -163,6 +163,13 @@ template <typename PromiseType, typename ImplType>
 class MozPromiseHolderBase;
 template <typename T>
 class MozPromiseRequestHolder;
+namespace detail {
+template <typename PromiseType, typename MethodType, typename ThisType,
+          typename... Storages>
+class ProxyRunnable;
+template <typename Function, typename PromiseType>
+class ProxyFunctionRunnable;
+}  // namespace detail
 template <typename ResolveValueT, typename RejectValueT, bool IsExclusive>
 class MozPromise : public MozPromiseBase {
   static const uint32_t sMagic = 0xcecace11;
@@ -246,16 +253,6 @@ class MozPromise : public MozPromiseBase {
   }
 
  public:
-  // MozPromise::Private allows us to separate the public interface (upon which
-  // consumers of the promise may invoke methods like Then()) from the private
-  // interface (upon which the creator of the promise may invoke Resolve() or
-  // Reject()). APIs should create and store a MozPromise::Private (usually
-  // via a MozPromiseHolder), and return a MozPromise to consumers.
-  //
-  // NB: We can include the definition of this class inline once B2G ICS is
-  // gone.
-  class Private;
-
   template <typename ResolveValueType_>
   [[nodiscard]] static RefPtr<MozPromise> CreateAndResolve(
       ResolveValueType_&& aResolveValue, StaticString aResolveSite) {
@@ -294,6 +291,20 @@ class MozPromise : public MozPromiseBase {
       MozPromise<CopyableTArray<ResolveOrRejectValue>, bool, IsExclusive>;
 
  private:
+  // MozPromise::Private separates the public interface (upon which consumers
+  // of the promise may invoke methods like Then()) from the private interface
+  // (upon which the creator of the promise invokes Resolve() or Reject()).
+  // Creators use a MozPromiseHolder and hand out the MozPromise to consumers.
+  class Private;
+  template <typename, typename, bool>
+  friend class MozPromise;
+  template <typename PT, typename IT>
+  friend class MozPromiseHolderBase;
+  template <typename PT, typename MT, typename TT, typename... Ss>
+  friend class detail::ProxyRunnable;
+  template <typename F, typename PT>
+  friend class detail::ProxyFunctionRunnable;
+
   class AllPromiseHolder : public MozPromiseRefcountable {
    public:
     explicit AllPromiseHolder(size_t aDependentPromises)
@@ -1222,6 +1233,7 @@ class MozPromise : public MozPromiseBase {
                                               this);
   }
 
+ private:
   void ChainTo(already_AddRefed<Private> aChainedPromise,
                StaticString aCallSite) {
     MutexAutoLock lock(mMutex);
@@ -1258,6 +1270,7 @@ class MozPromise : public MozPromiseBase {
     }
   }
 
+ public:
   template <typename ImplType>
   void ChainTo(MozPromiseHolderBase<MozPromise, ImplType>&& aChainedHolder,
                StaticString aCallSite) {
@@ -1778,10 +1791,10 @@ template <typename PromiseType, typename MethodType, typename ThisType,
 class ProxyRunnable : public CancelableRunnable {
  public:
   ProxyRunnable(
-      typename PromiseType::Private* aProxyPromise,
+      MozPromiseHolder<PromiseType>&& aHolder,
       MethodCall<PromiseType, MethodType, ThisType, Storages...>* aMethodCall)
       : CancelableRunnable("detail::ProxyRunnable"),
-        mProxyPromise(aProxyPromise),
+        mProxyPromise(aHolder.Steal()),
         mMethodCall(aMethodCall) {}
 
   NS_IMETHOD Run() override {
@@ -1815,9 +1828,10 @@ RefPtr<PromiseType> InvokeAsyncImpl(
 
   MethodCallType* methodCall = new MethodCallType(
       aMethod, aThisVal, std::forward<ActualArgTypes>(aArgs)...);
-  RefPtr<typename PromiseType::Private> p =
-      new (typename PromiseType::Private)(aCallerName);
-  RefPtr<ProxyRunnableType> r = new ProxyRunnableType(p, methodCall);
+  MozPromiseHolder<PromiseType> holder;
+  RefPtr<PromiseType> p = holder.Ensure(aCallerName);
+  RefPtr<ProxyRunnableType> r =
+      new ProxyRunnableType(std::move(holder), methodCall);
   aTarget->Dispatch(r.forget());
   return p;
 }
@@ -1885,10 +1899,9 @@ class ProxyFunctionRunnable : public CancelableRunnable {
 
  public:
   template <typename F>
-  ProxyFunctionRunnable(typename PromiseType::Private* aProxyPromise,
-                        F&& aFunction)
+  ProxyFunctionRunnable(MozPromiseHolder<PromiseType>&& aHolder, F&& aFunction)
       : CancelableRunnable("detail::ProxyFunctionRunnable"),
-        mProxyPromise(aProxyPromise),
+        mProxyPromise(aHolder.Steal()),
         mFunction(new FunctionStorage(std::forward<F>(aFunction))) {}
 
   NS_IMETHOD Run() override {
@@ -1928,8 +1941,10 @@ auto InvokeAsync(nsISerialEventTarget* aTarget, StaticString aCallerName,
   typedef detail::ProxyFunctionRunnable<Function, PromiseType>
       ProxyRunnableType;
 
-  auto p = MakeRefPtr<typename PromiseType::Private>(aCallerName);
-  auto r = MakeRefPtr<ProxyRunnableType>(p, std::forward<Function>(aFunction));
+  MozPromiseHolder<PromiseType> holder;
+  RefPtr<PromiseType> p = holder.Ensure(aCallerName);
+  auto r = MakeRefPtr<ProxyRunnableType>(std::move(holder),
+                                         std::forward<Function>(aFunction));
   aTarget->Dispatch(r.forget());
   return p;
 }
