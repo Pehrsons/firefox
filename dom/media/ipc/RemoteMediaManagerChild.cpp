@@ -1189,7 +1189,7 @@ void RemoteMediaManagerChild::OnSetCurrent(
 /* static */ void RemoteMediaManagerChild::HandleRejectionError(
     const RemoteMediaManagerChild* aDyingManager, RemoteMediaIn aLocation,
     const ipc::ResponseRejectReason& aReason,
-    std::function<void(const MediaResult&)>&& aCallback) {
+    MoveOnlyFunction<void(const MediaResult&)>&& aCallback) {
   // If the channel goes down and CanSend() returns false, the IPDL promise will
   // be rejected with SendError rather than ActorDestroyed. Both means the same
   // thing and we can consider that the parent has crashed. The child can no
@@ -1204,7 +1204,7 @@ void RemoteMediaManagerChild::OnSetCurrent(
     WhenGPUProcessRecreated(aDyingManager)
         ->Then(GetCurrentSerialEventTarget(), __func__,
                [callback = std::move(aCallback)](
-                   const GenericPromise::ResolveOrRejectValue& aValue) {
+                   const GenericPromise::ResolveOrRejectValue& aValue) mutable {
                  callback(MediaResult(
                      aValue.IsResolve()
                          ? NS_ERROR_DOM_MEDIA_REMOTE_CRASHED_RDD_OR_GPU_ERR

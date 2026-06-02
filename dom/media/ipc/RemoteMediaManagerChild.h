@@ -4,13 +4,12 @@
 #ifndef include_dom_media_ipc_RemoteMediaManagerChild_h
 #define include_dom_media_ipc_RemoteMediaManagerChild_h
 
-#include <functional>
-
 #include "GPUVideoImage.h"
 #include "MediaCodecsSupport.h"
 #include "PDMFactory.h"
 #include "PlatformEncoderModule.h"
 #include "ipc/EnumSerializer.h"
+#include "mozilla/MoveOnlyFunction.h"
 #include "mozilla/MozPromise.h"
 #include "mozilla/PRemoteMediaManagerChild.h"
 #include "mozilla/ipc/UtilityProcessSandboxing.h"
@@ -139,7 +138,7 @@ class RemoteMediaManagerChild final
   static void HandleRejectionError(
       const RemoteMediaManagerChild* aDyingManager, RemoteMediaIn aLocation,
       const mozilla::ipc::ResponseRejectReason& aReason,
-      std::function<void(const MediaResult&)>&& aCallback);
+      MoveOnlyFunction<void(const MediaResult&)>&& aCallback);
 
   // Returns a promise that resolves (on the manager thread) when we next
   // attempt to create a new manager (even if creation fails), and rejects if

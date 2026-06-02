@@ -246,24 +246,40 @@ RefPtr<MediaDataEncoder::EncodePromise> RemoteMediaDataEncoder::Encode(
       mThread, __func__,
       [self = RefPtr{this}, samples = std::move(aSamples)]()
           -> RefPtr<MediaDataEncoder::EncodePromise> {
-        auto promise =
-            MakeRefPtr<MediaDataEncoder::EncodePromise::Private>(__func__);
+        MozPromiseHolder<MediaDataEncoder::EncodePromise> promiseHolder;
+        RefPtr<MediaDataEncoder::EncodePromise> promise =
+            promiseHolder.Ensure(__func__);
         auto ticket = MakeRefPtr<ShmemRecycleTicket>();
         self->DoSendEncode(samples, ticket)
             ->Then(
                 self->mThread, __func__,
-                [self, promise, ticket](EncodeResultIPDL&& aResponse) {
+                [self, ticket, promiseHolder = std::move(promiseHolder)](
+                    PRemoteEncoderChild::EncodePromise::ResolveOrRejectValue&&
+                        aResult) mutable {
                   self->mChild->ReleaseTicket(ticket);
 
-                  if (aResponse.type() == EncodeResultIPDL::TMediaResult) {
+                  if (aResult.IsReject()) {
+                    LOGE("[{}] Encode ipc failed", fmt::ptr(self.get()));
+                    RemoteMediaManagerChild::HandleRejectionError(
+                        self->GetManager(), self->mLocation,
+                        aResult.RejectValue(),
+                        [promiseHolder = std::move(promiseHolder)](
+                            const MediaResult& aError) mutable {
+                          promiseHolder.Reject(aError, __func__);
+                        });
+                    return;
+                  }
+
+                  auto& response = aResult.ResolveValue();
+                  if (response.type() == EncodeResultIPDL::TMediaResult) {
                     LOGD("[{}] Encode resolved, code={}", fmt::ptr(self.get()),
-                         aResponse.get_MediaResult().Description());
-                    promise->Reject(aResponse.get_MediaResult(), __func__);
+                         response.get_MediaResult().Description());
+                    promiseHolder.Reject(response.get_MediaResult(), __func__);
                     return;
                   }
 
                   const auto& encodeResponse =
-                      aResponse.get_EncodeCompletionIPDL();
+                      response.get_EncodeCompletionIPDL();
 
                   nsTArray<RefPtr<MediaRawData>> samples;
                   if (auto remoteSamples = encodeResponse.samples()) {
@@ -280,8 +296,8 @@ RefPtr<MediaDataEncoder::EncodePromise> RemoteMediaDataEncoder::Encode(
                             "[{}] Encode resolved, failed to buffer "
                             "samples",
                             fmt::ptr(self.get()));
-                        promise->Reject(MediaResult(NS_ERROR_OUT_OF_MEMORY),
-                                        __func__);
+                        promiseHolder.Reject(
+                            MediaResult(NS_ERROR_OUT_OF_MEMORY), __func__);
                         return;
                       }
                     }
@@ -289,18 +305,8 @@ RefPtr<MediaDataEncoder::EncodePromise> RemoteMediaDataEncoder::Encode(
 
                   LOGV("[{}] Encode resolved, {} samples", fmt::ptr(self.get()),
                        samples.Length());
-                  promise->Resolve(std::move(samples), __func__);
+                  promiseHolder.Resolve(std::move(samples), __func__);
                   self->mChild->SendReleaseTicket(encodeResponse.ticketId());
-                },
-                [self, promise,
-                 ticket](const mozilla::ipc::ResponseRejectReason& aReason) {
-                  LOGE("[{}] Encode ipc failed", fmt::ptr(self.get()));
-                  self->mChild->ReleaseTicket(ticket);
-                  RemoteMediaManagerChild::HandleRejectionError(
-                      self->GetManager(), self->mLocation, aReason,
-                      [promise](const MediaResult& aError) {
-                        promise->Reject(aError, __func__);
-                      });
                 });
         return promise;
       });
@@ -424,27 +430,32 @@ RefPtr<GenericPromise> RemoteMediaDataEncoder::SetBitrate(
   return InvokeAsync(
       mThread, __func__,
       [self = RefPtr{this}, aBitsPerSec]() -> RefPtr<GenericPromise> {
-        auto promise = MakeRefPtr<GenericPromise::Private>(__func__);
+        MozPromiseHolder<GenericPromise> promiseHolder;
+        RefPtr<GenericPromise> promise = promiseHolder.Ensure(__func__);
         self->mChild->SendSetBitrate(aBitsPerSec)
-            ->Then(
-                self->mThread, __func__,
-                [promise](const nsresult& aRv) {
-                  if (NS_SUCCEEDED(aRv)) {
-                    promise->Resolve(true, __func__);
-                  } else {
-                    promise->Reject(aRv, __func__);
-                  }
-                },
-                [self,
-                 promise](const mozilla::ipc::ResponseRejectReason& aReason) {
-                  LOGE("[{}] SetBitrate ipc failed", fmt::ptr(self.get()));
-                  RemoteMediaManagerChild::HandleRejectionError(
-                      self->GetManager(), self->mLocation, aReason,
-                      [promise](const MediaResult& aError) {
-                        promise->Reject(aError.Code(), __func__);
-                      });
-                });
-        return promise.forget();
+            ->Then(self->mThread, __func__,
+                   [self, promiseHolder = std::move(promiseHolder)](
+                       PRemoteEncoderChild::SetBitratePromise::
+                           ResolveOrRejectValue&& aResult) mutable {
+                     if (aResult.IsReject()) {
+                       LOGE("[{}] SetBitrate ipc failed", fmt::ptr(self.get()));
+                       RemoteMediaManagerChild::HandleRejectionError(
+                           self->GetManager(), self->mLocation,
+                           aResult.RejectValue(),
+                           [promiseHolder = std::move(promiseHolder)](
+                               const MediaResult& aError) mutable {
+                             promiseHolder.Reject(aError.Code(), __func__);
+                           });
+                       return;
+                     }
+                     const nsresult& rv = aResult.ResolveValue();
+                     if (NS_SUCCEEDED(rv)) {
+                       promiseHolder.Resolve(true, __func__);
+                     } else {
+                       promiseHolder.Reject(rv, __func__);
+                     }
+                   });
+        return promise;
       });
 }
 
