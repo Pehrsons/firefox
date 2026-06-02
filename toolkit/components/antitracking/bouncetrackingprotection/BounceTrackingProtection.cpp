@@ -980,20 +980,22 @@ BounceTrackingProtection::PurgeBounceTrackers() {
   }
   mPurgeInProgress = true;
 
-  RefPtr<PurgeBounceTrackersMozPromise::Private> resultPromise =
-      new PurgeBounceTrackersMozPromise::Private(__func__);
+  MozPromiseHolder<PurgeBounceTrackersMozPromise> resultHolder;
+  RefPtr<PurgeBounceTrackersMozPromise> resultPromise =
+      resultHolder.Ensure(__func__);
 
   RefPtr<BounceTrackingProtection> self = this;
 
   // Wait for the remote exception list service to be ready before purging.
   EnsureRemoteExceptionListService()->Then(
       GetCurrentSerialEventTarget(), __func__,
-      [self, resultPromise](
-          const GenericNonExclusivePromise::ResolveOrRejectValue& aResult) {
+      [self, resultHolder = std::move(resultHolder)](
+          const GenericNonExclusivePromise::ResolveOrRejectValue&
+              aResult) mutable {
         if (aResult.IsReject()) {
           nsresult rv = aResult.RejectValue();
           self->mPurgeInProgress = false;
-          resultPromise->Reject(rv, __func__);
+          resultHolder.Reject(rv, __func__);
           return;
         }
         // Remote exception list is ready.
@@ -1023,7 +1025,7 @@ BounceTrackingProtection::PurgeBounceTrackers() {
               stateGlobal, bounceTrackingAllowList, clearPromises);
           if (NS_WARN_IF(NS_FAILED(rv))) {
             self->mPurgeInProgress = false;
-            resultPromise->Reject(rv, __func__);
+            resultHolder.Reject(rv, __func__);
             return;
           }
         }
@@ -1034,9 +1036,9 @@ BounceTrackingProtection::PurgeBounceTrackers() {
                                         clearPromises)
             ->Then(
                 GetCurrentSerialEventTarget(), __func__,
-                [resultPromise,
+                [resultHolder = std::move(resultHolder),
                  self](ClearDataMozPromise::AllSettledPromiseType::
-                           ResolveOrRejectValue&& aResults) {
+                           ResolveOrRejectValue&& aResults) mutable {
                   MOZ_ASSERT(aResults.IsResolve(), "AllSettled never rejects");
 
                   MOZ_LOG_FMT(gBounceTrackingProtectionLog, LogLevel::Debug,
@@ -1103,10 +1105,10 @@ BounceTrackingProtection::PurgeBounceTrackers() {
 
                   // If any clear call failed reject the promise.
                   if (anyFailed) {
-                    resultPromise->Reject(NS_ERROR_FAILURE, __func__);
+                    resultHolder.Reject(NS_ERROR_FAILURE, __func__);
                     return;
                   }
-                  resultPromise->Resolve(std::move(purgedSites), __func__);
+                  resultHolder.Resolve(std::move(purgedSites), __func__);
                 });
       });
   return resultPromise.forget();
