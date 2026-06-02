@@ -61,15 +61,14 @@ GeckoProcessType GeckoProcessStringToType(const nsCString& aString) {
 // The actor must handle the InitSandboxTesting message.
 template <typename Actor>
 void InitializeSandboxTestingActors(
-    Actor* aActor,
-    const RefPtr<SandboxTest::ProcessPromise::Private>& aProcessPromise) {
+    Actor* aActor, MozPromiseHolder<SandboxTest::ProcessPromise>&& aHolder) {
   MOZ_ASSERT(aActor, "Should have provided an IPC actor");
   Endpoint<PSandboxTestingParent> sandboxTestingParentEnd;
   Endpoint<PSandboxTestingChild> sandboxTestingChildEnd;
   nsresult rv = PSandboxTesting::CreateEndpoints(&sandboxTestingParentEnd,
                                                  &sandboxTestingChildEnd);
   if (NS_FAILED(rv)) {
-    aProcessPromise->Reject(NS_ERROR_FAILURE, __func__);
+    aHolder.Reject(NS_ERROR_FAILURE, __func__);
     return;
   }
 
@@ -78,12 +77,12 @@ void InitializeSandboxTestingActors(
   (void)aActor->SendInitSandboxTesting(std::move(sandboxTestingChildEnd));
   // But then the SandboxTestingParent::Create() call needs to be on the main
   // thread
-  NS_DispatchToMainThread(NS_NewRunnableFunction(
+  MOZ_ALWAYS_SUCCEEDS(NS_DispatchToMainThread(NS_NewRunnableFunction(
       "SandboxTestingParent::Create",
-      [stpE = std::move(sandboxTestingParentEnd), aProcessPromise]() mutable {
-        return aProcessPromise->Resolve(
-            SandboxTestingParent::Create(std::move(stpE)), __func__);
-      }));
+      [stpE = std::move(sandboxTestingParentEnd),
+       h = std::move(aHolder)]() mutable {
+        h.Resolve(SandboxTestingParent::Create(std::move(stpE)), __func__);
+      })));
 }
 
 NS_IMETHODIMP
@@ -142,17 +141,17 @@ SandboxTest::StartTests(const nsTArray<nsCString>& aProcessesList) {
       }
     }
 
-    RefPtr<ProcessPromise::Private> processPromise =
-        MakeRefPtr<ProcessPromise::Private>(__func__);
+    MozPromiseHolder<ProcessPromise> processHolder;
+    RefPtr<ProcessPromise> publicPromise = processHolder.Ensure(__func__);
 
     switch (type) {
       case GeckoProcessType_Content: {
         nsTArray<ContentParent*> parents;
         ContentParent::GetAll(parents);
         if (parents[0]) {
-          InitializeSandboxTestingActors(parents[0], processPromise);
+          InitializeSandboxTestingActors(parents[0], std::move(processHolder));
         } else {
-          processPromise->Reject(NS_ERROR_FAILURE, __func__);
+          processHolder.Reject(NS_ERROR_FAILURE, __func__);
           MOZ_ASSERT_UNREACHABLE("SandboxTest; failure to get Content process");
         }
         break;
@@ -162,9 +161,9 @@ SandboxTest::StartTests(const nsTArray<nsCString>& aProcessesList) {
         gfx::GPUProcessManager* gpuProc = gfx::GPUProcessManager::Get();
         gfx::GPUChild* gpuChild = gpuProc ? gpuProc->GetGPUChild() : nullptr;
         if (gpuChild) {
-          InitializeSandboxTestingActors(gpuChild, processPromise);
+          InitializeSandboxTestingActors(gpuChild, std::move(processHolder));
         } else {
-          processPromise->Reject(NS_OK, __func__);
+          processHolder.Reject(NS_OK, __func__);
         }
         break;
       }
@@ -173,16 +172,21 @@ SandboxTest::StartTests(const nsTArray<nsCString>& aProcessesList) {
         RDDProcessManager* rddProc = RDDProcessManager::Get();
         rddProc->LaunchRDDProcess()->Then(
             GetMainThreadSerialEventTarget(), __func__,
-            [processPromise, rddProc]() {
+            [h = std::move(processHolder),
+             rddProc](const GenericNonExclusivePromise::ResolveOrRejectValue&
+                          aResult) mutable {
+              if (aResult.IsReject()) {
+                MOZ_ASSERT_UNREACHABLE(
+                    "SandboxTest; failure to get RDD process");
+                h.Reject(aResult.RejectValue(), __func__);
+                return;
+              }
               RDDChild* rddChild = rddProc ? rddProc->GetRDDChild() : nullptr;
               if (rddChild) {
-                return InitializeSandboxTestingActors(rddChild, processPromise);
+                InitializeSandboxTestingActors(rddChild, std::move(h));
+              } else {
+                h.Reject(NS_ERROR_FAILURE, __func__);
               }
-              return processPromise->Reject(NS_ERROR_FAILURE, __func__);
-            },
-            [processPromise](nsresult aError) {
-              MOZ_ASSERT_UNREACHABLE("SandboxTest; failure to get RDD process");
-              return processPromise->Reject(aError, __func__);
             });
         break;
       }
@@ -196,29 +200,32 @@ SandboxTest::StartTests(const nsTArray<nsCString>& aProcessesList) {
         RefPtr<SandboxTest> self = this;
         nsCOMPtr<nsISerialEventTarget> thread = service->GetGMPThread();
         nsresult rv = thread->Dispatch(NS_NewRunnableFunction(
-            "SandboxTest::GMPlugin", [self, processPromise, service, thread]() {
+            "SandboxTest::GMPlugin",
+            [self, h = std::move(processHolder), service, thread]() mutable {
               service->GetContentParentForTest()->Then(
                   thread, __func__,
-                  [self, processPromise](
-                      const RefPtr<gmp::GMPContentParentCloseBlocker>&
-                          wrapper) {
+                  [self, h = std::move(h)](
+                      gmp::GetGMPContentParentPromise::ResolveOrRejectValue&&
+                          aResult) mutable {
+                    if (aResult.IsReject()) {
+                      h.Reject(NS_ERROR_FAILURE, __func__);
+                      return;
+                    }
+                    const RefPtr<gmp::GMPContentParentCloseBlocker>& wrapper =
+                        aResult.ResolveValue();
                     RefPtr<gmp::GMPContentParent> parent = wrapper->mParent;
                     MOZ_ASSERT(parent,
                                "Wrapper should wrap a valid parent if we're in "
                                "this path.");
                     if (!parent) {
-                      return processPromise->Reject(NS_ERROR_ILLEGAL_VALUE,
-                                                    __func__);
+                      h.Reject(NS_ERROR_ILLEGAL_VALUE, __func__);
+                      return;
                     }
                     NS_DispatchToMainThread(NS_NewRunnableFunction(
                         "SandboxTesting::Wrapper", [self, wrapper]() {
                           self->mGMPContentParentWrapper = wrapper;
                         }));
-                    return InitializeSandboxTestingActors(parent.get(),
-                                                          processPromise);
-                  },
-                  [processPromise](const MediaResult& rv) {
-                    return processPromise->Reject(NS_ERROR_FAILURE, __func__);
+                    InitializeSandboxTestingActors(parent.get(), std::move(h));
                   });
             }));
         NS_ENSURE_SUCCESS(rv, rv);
@@ -236,17 +243,19 @@ SandboxTest::StartTests(const nsTArray<nsCString>& aProcessesList) {
 
         MOZ_ASSERT(net::gIOService, "No gIOService?");
 
-        net::gIOService->CallOrWaitForSocketProcess([processPromise]() {
-          // If socket process was previously disabled by env,
-          // nsIOService code will take some time before it creates the new
-          // process and it triggers this callback
-          RefPtr<net::SocketProcessParent> parent =
-              net::SocketProcessParent::GetSingleton();
-          if (parent) {
-            return InitializeSandboxTestingActors(parent.get(), processPromise);
-          }
-          return processPromise->Reject(NS_ERROR_FAILURE, __func__);
-        });
+        net::gIOService->CallOrWaitForSocketProcess(
+            [h = std::move(processHolder)]() mutable {
+              // If socket process was previously disabled by env,
+              // nsIOService code will take some time before it creates the new
+              // process and it triggers this callback
+              RefPtr<net::SocketProcessParent> parent =
+                  net::SocketProcessParent::GetSingleton();
+              if (parent) {
+                InitializeSandboxTestingActors(parent.get(), std::move(h));
+              } else {
+                h.Reject(NS_ERROR_FAILURE, __func__);
+              }
+            });
         break;
       }
 
@@ -254,26 +263,29 @@ SandboxTest::StartTests(const nsTArray<nsCString>& aProcessesList) {
         RefPtr<UtilityProcessManager> utilityProc =
             UtilityProcessManager::GetSingleton();
         utilityProc->LaunchProcess(sandboxingKind)
-            ->Then(
-                GetMainThreadSerialEventTarget(), __func__,
-                [processPromise, utilityProc, sandboxingKind]() {
-                  RefPtr<UtilityProcessKeepAlive> keepAlive =
-                      utilityProc
-                          ? utilityProc->GetSharedKeepAlive(sandboxingKind)
-                          : nullptr;
-                  RefPtr<UtilityProcessParent> utilityParent =
-                      keepAlive ? keepAlive->GetProcessParent() : nullptr;
-                  if (utilityParent) {
-                    return InitializeSandboxTestingActors(utilityParent.get(),
-                                                          processPromise);
-                  }
-                  return processPromise->Reject(NS_ERROR_FAILURE, __func__);
-                },
-                [processPromise](LaunchError const&) {
-                  MOZ_ASSERT_UNREACHABLE(
-                      "SandboxTest; failure to get Utility process");
-                  return processPromise->Reject(NS_ERROR_FAILURE, __func__);
-                });
+            ->Then(GetMainThreadSerialEventTarget(), __func__,
+                   [h = std::move(processHolder), utilityProc, sandboxingKind](
+                       const UtilityProcessManager::SharedLaunchPromise<
+                           Ok>::ResolveOrRejectValue& aResult) mutable {
+                     if (aResult.IsReject()) {
+                       MOZ_ASSERT_UNREACHABLE(
+                           "SandboxTest; failure to get Utility process");
+                       h.Reject(NS_ERROR_FAILURE, __func__);
+                       return;
+                     }
+                     RefPtr<UtilityProcessKeepAlive> keepAlive =
+                         utilityProc
+                             ? utilityProc->GetSharedKeepAlive(sandboxingKind)
+                             : nullptr;
+                     RefPtr<UtilityProcessParent> utilityParent =
+                         keepAlive ? keepAlive->GetProcessParent() : nullptr;
+                     if (utilityParent) {
+                       InitializeSandboxTestingActors(utilityParent.get(),
+                                                      std::move(h));
+                     } else {
+                       h.Reject(NS_ERROR_FAILURE, __func__);
+                     }
+                   });
         break;
       }
 
@@ -284,8 +296,7 @@ SandboxTest::StartTests(const nsTArray<nsCString>& aProcessesList) {
     }
 
     RefPtr<SandboxTest> self = this;
-    RefPtr<ProcessPromise> aPromise(processPromise);
-    aPromise->Then(
+    publicPromise->Then(
         GetMainThreadSerialEventTarget(), __func__,
         [self](RefPtr<SandboxTestingParent> aValue) {
           self->mSandboxTestingParents.AppendElement(std::move(aValue));
