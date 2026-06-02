@@ -7,6 +7,7 @@
 
 #include "SimpleURIUnknownSchemes.h"
 #include "mozilla/Atomics.h"
+#include "mozilla/MoveOnlyFunction.h"
 #include "mozilla/RWLock.h"
 #include "mozilla/net/ProtocolHandlerInfo.h"
 #include "nsCOMPtr.h"
@@ -116,7 +117,7 @@ class nsIOService final : public nsIIOService,
   // Call func immediately if socket process is launched completely. Otherwise,
   // |func| will be queued and then executed in the *main thread* once socket
   // process is launced.
-  void CallOrWaitForSocketProcess(const std::function<void()>& aFunc);
+  void CallOrWaitForSocketProcess(mozilla::MoveOnlyFunction<void()>&& aFunc);
 
   int32_t SocketProcessPid();
   SocketProcessHost* SocketProcess() { return mSocketProcess; }
@@ -266,7 +267,7 @@ class nsIOService final : public nsIIOService,
   // Events should be executed after the socket process is launched. Will
   // dispatch these events while socket process fires OnProcessLaunchComplete.
   // Note: this array is accessed only on the main thread.
-  nsTArray<std::function<void()>> mPendingEvents;
+  nsTArray<mozilla::MoveOnlyFunction<void()>> mPendingEvents;
 
   // The observer notifications need to be forwarded to socket process.
   nsTHashSet<nsCString> mObserverTopicForSocketProcess;

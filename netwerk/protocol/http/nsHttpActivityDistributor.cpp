@@ -212,7 +212,7 @@ nsHttpActivityDistributor::AddObserver(nsIHttpActivityObserver* aObserver) {
           (void)parent->SendOnHttpActivityDistributorActivated(true);
         }
       };
-      gIOService->CallOrWaitForSocketProcess(task);
+      gIOService->CallOrWaitForSocketProcess(std::move(task));
     }
   }
   return NS_OK;
@@ -244,7 +244,7 @@ nsHttpActivityDistributor::RemoveObserver(nsIHttpActivityObserver* aObserver) {
         (void)parent->SendOnHttpActivityDistributorActivated(false);
       }
     };
-    gIOService->CallOrWaitForSocketProcess(task);
+    gIOService->CallOrWaitForSocketProcess(std::move(task));
   }
   return NS_OK;
 }
@@ -274,7 +274,7 @@ nsHttpActivityDistributor::SetObserveProxyResponse(bool aObserveProxyResponse) {
             aObserveProxyResponse);
       }
     };
-    gIOService->CallOrWaitForSocketProcess(task);
+    gIOService->CallOrWaitForSocketProcess(std::move(task));
   }
   return NS_OK;
 }
@@ -303,7 +303,7 @@ nsHttpActivityDistributor::SetObserveConnection(bool aObserveConnection) {
             aObserveConnection);
       }
     };
-    gIOService->CallOrWaitForSocketProcess(task);
+    gIOService->CallOrWaitForSocketProcess(std::move(task));
   }
   return NS_OK;
 }

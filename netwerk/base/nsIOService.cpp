@@ -734,7 +734,8 @@ void nsIOService::OnProcessLaunchComplete(SocketProcessHost* aHost,
   }
 
   if (!mPendingEvents.IsEmpty()) {
-    nsTArray<std::function<void()>> pendingEvents = std::move(mPendingEvents);
+    nsTArray<mozilla::MoveOnlyFunction<void()>> pendingEvents =
+        std::move(mPendingEvents);
     for (auto& func : pendingEvents) {
       func();
     }
@@ -742,12 +743,12 @@ void nsIOService::OnProcessLaunchComplete(SocketProcessHost* aHost,
 }
 
 void nsIOService::CallOrWaitForSocketProcess(
-    const std::function<void()>& aFunc) {
+    mozilla::MoveOnlyFunction<void()>&& aFunc) {
   MOZ_ASSERT(NS_IsMainThread());
   if (IsSocketProcessLaunchComplete() && SocketProcessReady()) {
     aFunc();
   } else {
-    mPendingEvents.AppendElement(aFunc);  // infallible
+    mPendingEvents.AppendElement(std::move(aFunc));  // infallible
     LaunchSocketProcess();
   }
 }
