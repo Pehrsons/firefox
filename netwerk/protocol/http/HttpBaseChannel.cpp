@@ -958,8 +958,8 @@ static void NormalizeCopyComplete(void* aClosure, nsresult aStatus) {
   MOZ_ASSERT(result, "Should only be called on the STS thread.");
 #endif
 
-  RefPtr<GenericPromise::Private> ready =
-      already_AddRefed(static_cast<GenericPromise::Private*>(aClosure));
+  UniquePtr<MozPromiseHolder<GenericPromise>> ready(
+      static_cast<MozPromiseHolder<GenericPromise>*>(aClosure));
   if (NS_SUCCEEDED(aStatus)) {
     ready->Resolve(true, __func__);
   } else {
@@ -1182,14 +1182,16 @@ static nsresult NormalizeUploadStream(nsIInputStream* aUploadStream,
   // Perform an AsyncCopy into the input stream on the STS.
   nsCOMPtr<nsIEventTarget> target =
       do_GetService(NS_STREAMTRANSPORTSERVICE_CONTRACTID);
-  RefPtr<GenericPromise::Private> ready = new GenericPromise::Private(__func__);
-  rv =
-      NS_AsyncCopy(source, sink, target, NS_ASYNCCOPY_VIA_READSEGMENTS,
-                   segmentSize, NormalizeCopyComplete, do_AddRef(ready).take());
+  auto readyHolder = MakeUnique<MozPromiseHolder<GenericPromise>>();
+  RefPtr<GenericPromise> ready = readyHolder->Ensure(__func__);
+  rv = NS_AsyncCopy(source, sink, target, NS_ASYNCCOPY_VIA_READSEGMENTS,
+                    segmentSize, NormalizeCopyComplete, readyHolder.get());
   if (NS_WARN_IF(NS_FAILED(rv))) {
-    ready.get()->Release();
+    readyHolder->Reject(rv, __func__);
     return rv;
   }
+  // NormalizeCopyComplete now owns the holder.
+  (void)readyHolder.release();
 
   replacementStream.forget(aReplacementStream);
   ready.forget(aReadyPromise);
