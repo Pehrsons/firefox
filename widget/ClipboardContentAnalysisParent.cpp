@@ -115,18 +115,19 @@ static RefPtr<ClipboardResultPromise> GetClipboardImpl(
       return ClipboardResultPromise::CreateAndReject(rv, __func__);
     }
   }
-  auto resultPromise = MakeRefPtr<ClipboardResultPromise::Private>(__func__);
+  MozPromiseHolder<ClipboardResultPromise> holder;
+  RefPtr<ClipboardResultPromise> resultPromise = holder.Ensure(__func__);
 
   auto contentAnalysisCallback =
       mozilla::MakeRefPtr<mozilla::contentanalysis::ContentAnalysisCallback>(
-          [transferable, resultPromise,
+          [transferable, h = std::move(holder),
            cpHandle = RefPtr{aRequestingContentParent}](
-              nsIContentAnalysisResult* aResult) {
+              nsIContentAnalysisResult* aResult) mutable {
             // Needed to call cpHandle->GetContentParent()
             AssertIsOnMainThread();
 
             if (!aResult->GetShouldAllowContent()) {
-              resultPromise->Reject(NS_ERROR_CONTENT_BLOCKED, __func__);
+              h.Reject(NS_ERROR_CONTENT_BLOCKED, __func__);
               return;
             }
             dom::IPCTransferableData transferableData;
@@ -135,7 +136,7 @@ static RefPtr<ClipboardResultPromise> GetClipboardImpl(
             nsContentUtils::TransferableToIPCTransferableData(
                 transferable, &transferableData, true /* aInSyncMessage */,
                 contentParent);
-            resultPromise->Resolve(std::move(transferableData), __func__);
+            h.Resolve(std::move(transferableData), __func__);
           });
 
   contentanalysis::ContentAnalysis::CheckClipboardContentAnalysis(
@@ -246,11 +247,13 @@ static RefPtr<SetClipboardPromise> SetClipboardImpl(
   // nsBaseClipboard runs the content analysis check itself and commits (or
   // replaces) the clipboard contents when the verdict arrives, so all that is
   // needed here is to hear about the final result.
-  auto resultPromise = MakeRefPtr<SetClipboardPromise::Private>(__func__);
+  MozPromiseHolder<SetClipboardPromise> holder;
+  RefPtr<SetClipboardPromise> resultPromise = holder.Ensure(__func__);
   static_cast<nsBaseClipboard*>(clipboard.get())
       ->SetDataWithCompletion(trans, nullptr /* aOwner */, aWhichClipboard,
-                              window, [resultPromise](nsresult aRv) {
-                                resultPromise->Resolve(aRv, __func__);
+                              window,
+                              [h = std::move(holder)](nsresult aRv) mutable {
+                                h.Resolve(aRv, __func__);
                               });
   return resultPromise;
 }
