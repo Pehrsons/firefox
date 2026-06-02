@@ -6,12 +6,13 @@
 
 #include "gfxPoint.h"
 #include "mozilla/Components.h"
+#include "mozilla/MozPromise.h"
 #include "mozilla/TaskQueue.h"
 #include "mozilla/gfx/PrintPromise.h"
 #include "nsError.h"
 #include "nsIPrintSettings.h"
 
-using mozilla::MakeRefPtr;
+using mozilla::MozPromiseHolder;
 using mozilla::gfx::PrintEndDocumentPromise;
 
 // We have some platform specific code here rather than in the appropriate
@@ -62,21 +63,22 @@ nsIDeviceContextSpec::EndDocumentPromiseFromResult(
 
 RefPtr<PrintEndDocumentPromise> nsIDeviceContextSpec::EndDocumentAsync(
     const char* aCallSite, AsyncEndDocumentFunction aFunction) {
-  auto promise =
-      MakeRefPtr<PrintEndDocumentPromise::Private>("PrintEndDocumentPromise");
+  MozPromiseHolder<PrintEndDocumentPromise> holder;
+  RefPtr<PrintEndDocumentPromise> promise =
+      holder.Ensure("PrintEndDocumentPromise");
 
-  NS_DispatchBackgroundTask(
-      NS_NewRunnableFunction(
-          "EndDocumentAsync",
-          [promise, function = std::move(aFunction)]() mutable {
-            const auto result = function();
-            if (NS_SUCCEEDED(result)) {
-              promise->Resolve(true, __func__);
-            } else {
-              promise->Reject(result, __func__);
-            }
-          }),
-      NS_DISPATCH_EVENT_MAY_BLOCK);
+  MOZ_ALWAYS_SUCCEEDS(NS_DispatchBackgroundTask(
+      NS_NewRunnableFunction("EndDocumentAsync",
+                             [holder = std::move(holder),
+                              function = std::move(aFunction)]() mutable {
+                               const auto result = function();
+                               if (NS_SUCCEEDED(result)) {
+                                 holder.Resolve(true, __func__);
+                               } else {
+                                 holder.Reject(result, __func__);
+                               }
+                             }),
+      NS_DISPATCH_EVENT_MAY_BLOCK));
 
   return promise;
 }

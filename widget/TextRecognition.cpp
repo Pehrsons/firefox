@@ -48,31 +48,28 @@ auto TextRecognition::FindText(gfx::DataSourceSurface& aSurface,
       return NativePromise::CreateAndReject("Failed to share data surface"_ns,
                                             __func__);
     }
-    auto promise = MakeRefPtr<NativePromise::Private>(__func__);
-    contentChild->SendFindImageText(std::move(*image), aLanguages)
+    return contentChild->SendFindImageText(std::move(*image), aLanguages)
         ->Then(
             GetCurrentSerialEventTarget(), __func__,
-            [promise](TextRecognitionResultOrError&& aResultOrError) {
+            [](TextRecognitionResultOrError&& aResultOrError) {
               switch (aResultOrError.type()) {
                 case TextRecognitionResultOrError::Type::TTextRecognitionResult:
-                  promise->Resolve(
+                  return NativePromise::CreateAndResolve(
                       std::move(aResultOrError.get_TextRecognitionResult()),
                       __func__);
-                  break;
                 case TextRecognitionResultOrError::Type::TnsCString:
-                  promise->Reject(std::move(aResultOrError.get_nsCString()),
-                                  __func__);
-                  break;
+                  return NativePromise::CreateAndReject(
+                      std::move(aResultOrError.get_nsCString()), __func__);
                 default:
                   MOZ_ASSERT_UNREACHABLE("Unknown result?");
-                  promise->Reject("Unknown error"_ns, __func__);
-                  break;
+                  return NativePromise::CreateAndReject("Unknown error"_ns,
+                                                        __func__);
               }
             },
-            [promise](mozilla::ipc::ResponseRejectReason) {
-              promise->Reject("IPC rejection"_ns, __func__);
+            [](mozilla::ipc::ResponseRejectReason) {
+              return NativePromise::CreateAndReject("IPC rejection"_ns,
+                                                    __func__);
             });
-    return promise;
   }
   return DoFindText(aSurface, aLanguages);
 }
