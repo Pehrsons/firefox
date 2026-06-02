@@ -8,7 +8,6 @@
 #include <functional>
 
 #include "mozilla/MozPromise.h"
-#include "nsTArrayForwardDeclare.h"
 
 namespace mozilla {
 namespace ipc {
@@ -28,14 +27,6 @@ namespace glean {
  *                    serialized payload that the Rust impl hands you.
  */
 void FlushFOGData(std::function<void(mozilla::ipc::ByteBuf&&)>&& aResolver);
-
-/**
- * Called by FOG on the parent process when it wants to flush all its
- * children's data.
- * @param aResolver - The function that'll be called with the results.
- */
-void FlushAllChildData(
-    std::function<void(nsTArray<mozilla::ipc::ByteBuf>&&)>&& aResolver);
 
 /**
  * A child process has sent you this buf as a treat.

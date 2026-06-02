@@ -55,6 +55,8 @@ using mozilla::ipc::UtilityProcessChild;
 using mozilla::ipc::UtilityProcessManager;
 using mozilla::ipc::UtilityProcessParent;
 using FlushFOGDataPromise = mozilla::dom::ContentParent::FlushFOGDataPromise;
+using FlushAllChildDataPromise =
+    mozilla::MozPromise<nsTArray<ByteBuf>, bool, true>;
 
 namespace geckoprofiler::markers {
 
@@ -482,13 +484,7 @@ void FlushFOGData(std::function<void(ipc::ByteBuf&&)>&& aResolver) {
   aResolver(std::move(buf));
 }
 
-/**
- * Called by FOG on the parent process when it wants to flush all its
- * children's data.
- * @param aResolver - The function that'll be called with the results.
- */
-void FlushAllChildData(
-    std::function<void(nsTArray<ipc::ByteBuf>&&)>&& aResolver) {
+RefPtr<FlushAllChildDataPromise> FlushAllChildData() {
   auto timerId = fog_ipc::flush_durations.Start();
   MOZ_LOG(sLog, LogLevel::Verbose, ("glean::FlushAllChildData: start"));
 
@@ -538,18 +534,18 @@ void FlushAllChildData(
     MOZ_LOG(sLog, LogLevel::Verbose,
             ("glean::FlushAllChildData: No child processes at the moment."));
     fog_ipc::flush_durations.Cancel(std::move(timerId));
-    nsTArray<ipc::ByteBuf> results;
-    aResolver(std::move(results));
-    return;
+    return FlushAllChildDataPromise::CreateAndResolve(nsTArray<ipc::ByteBuf>{},
+                                                      __func__);
   }
 
-  FlushFOGDataPromise::AllSettled(GetCurrentSerialEventTarget(), promises)
+  MOZ_LOG(sLog, LogLevel::Verbose, ("glean::FlushAllChildData: end"));
+  return FlushFOGDataPromise::AllSettled(GetCurrentSerialEventTarget(),
+                                         promises)
       ->Then(
           GetCurrentSerialEventTarget(), __func__,
-          [aResolver = std::move(aResolver), timerId,
-           promiseCount = promises.Length()](
+          [timerId, promiseCount = promises.Length()](
               FlushFOGDataPromise::AllSettledPromiseType::ResolveOrRejectValue&&
-                  aValue) {
+                  aValue) mutable {
             fog_ipc::flush_durations.StopAndAccumulate(std::move(timerId));
             if (aValue.IsResolve()) {
               MOZ_LOG(
@@ -570,18 +566,17 @@ void FlushAllChildData(
                   fog_ipc::flush_rejections.Add(1);
                 }
               }
-              aResolver(std::move(results));
-            } else {
-              MOZ_LOG(sLog, LogLevel::Verbose,
-                      ("glean::FlushAllChildData: AllSettled value is "
-                       "rejected, adding %zu to flush failures count",
-                       promiseCount));
-              fog_ipc::flush_failures.Add((int32_t)promiseCount);
-              nsTArray<ipc::ByteBuf> results;
-              aResolver(std::move(results));
+              return FlushAllChildDataPromise::CreateAndResolve(
+                  std::move(results), __func__);
             }
+            MOZ_LOG(sLog, LogLevel::Verbose,
+                    ("glean::FlushAllChildData: AllSettled value is "
+                     "rejected, adding %zu to flush failures count",
+                     promiseCount));
+            fog_ipc::flush_failures.Add((int32_t)promiseCount);
+            return FlushAllChildDataPromise::CreateAndResolve(
+                nsTArray<ipc::ByteBuf>{}, __func__);
           });
-  MOZ_LOG(sLog, LogLevel::Verbose, ("glean::FlushAllChildData: end"));
 }
 
 /**
@@ -649,15 +644,16 @@ RefPtr<GenericPromise> FlushAndUseFOGData() {
   // processes.
   RecordPowerMetrics();
 
-  RefPtr<GenericPromise::Private> ret = new GenericPromise::Private(__func__);
-  std::function<void(nsTArray<ByteBuf>&&)> resolver =
-      [ret](nsTArray<ByteBuf>&& bufs) {
-        for (ByteBuf& buf : bufs) {
-          FOGData(std::move(buf));
+  RefPtr<GenericPromise> ret = FlushAllChildData()->Then(
+      GetCurrentSerialEventTarget(), __func__,
+      [](FlushAllChildDataPromise::ResolveOrRejectValue&& aValue) {
+        if (aValue.IsResolve()) {
+          for (ByteBuf& buf : aValue.ResolveValue()) {
+            FOGData(std::move(buf));
+          }
         }
-        ret->Resolve(true, __func__);
-      };
-  FlushAllChildData(std::move(resolver));
+        return GenericPromise::CreateAndResolve(true, __func__);
+      });
   MOZ_LOG(sLog, LogLevel::Verbose, ("glean::FlushAndUseFOGData: end"));
   return ret;
 }
