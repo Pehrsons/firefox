@@ -319,11 +319,11 @@ MachHandleProcessCheckInSync(
 class MachCheckInListener : public MessageLoopForIO::MachPortWatcher {
  public:
   MachCheckInListener(
-      MachHandleProcessCheckInPromise::Private* promise,
+      mozilla::MozPromiseHolder<MachHandleProcessCheckInPromise>&& aHolder,
       mozilla::UniqueMachReceiveRight endpoint, pid_t child_pid,
       std::vector<mozilla::UniqueMachSendRight> send_rights,
       std::vector<mozilla::UniqueMachReceiveRight> receive_rights)
-      : promise_(promise),
+      : promise_(std::move(aHolder)),
         child_pid_(child_pid),
         endpoint_(std::move(endpoint)),
         send_rights_(std::move(send_rights)),
@@ -343,7 +343,7 @@ class MachCheckInListener : public MessageLoopForIO::MachPortWatcher {
     CompleteAndDelete(mozilla::Err(mozilla::ipc::LaunchError(aFunction)));
   }
 
-  RefPtr<MachHandleProcessCheckInPromise::Private> promise_;
+  mozilla::MozPromiseHolder<MachHandleProcessCheckInPromise> promise_;
   pid_t child_pid_ = -1;
   mozilla::UniqueMachReceiveRight endpoint_;
   MessageLoopForIO::MachPortWatchController watch_controller_;
@@ -391,9 +391,9 @@ void MachCheckInListener::CompleteAndDelete(
   mozilla::ipc::AssertIOThread();
 
   if (result.isOk()) {
-    promise_->Resolve(result.inspect(), __func__);
+    promise_.Resolve(result.inspect(), __func__);
   } else {
-    promise_->Reject(result.inspectErr(), __func__);
+    promise_.Reject(result.inspectErr(), __func__);
   }
 
   watch_controller_.StopWatchingMachPort();
@@ -416,9 +416,9 @@ RefPtr<MachHandleProcessCheckInPromise> MachHandleProcessCheckIn(
     std::vector<mozilla::UniqueMachReceiveRight> receive_rights) {
   mozilla::ipc::AssertIOThread();
 
-  auto promise =
-      mozilla::MakeRefPtr<MachHandleProcessCheckInPromise::Private>(__func__);
-  (new MachCheckInListener(promise, std::move(endpoint), child_pid,
+  mozilla::MozPromiseHolder<MachHandleProcessCheckInPromise> holder;
+  RefPtr<MachHandleProcessCheckInPromise> promise = holder.Ensure(__func__);
+  (new MachCheckInListener(std::move(holder), std::move(endpoint), child_pid,
                            std::move(send_rights), std::move(receive_rights)))
       ->Start(timeout);
   return promise;

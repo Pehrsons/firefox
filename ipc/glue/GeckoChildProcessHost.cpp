@@ -1475,15 +1475,29 @@ RefPtr<ProcessLaunchPromise> IosProcessLauncher::DoLaunch() {
   xpc_dictionary_set_value(bootstrapMessage.get(), "sendRights",
                            sendRightsArray.get());
 
-  auto promise = MakeRefPtr<ProcessLaunchPromise::Private>(__func__);
-  ExtensionKitProcess::StartProcess(kind, [self = RefPtr{this}, promise,
+  // This holder must be ref-counted because both a C++ std::function and
+  // Obj-C blocks (which copy their captures) need access to it.
+  struct IosLaunchHolder final {
+    NS_INLINE_DECL_THREADSAFE_REFCOUNTING(IosLaunchHolder)
+    MozPromiseHolder<ProcessLaunchPromise> mHolder;
+    explicit IosLaunchHolder(MozPromiseHolder<ProcessLaunchPromise>&& h)
+        : mHolder(std::move(h)) {}
+
+   private:
+    ~IosLaunchHolder() = default;
+  };
+
+  MozPromiseHolder<ProcessLaunchPromise> holder;
+  RefPtr<ProcessLaunchPromise> promise = holder.Ensure(__func__);
+  auto iosHolder = MakeRefPtr<IosLaunchHolder>(std::move(holder));
+  ExtensionKitProcess::StartProcess(kind, [self = RefPtr{this}, iosHolder,
                                            bootstrapMessage =
                                                std::move(bootstrapMessage)](
                                               Result<ExtensionKitProcess,
                                                      LaunchError>&& result) {
     if (result.isErr()) {
       CHROMIUM_LOG(ERROR) << "ExtensionKitProcess::StartProcess failed";
-      promise->Reject(result.unwrapErr(), __func__);
+      iosHolder->mHolder.Reject(result.unwrapErr(), __func__);
       return;
     }
 
@@ -1495,14 +1509,17 @@ RefPtr<ProcessLaunchPromise> IosProcessLauncher::DoLaunch() {
 
     // We don't actually use the event handler for anything other than
     // watching for errors. Once the promise is resolved, this becomes a
-    // no-op.
-    xpc_connection_set_event_handler(self->mResults.mXPCConnection.get(), ^(
-                                         xpc_object_t event) {
-      if (!event || xpc_get_type(event) == XPC_TYPE_ERROR) {
-        CHROMIUM_LOG(WARNING) << "XPC connection received encountered an error";
-        promise->Reject(LaunchError("xpc_connection_event_handler"), __func__);
-      }
-    });
+    // no-op. XPC guarantees that when the connection errors, all pending
+    // reply blocks are delivered with the error, so RejectIfExists is safe.
+    xpc_connection_set_event_handler(
+        self->mResults.mXPCConnection.get(), ^(xpc_object_t event) {
+          if (!event || xpc_get_type(event) == XPC_TYPE_ERROR) {
+            CHROMIUM_LOG(WARNING)
+                << "XPC connection received encountered an error";
+            iosHolder->mHolder.RejectIfExists(
+                LaunchError("xpc_connection_event_handler"), __func__);
+          }
+        });
     xpc_connection_resume(self->mResults.mXPCConnection.get());
 
     // Send our bootstrap message to the content and wait for it to reply with
@@ -1516,7 +1533,7 @@ RefPtr<ProcessLaunchPromise> IosProcessLauncher::DoLaunch() {
           if (xpc_get_type(reply) == XPC_TYPE_ERROR) {
             CHROMIUM_LOG(ERROR)
                 << "Got error sending XPC bootstrap message to child";
-            promise->Reject(
+            iosHolder->mHolder.RejectIfExists(
                 LaunchError("xpc_connection_send_message_with_reply error"),
                 __func__);
             return;
@@ -1525,7 +1542,7 @@ RefPtr<ProcessLaunchPromise> IosProcessLauncher::DoLaunch() {
           if (xpc_get_type(reply) != XPC_TYPE_DICTIONARY) {
             CHROMIUM_LOG(ERROR)
                 << "Unexpected reply type for bootstrap message from child";
-            promise->Reject(
+            iosHolder->mHolder.RejectIfExists(
                 LaunchError(
                     "xpc_connection_send_message_with_reply non-dictionary"),
                 __func__);
@@ -1544,7 +1561,10 @@ RefPtr<ProcessLaunchPromise> IosProcessLauncher::DoLaunch() {
           CHROMIUM_LOG(INFO) << "ExtensionKit process started, pid: " << pid;
 
           self->mResults.mHandle = pid;
-          promise->Resolve(std::move(self->mResults), __func__);
+          // ResolveIfExists because the event handler above may in theory have
+          // rejected already.
+          iosHolder->mHolder.ResolveIfExists(std::move(self->mResults),
+                                             __func__);
         });
   });
 
