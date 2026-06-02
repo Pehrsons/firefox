@@ -258,20 +258,20 @@ RefPtr<BoolPromise> FileSystemSyncAccessHandle::BeginClose() {
              })
       ->Then(
           mWorkerRef->Private()->ControlEventTarget(), __func__,
-          [self = RefPtr(this)](const ShutdownPromise::ResolveOrRejectValue&) {
+          [self = RefPtr(this)](const ShutdownPromise::ResolveOrRejectValue&)
+              -> RefPtr<BoolPromise> {
             if (self->mControlActor) {
-              RefPtr<BoolPromise::Private> promise =
-                  new BoolPromise::Private(__func__);
-
-              self->mControlActor->SendClose(
-                  [promise](void_t&&) { promise->Resolve(true, __func__); },
-                  [promise](const mozilla::ipc::ResponseRejectReason& aReason) {
-                    fs::IPCRejectReporter(aReason);
-
-                    promise->Reject(NS_ERROR_FAILURE, __func__);
+              return self->mControlActor->SendClose()->Then(
+                  self->mWorkerRef->Private()->ControlEventTarget(), __func__,
+                  [](PFileSystemAccessHandleControlChild::ClosePromise::
+                         ResolveOrRejectValue&& aValue) -> RefPtr<BoolPromise> {
+                    if (aValue.IsReject()) {
+                      fs::IPCRejectReporter(aValue.RejectValue());
+                      return BoolPromise::CreateAndReject(NS_ERROR_FAILURE,
+                                                          __func__);
+                    }
+                    return BoolPromise::CreateAndResolve(true, __func__);
                   });
-
-              return RefPtr<BoolPromise>(promise);
             }
 
             return BoolPromise::CreateAndResolve(true, __func__);

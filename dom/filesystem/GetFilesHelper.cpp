@@ -65,6 +65,10 @@ GetFilesHelper::PromiseAdapter::PromiseAdapter(Promise* aDomPromise)
 GetFilesHelper::PromiseAdapter::~PromiseAdapter() { Clear(); }
 
 void GetFilesHelper::PromiseAdapter::Clear() {
+  mPromise.match([](RefPtr<Promise>&) {},
+                 [](MozPromiseAndGlobal& m) {
+                   m.mMozPromise.RejectIfExists(NS_ERROR_ABORT, __func__);
+                 });
   mPromise = AsVariant(RefPtr<Promise>(nullptr));
 }
 
@@ -86,7 +90,7 @@ void GetFilesHelper::PromiseAdapter::Resolve(nsTArray<RefPtr<File>>&& aFiles) {
         }
       },
       [&aFiles](MozPromiseAndGlobal& aMozPromiseAndGlobal) {
-        aMozPromiseAndGlobal.mMozPromise->Resolve(std::move(aFiles), __func__);
+        aMozPromiseAndGlobal.mMozPromise.Resolve(std::move(aFiles), __func__);
       });
 }
 
@@ -98,7 +102,7 @@ void GetFilesHelper::PromiseAdapter::Reject(nsresult aError) {
         }
       },
       [&aError](MozPromiseAndGlobal& aMozPromiseAndGlobal) {
-        aMozPromiseAndGlobal.mMozPromise->Reject(aError, __func__);
+        aMozPromiseAndGlobal.mMozPromise.Reject(aError, __func__);
       });
 }
 
@@ -188,11 +192,12 @@ void GetFilesHelper::AddPromise(Promise* aPromise) {
   AddPromiseInternal(PromiseAdapter(aPromise));
 }
 
-void GetFilesHelper::AddMozPromise(MozPromiseType* aPromise,
+void GetFilesHelper::AddMozPromise(MozPromiseHolder<MozPromiseType>&& aHolder,
                                    nsIGlobalObject* aGlobal) {
-  MOZ_ASSERT(aPromise);
+  MOZ_ASSERT(!aHolder.IsEmpty());
   MOZ_ASSERT(aGlobal);
-  AddPromiseInternal(PromiseAdapter(MozPromiseAndGlobal{aPromise, aGlobal}));
+  AddPromiseInternal(
+      PromiseAdapter(MozPromiseAndGlobal{std::move(aHolder), aGlobal}));
 }
 
 void GetFilesHelper::AddCallback(GetFilesCallback* aCallback) {

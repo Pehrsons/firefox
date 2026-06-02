@@ -1925,8 +1925,10 @@ ContentAnalysis::ExpandFolderRequest(nsIContentAnalysisRequest* aRequest,
   nsresult rv = error.StealNSResult();
   NS_ENSURE_SUCCESS(rv, Err(rv));
 
-  auto gfhPromise = MakeRefPtr<GetFilesHelper::MozPromiseType>(__func__);
-  helper->AddMozPromise(gfhPromise,
+  MozPromiseHolder<GetFilesHelper::MozPromiseType> gfhHolder;
+  RefPtr<GetFilesHelper::MozPromiseType> gfhPromise =
+      gfhHolder.Ensure(__func__);
+  helper->AddMozPromise(std::move(gfhHolder),
                         xpc::NativeGlobal(xpc::PrivilegedJunkScope()));
 
   // Use MozPromise chaining (the undocumented feature where returning a

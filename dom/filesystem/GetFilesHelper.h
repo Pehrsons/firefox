@@ -71,9 +71,9 @@ class GetFilesHelper : public Runnable, public GetFilesHelperBase {
 
   void AddCallback(GetFilesCallback* aCallback);
 
-  using MozPromiseType =
-      MozPromise<nsTArray<RefPtr<File>>, nsresult, true>::Private;
-  void AddMozPromise(MozPromiseType* aPromise, nsIGlobalObject* aGlobal);
+  using MozPromiseType = MozPromise<nsTArray<RefPtr<File>>, nsresult, true>;
+  void AddMozPromise(MozPromiseHolder<MozPromiseType>&& aHolder,
+                     nsIGlobalObject* aGlobal);
 
   // CC methods
   void Unlink();
@@ -105,7 +105,7 @@ class GetFilesHelper : public Runnable, public GetFilesHelperBase {
   void OperationCompleted();
 
   struct MozPromiseAndGlobal {
-    RefPtr<MozPromiseType> mMozPromise;
+    MozPromiseHolder<MozPromiseType> mMozPromise;
     RefPtr<nsIGlobalObject> mGlobal;
   };
 
@@ -113,6 +113,10 @@ class GetFilesHelper : public Runnable, public GetFilesHelperBase {
    public:
     explicit PromiseAdapter(MozPromiseAndGlobal&& aMozPromise);
     explicit PromiseAdapter(Promise* aDomPromise);
+    PromiseAdapter(PromiseAdapter&&) = default;
+    PromiseAdapter& operator=(PromiseAdapter&&) = default;
+    PromiseAdapter(const PromiseAdapter&) = delete;
+    PromiseAdapter& operator=(const PromiseAdapter&) = delete;
     ~PromiseAdapter();
 
     void Clear();

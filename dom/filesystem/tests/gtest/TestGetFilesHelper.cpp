@@ -117,8 +117,10 @@ void ExpectGetFilesHelperResponse(
   RefPtr<FilesCallback> callback =
       MakeRefPtr<FilesCallback>(gotCallbackResponse, expectedPaths);
   aHelper->AddCallback(callback);
-  auto mozPromise = MakeRefPtr<GetFilesHelper::MozPromiseType>(__func__);
-  aHelper->AddMozPromise(mozPromise,
+  MozPromiseHolder<GetFilesHelper::MozPromiseType> mozPromiseHolder;
+  RefPtr<GetFilesHelper::MozPromiseType> mozPromise =
+      mozPromiseHolder.Ensure(__func__);
+  aHelper->AddMozPromise(std::move(mozPromiseHolder),
                          xpc::NativeGlobal(xpc::PrivilegedJunkScope()));
   mozPromise->Then(
       GetMainThreadSerialEventTarget(), __func__,
