@@ -77,7 +77,6 @@ class AllocPolicyImpl : public AllocPolicy {
 
  private:
   class AutoDeallocToken;
-  using PromisePrivate = Promise::Private;
   // Called by the destructor of TokenImpl to restore the decoder limit.
   void Dealloc();
   // Decrement the decoder limit and resolve a promise if available.
@@ -88,7 +87,7 @@ class AllocPolicyImpl : public AllocPolicy {
   // The number of decoders available for creation.
   int mDecoderLimit;
   // Requests to acquire tokens.
-  std::queue<RefPtr<PromisePrivate>> mPromises;
+  std::queue<MozPromiseHolder<Promise>> mPromises;
 };
 
 /**

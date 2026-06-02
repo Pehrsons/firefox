@@ -730,29 +730,19 @@ void GeckoMediaPluginServiceParent::SendFlushFOGData(
       // result in a warning on debug builds).
       continue;
     }
-    RefPtr<FlushFOGDataPromise::Private> promise =
-        new FlushFOGDataPromise::Private(__func__);
+    MozPromiseHolder<FlushFOGDataPromise> holder;
+    RefPtr<FlushFOGDataPromise> promise = holder.Ensure(__func__);
     // Direct dispatch will resolve the promise on the same thread, which is
     // faster; FOGIPC will move execution back to the main thread.
-    promise->UseDirectTaskDispatch(__func__);
+    holder.UseDirectTaskDispatch(__func__);
     promises.EmplaceBack(promise);
-
-    mGMPThread->Dispatch(
-        NewRunnableMethod<ipc::ResolveCallback<ipc::ByteBuf>&&,
-                          ipc::RejectCallback&&>(
-            "GMPParent::SendFlushFOGData", gmp,
-            static_cast<void (GMPParent::*)(
-                mozilla::ipc::ResolveCallback<ipc::ByteBuf>&& aResolve,
-                mozilla::ipc::RejectCallback&& aReject)>(
-                &GMPParent::SendFlushFOGData),
-
-            [promise](ipc::ByteBuf&& aValue) {
-              promise->Resolve(std::move(aValue), __func__);
-            },
-            [promise](ipc::ResponseRejectReason&& aReason) {
-              promise->Reject(std::move(aReason), __func__);
-            }),
-        NS_DISPATCH_NORMAL);
+    MOZ_ALWAYS_SUCCEEDS(mGMPThread->Dispatch(
+        NS_NewRunnableFunction("GMPParent::SendFlushFOGData",
+                               [gmp, holder = std::move(holder)]() mutable {
+                                 gmp->SendFlushFOGData()->ChainTo(
+                                     std::move(holder), __func__);
+                               }),
+        NS_DISPATCH_NORMAL));
   }
 }
 
@@ -769,30 +759,19 @@ void GeckoMediaPluginServiceParent::SendGetUntrustedModulesData(
       // result in a warning on debug builds).
       continue;
     }
-    RefPtr<GetUntrustedModulesDataPromise::Private> promise =
-        new GetUntrustedModulesDataPromise::Private(__func__);
+    MozPromiseHolder<GetUntrustedModulesDataPromise> holder;
+    RefPtr<GetUntrustedModulesDataPromise> promise = holder.Ensure(__func__);
     // Direct dispatch will resolve the promise on the same thread, which is
     // faster; IPC will move execution back to the main thread.
-    promise->UseDirectTaskDispatch(__func__);
+    holder.UseDirectTaskDispatch(__func__);
     promises.EmplaceBack(promise);
-
-    mGMPThread->Dispatch(
-        NewRunnableMethod<ipc::ResolveCallback<Maybe<UntrustedModulesData>>&&,
-                          ipc::RejectCallback&&>(
-            "GMPParent::SendGetUntrustedModulesData", gmp,
-            static_cast<void (GMPParent::*)(
-                mozilla::ipc::ResolveCallback<Maybe<UntrustedModulesData>>&&
-                    aResolve,
-                mozilla::ipc::RejectCallback&& aReject)>(
-                &GMPParent::SendGetUntrustedModulesData),
-
-            [promise](Maybe<UntrustedModulesData>&& aValue) {
-              promise->Resolve(std::move(aValue), __func__);
-            },
-            [promise](ipc::ResponseRejectReason&& aReason) {
-              promise->Reject(std::move(aReason), __func__);
-            }),
-        NS_DISPATCH_NORMAL);
+    MOZ_ALWAYS_SUCCEEDS(mGMPThread->Dispatch(
+        NS_NewRunnableFunction("GMPParent::SendGetUntrustedModulesData",
+                               [gmp, holder = std::move(holder)]() mutable {
+                                 gmp->SendGetUntrustedModulesData()->ChainTo(
+                                     std::move(holder), __func__);
+                               }),
+        NS_DISPATCH_NORMAL));
   }
 }
 
@@ -830,28 +809,19 @@ GeckoMediaPluginServiceParent::TestTriggerMetrics() {
         continue;
       }
 
-      RefPtr<PGMPParent::TestTriggerMetricsPromise::Private> promise =
-          new PGMPParent::TestTriggerMetricsPromise::Private(__func__);
+      MozPromiseHolder<PGMPParent::TestTriggerMetricsPromise> holder;
+      RefPtr<PGMPParent::TestTriggerMetricsPromise> promise =
+          holder.Ensure(__func__);
       // Direct dispatch will resolve the promise on the same thread, which is
       // faster; FOGIPC will move execution back to the main thread.
-      promise->UseDirectTaskDispatch(__func__);
-
-      mGMPThread->Dispatch(
-          NewRunnableMethod<ipc::ResolveCallback<bool>&&,
-                            ipc::RejectCallback&&>(
-              "GMPParent::SendTestTriggerMetrics", gmp,
-              static_cast<void (GMPParent::*)(
-                  mozilla::ipc::ResolveCallback<bool>&& aResolve,
-                  mozilla::ipc::RejectCallback&& aReject)>(
-                  &PGMPParent::SendTestTriggerMetrics),
-
-              [promise](bool aValue) {
-                promise->Resolve(std::move(aValue), __func__);
-              },
-              [promise](ipc::ResponseRejectReason&& aReason) {
-                promise->Reject(std::move(aReason), __func__);
-              }),
-          NS_DISPATCH_NORMAL);
+      holder.UseDirectTaskDispatch(__func__);
+      MOZ_ALWAYS_SUCCEEDS(mGMPThread->Dispatch(
+          NS_NewRunnableFunction("GMPParent::SendTestTriggerMetrics",
+                                 [gmp, holder = std::move(holder)]() mutable {
+                                   gmp->SendTestTriggerMetrics()->ChainTo(
+                                       std::move(holder), __func__);
+                                 }),
+          NS_DISPATCH_NORMAL));
 
       return promise;
     }

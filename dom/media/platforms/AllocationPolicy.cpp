@@ -41,8 +41,9 @@ auto AllocPolicyImpl::Alloc() -> RefPtr<Promise> {
     return Promise::CreateAndResolve(new Token(), __func__);
   }
 
-  RefPtr<PromisePrivate> p = new PromisePrivate(__func__);
-  mPromises.push(p);
+  MozPromiseHolder<Promise> holder;
+  RefPtr<Promise> p = holder.Ensure(__func__);
+  mPromises.push(std::move(holder));
   ResolvePromise(mon);
   return p;
 }
@@ -58,18 +59,18 @@ void AllocPolicyImpl::ResolvePromise(ReentrantMonitorAutoEnter& aProofOfLock) {
 
   if (mDecoderLimit > 0 && !mPromises.empty()) {
     --mDecoderLimit;
-    RefPtr<PromisePrivate> p = std::move(mPromises.front());
+    MozPromiseHolder<Promise> holder = std::move(mPromises.front());
     mPromises.pop();
-    p->Resolve(new AutoDeallocToken(this), __func__);
+    holder.Resolve(new AutoDeallocToken(this), __func__);
   }
 }
 
 void AllocPolicyImpl::RejectAll() {
   ReentrantMonitorAutoEnter mon(mMonitor);
   while (!mPromises.empty()) {
-    RefPtr<PromisePrivate> p = std::move(mPromises.front());
+    MozPromiseHolder<Promise> holder = std::move(mPromises.front());
     mPromises.pop();
-    p->Reject(true, __func__);
+    holder.Reject(true, __func__);
   }
 }
 

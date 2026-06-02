@@ -9,8 +9,9 @@
 #include "PlatformEncoderModule.h"
 #include "TimeUnits.h"
 #include "mozIGeckoMediaPluginService.h"
+#include "mozilla/MozPromise.h"
 #include "mozilla/StaticString.h"
-#include "nsRefPtrHashtable.h"
+#include "nsTHashMap.h"
 
 class GMPVideoHost;
 
@@ -76,7 +77,7 @@ class GMPVideoEncoder final : public MediaDataEncoder,
   MozPromiseHolder<EncodePromise> mDrainPromise;
 
   using PendingEncodePromises =
-      nsRefPtrHashtable<nsUint64HashKey, EncodePromise::Private>;
+      nsTHashMap<nsUint64HashKey, MozPromiseHolder<EncodePromise>>;
   PendingEncodePromises mPendingEncodes;
 
   MozPromiseHolder<EncodePromise> mEncodeBatchPromise;

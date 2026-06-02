@@ -257,38 +257,6 @@ nsresult GenerateRandomPathName(nsCString& aOutSalt, uint32_t aLength);
 
 already_AddRefed<TaskQueue> CreateMediaDecodeTaskQueue(StaticString aName);
 
-// Iteratively invokes aWork until aCondition returns true, or aWork returns
-// false. Use this rather than a while loop to avoid bogarting the task queue.
-template <class Work, class Condition>
-RefPtr<GenericPromise> InvokeUntil(Work aWork, Condition aCondition) {
-  RefPtr<GenericPromise::Private> p = new GenericPromise::Private(__func__);
-
-  if (aCondition()) {
-    p->Resolve(true, __func__);
-  }
-
-  struct Helper {
-    static void Iteration(const RefPtr<GenericPromise::Private>& aPromise,
-                          Work aLocalWork, Condition aLocalCondition) {
-      if (!aLocalWork()) {
-        aPromise->Reject(NS_ERROR_FAILURE, __func__);
-      } else if (aLocalCondition()) {
-        aPromise->Resolve(true, __func__);
-      } else {
-        nsCOMPtr<nsIRunnable> r = NS_NewRunnableFunction(
-            "InvokeUntil::Helper::Iteration",
-            [aPromise, aLocalWork, aLocalCondition]() {
-              Iteration(aPromise, aLocalWork, aLocalCondition);
-            });
-        AbstractThread::GetCurrent()->Dispatch(r.forget());
-      }
-    }
-  };
-
-  Helper::Iteration(p, aWork, aCondition);
-  return p;
-}
-
 // Simple timer to run a runnable after a timeout.
 class SimpleTimer : public nsITimerCallback, public nsINamed {
  public:
