@@ -139,6 +139,73 @@ mozilla::ipc::IPCResult WebIdentityParent::RecvIsActiveContinuationWindow(
 
 namespace identity {
 
+namespace {
+// Settles the result of DiscoverFromExternalSourceInMainProcess from the
+// success promise, or, if the timeout fires first, closes the user interface
+// and rejects it after disconnecting from the success promise.
+class GetIPCIdentityCredentialRequest final {
+ public:
+  NS_INLINE_DECL_REFCOUNTING(GetIPCIdentityCredentialRequest)
+
+  explicit GetIPCIdentityCredentialRequest(
+      CanonicalBrowsingContext* aBrowsingContext)
+      : mPromise(mHolder.Ensure(__func__)),
+        mBrowsingContextId(aBrowsingContext->Id()) {}
+
+  RefPtr<GetIPCIdentityCredentialPromise> Promise() const { return mPromise; }
+
+  nsresult StartTimer(uint32_t aDelayMs) {
+    return NS_NewTimerWithCallback(
+        getter_AddRefs(mTimer),
+        [self = RefPtr{this}, this](auto) { OnTimeout(); }, aDelayMs,
+        nsITimer::TYPE_ONE_SHOT, "IdentityCredentialTimeoutCallback"_ns);
+  }
+
+  void Follow(GetIPCIdentityCredentialPromise* aSuccessPromise) {
+    aSuccessPromise
+        ->Then(GetCurrentSerialEventTarget(), __func__,
+               [self = RefPtr{this},
+                this](GetIPCIdentityCredentialPromise::ResolveOrRejectValue&&
+                          aValue) {
+                 mSuccessRequest.Complete();
+                 CancelTimer();
+                 mHolder.ResolveOrReject(std::move(aValue), __func__);
+               })
+        ->Track(mSuccessRequest);
+  }
+
+ private:
+  ~GetIPCIdentityCredentialRequest() {
+    mHolder.RejectIfExists(NS_BINDING_ABORTED, __func__);
+  }
+
+  void OnTimeout() {
+    mTimer = nullptr;
+    mSuccessRequest.DisconnectIfExists();
+    mHolder.Reject(NS_ERROR_DOM_NETWORK_ERR, __func__);
+    // Only hold on to the id of the browsing context, since it is cycle
+    // collected and we are not.
+    if (RefPtr<BrowsingContext> browsingContext =
+            BrowsingContext::Get(mBrowsingContextId)) {
+      CloseUserInterface(browsingContext);
+    }
+  }
+
+  void CancelTimer() {
+    if (mTimer) {
+      mTimer->Cancel();
+      mTimer = nullptr;
+    }
+  }
+
+  MozPromiseHolder<GetIPCIdentityCredentialPromise> mHolder;
+  const RefPtr<GetIPCIdentityCredentialPromise> mPromise;
+  const uint64_t mBrowsingContextId;
+  nsCOMPtr<nsITimer> mTimer;
+  MozPromiseRequestHolder<GetIPCIdentityCredentialPromise> mSuccessRequest;
+};
+}  // namespace
+
 nsresult CanSilentlyCollect(nsIPrincipal* aPrincipal,
                             nsIPrincipal* aIDPPrincipal, bool* aResult) {
   NS_ENSURE_ARG_POINTER(aPrincipal);
@@ -262,24 +329,16 @@ RefPtr<GetIPCIdentityCredentialPromise> DiscoverFromExternalSourceInMainProcess(
   }
   RefPtr<WebIdentityParent> relyingParty = aRelyingParty;
 
-  RefPtr<GetIPCIdentityCredentialPromise::Private> result =
-      new GetIPCIdentityCredentialPromise::Private(__func__);
-
-  RefPtr<nsITimer> timeout;
+  RefPtr<GetIPCIdentityCredentialRequest> request;
   if (StaticPrefs::
           dom_security_credentialmanagement_identity_reject_delay_enabled()) {
-    nsresult rv = NS_NewTimerWithCallback(
-        getter_AddRefs(timeout),
-        [=](auto) {
-          result->Reject(NS_ERROR_DOM_NETWORK_ERR, __func__);
-          CloseUserInterface(browsingContext);
-        },
+    request = MakeRefPtr<GetIPCIdentityCredentialRequest>(browsingContext);
+    nsresult rv = request->StartTimer(
         StaticPrefs::
-            dom_security_credentialmanagement_identity_reject_delay_duration_ms(),
-        nsITimer::TYPE_ONE_SHOT, "IdentityCredentialTimeoutCallback"_ns);
+            dom_security_credentialmanagement_identity_reject_delay_duration_ms());
     if (NS_WARN_IF(NS_FAILED(rv))) {
-      result->Reject(NS_ERROR_FAILURE, __func__);
-      return result.forget();
+      return GetIPCIdentityCredentialPromise::CreateAndReject(NS_ERROR_FAILURE,
+                                                              __func__);
     }
   }
 
@@ -293,76 +352,66 @@ RefPtr<GetIPCIdentityCredentialPromise> DiscoverFromExternalSourceInMainProcess(
 
   // We use AllSettled here so that failures will be included- we use default
   // values there.
-  GetManifestPromise::AllSettled(GetCurrentSerialEventTarget(),
-                                 manifestPromises)
-      ->Then(
-          GetCurrentSerialEventTarget(), __func__,
-          [browsingContext, aOptions](
-              const GetManifestPromise::AllSettledPromiseType::ResolveValueType&
-                  aResults) {
-            // Convert the
-            // GetManifestPromise::AllSettledPromiseType::ResolveValueType to a
-            // Sequence<MozPromise>
-            CopyableTArray<MozPromise<IdentityProviderAPIConfig, nsresult,
-                                      true>::ResolveOrRejectValue>
-                results = aResults;
-            const Sequence<MozPromise<IdentityProviderAPIConfig, nsresult,
-                                      true>::ResolveOrRejectValue>
-                resultsSequence(std::move(results));
+  RefPtr<GetIPCIdentityCredentialPromise> successPromise =
+      GetManifestPromise::AllSettled(GetCurrentSerialEventTarget(),
+                                     manifestPromises)
+          ->Then(
+              GetCurrentSerialEventTarget(), __func__,
+              [browsingContext,
+               aOptions](const GetManifestPromise::AllSettledPromiseType::
+                             ResolveValueType& aResults) {
+                // Convert the
+                // GetManifestPromise::AllSettledPromiseType::ResolveValueType
+                // to a Sequence<MozPromise>
+                CopyableTArray<MozPromise<IdentityProviderAPIConfig, nsresult,
+                                          true>::ResolveOrRejectValue>
+                    results = aResults;
+                const Sequence<MozPromise<IdentityProviderAPIConfig, nsresult,
+                                          true>::ResolveOrRejectValue>
+                    resultsSequence(std::move(results));
 
-            // If we can skip the provider check, because there is only one
-            // option and it is already linked, do so!
-            Maybe<IdentityProviderRequestOptionsWithManifest>
-                autoSelectedIdentityProvider =
-                    SkipAccountChooser(aOptions.mProviders, resultsSequence);
-            if (autoSelectedIdentityProvider.isSome()) {
-              return GetIdentityProviderRequestOptionsWithManifestPromise::
-                  CreateAndResolve(autoSelectedIdentityProvider.extract(),
-                                   __func__);
-            }
+                // If we can skip the provider check, because there is only one
+                // option and it is already linked, do so!
+                Maybe<IdentityProviderRequestOptionsWithManifest>
+                    autoSelectedIdentityProvider = SkipAccountChooser(
+                        aOptions.mProviders, resultsSequence);
+                if (autoSelectedIdentityProvider.isSome()) {
+                  return GetIdentityProviderRequestOptionsWithManifestPromise::
+                      CreateAndResolve(autoSelectedIdentityProvider.extract(),
+                                       __func__);
+                }
 
-            // The user picks from the providers
-            return PromptUserToSelectProvider(
-                browsingContext, aOptions.mProviders, resultsSequence);
-          },
-          [](bool error) {
-            return GetIdentityProviderRequestOptionsWithManifestPromise::
-                CreateAndReject(NS_ERROR_FAILURE, __func__);
-          })
-      ->Then(
-          GetCurrentSerialEventTarget(), __func__,
-          [aMediationRequirement, principal,
-           relyingParty](const IdentityProviderRequestOptionsWithManifest&
-                             providerAndManifest) {
-            IdentityProviderAPIConfig manifest;
-            IdentityProviderRequestOptions provider;
-            std::tie(provider, manifest) = providerAndManifest;
-            return CreateCredentialDuringDiscovery(principal, relyingParty,
-                                                   provider, manifest,
-                                                   aMediationRequirement);
-          },
-          [](nsresult error) {
-            return GetIPCIdentityCredentialPromise::CreateAndReject(error,
-                                                                    __func__);
-          })
-      ->Then(
-          GetCurrentSerialEventTarget(), __func__,
-          [result, timeout = std::move(timeout)](
-              const GetIPCIdentityCredentialPromise::ResolveOrRejectValue&&
-                  value) {
-            // Resolve the result
-            result->ResolveOrReject(value, __func__);
+                // The user picks from the providers
+                return PromptUserToSelectProvider(
+                    browsingContext, aOptions.mProviders, resultsSequence);
+              },
+              [](bool aError) {
+                return GetIdentityProviderRequestOptionsWithManifestPromise::
+                    CreateAndReject(NS_ERROR_FAILURE, __func__);
+              })
+          ->Then(
+              GetCurrentSerialEventTarget(), __func__,
+              [aMediationRequirement, principal,
+               relyingParty](const IdentityProviderRequestOptionsWithManifest&
+                                 aProviderAndManifest) {
+                IdentityProviderAPIConfig manifest;
+                IdentityProviderRequestOptions provider;
+                std::tie(provider, manifest) = aProviderAndManifest;
+                return CreateCredentialDuringDiscovery(principal, relyingParty,
+                                                       provider, manifest,
+                                                       aMediationRequirement);
+              },
+              [](nsresult aError) {
+                return GetIPCIdentityCredentialPromise::CreateAndReject(
+                    aError, __func__);
+              });
 
-            // Cancel the timer (if it is still pending) and
-            // release the hold on the variables leaked into the timer.
-            if (timeout &&
-                StaticPrefs::
-                    dom_security_credentialmanagement_identity_reject_delay_enabled()) {
-              timeout->Cancel();
-            }
-          });
+  if (!request) {
+    return successPromise;
+  }
 
-  return result;
+  request->Follow(successPromise);
+  return request->Promise();
 }
 
 // static
