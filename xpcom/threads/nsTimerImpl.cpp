@@ -217,36 +217,35 @@ nsresult NS_NewTimerWithCallback(nsITimer** aTimer, nsITimerCallback* aCallback,
 }
 
 mozilla::Result<nsCOMPtr<nsITimer>, nsresult> NS_NewTimerWithCallback(
-    std::function<void(nsITimer*)>&& aCallback, uint32_t aDelay, uint32_t aType,
-    const nsACString& aNameString, nsIEventTarget* aTarget) {
-  nsCOMPtr<nsITimer> timer;
-  MOZ_TRY(NS_NewTimerWithCallback(getter_AddRefs(timer), std::move(aCallback),
-                                  aDelay, aType, aNameString, aTarget));
-  return timer;
-}
-nsresult NS_NewTimerWithCallback(nsITimer** aTimer,
-                                 std::function<void(nsITimer*)>&& aCallback,
-                                 uint32_t aDelay, uint32_t aType,
-                                 const nsACString& aNameString,
-                                 nsIEventTarget* aTarget) {
-  return NS_NewTimerWithCallback(aTimer, std::move(aCallback),
-                                 TimeDuration::FromMilliseconds(aDelay), aType,
-                                 aNameString, aTarget);
-}
-
-mozilla::Result<nsCOMPtr<nsITimer>, nsresult> NS_NewTimerWithCallback(
-    std::function<void(nsITimer*)>&& aCallback, const TimeDuration& aDelay,
+    mozilla::MoveOnlyFunction<void(nsITimer*)>&& aCallback, uint32_t aDelay,
     uint32_t aType, const nsACString& aNameString, nsIEventTarget* aTarget) {
   nsCOMPtr<nsITimer> timer;
   MOZ_TRY(NS_NewTimerWithCallback(getter_AddRefs(timer), std::move(aCallback),
                                   aDelay, aType, aNameString, aTarget));
   return timer;
 }
-nsresult NS_NewTimerWithCallback(nsITimer** aTimer,
-                                 std::function<void(nsITimer*)>&& aCallback,
-                                 const TimeDuration& aDelay, uint32_t aType,
-                                 const nsACString& aNameString,
-                                 nsIEventTarget* aTarget) {
+nsresult NS_NewTimerWithCallback(
+    nsITimer** aTimer, mozilla::MoveOnlyFunction<void(nsITimer*)>&& aCallback,
+    uint32_t aDelay, uint32_t aType, const nsACString& aNameString,
+    nsIEventTarget* aTarget) {
+  return NS_NewTimerWithCallback(aTimer, std::move(aCallback),
+                                 TimeDuration::FromMilliseconds(aDelay), aType,
+                                 aNameString, aTarget);
+}
+
+mozilla::Result<nsCOMPtr<nsITimer>, nsresult> NS_NewTimerWithCallback(
+    mozilla::MoveOnlyFunction<void(nsITimer*)>&& aCallback,
+    const TimeDuration& aDelay, uint32_t aType, const nsACString& aNameString,
+    nsIEventTarget* aTarget) {
+  nsCOMPtr<nsITimer> timer;
+  MOZ_TRY(NS_NewTimerWithCallback(getter_AddRefs(timer), std::move(aCallback),
+                                  aDelay, aType, aNameString, aTarget));
+  return timer;
+}
+nsresult NS_NewTimerWithCallback(
+    nsITimer** aTimer, mozilla::MoveOnlyFunction<void(nsITimer*)>&& aCallback,
+    const TimeDuration& aDelay, uint32_t aType, const nsACString& aNameString,
+    nsIEventTarget* aTarget) {
   RefPtr<nsTimer> timer = nsTimer::WithEventTarget(aTarget);
 
   MOZ_TRY(timer->InitWithClosureCallback(std::move(aCallback), aDelay, aType,
@@ -505,13 +504,13 @@ nsresult nsTimerImpl::Init(nsIObserver* aObserver, uint32_t aDelayInMs,
 }
 
 nsresult nsTimerImpl::InitWithClosureCallback(
-    std::function<void(nsITimer*)>&& aCallback, const TimeDuration& aDelay,
-    uint32_t aType, const nsACString& aNameString) {
+    mozilla::MoveOnlyFunction<void(nsITimer*)>&& aCallback,
+    const TimeDuration& aDelay, uint32_t aType, const nsACString& aNameString) {
   if (NS_WARN_IF(!aCallback)) {
     return NS_ERROR_INVALID_ARG;
   }
 
-  Callback cb{std::move(aCallback)};
+  Callback cb{MakeRefPtr<ClosureCallbackHolder>(std::move(aCallback))};
 
   MutexAutoLock lock(mMutex);
   return InitCommon(aDelay, aType, aNameString, std::move(cb), lock);
@@ -746,7 +745,7 @@ void nsTimerImpl::Fire(uint64_t aTimerSeq) {
         o->Observe(timer, NS_TIMER_CALLBACK_TOPIC, nullptr);
       },
       [&](const FuncCallback& f) { f.mFunc(timer, f.mClosure); },
-      [&](const ClosureCallback& c) { c(timer); });
+      [&](const ClosureCallback& c) { (*c)(timer); });
 
   MOZ_LOG(GetTimerLog(), LogLevel::Debug,
           ("[this=%p] Took %fms to fire timer callback\n", this,

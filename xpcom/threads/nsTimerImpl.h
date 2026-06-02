@@ -80,7 +80,25 @@ class nsTimerImpl {
     void* mClosure;
   };
 
-  using ClosureCallback = std::function<void(nsITimer*)>;
+  // Refcounted so that the Callback variant stays copyable while supporting
+  // move-only closures.
+  class ClosureCallbackHolder final {
+   public:
+    NS_INLINE_DECL_THREADSAFE_REFCOUNTING(ClosureCallbackHolder)
+
+    explicit ClosureCallbackHolder(
+        mozilla::MoveOnlyFunction<void(nsITimer*)>&& aCallback)
+        : mCallback(std::move(aCallback)) {}
+
+    void operator()(nsITimer* aTimer) { mCallback(aTimer); }
+
+   private:
+    ~ClosureCallbackHolder() = default;
+
+    mozilla::MoveOnlyFunction<void(nsITimer*)> mCallback;
+  };
+
+  using ClosureCallback = RefPtr<ClosureCallbackHolder>;
 
   using Callback =
       mozilla::Variant<UnknownCallback, InterfaceCallback, ObserverCallback,
@@ -131,10 +149,10 @@ class nsTimerImpl {
 
   void LogFiring(const Callback& aCallback, uint8_t aType, uint32_t aDelay);
 
-  nsresult InitWithClosureCallback(std::function<void(nsITimer*)>&& aCallback,
-                                   const mozilla::TimeDuration& aDelay,
-                                   uint32_t aType,
-                                   const nsACString& aNameString);
+  nsresult InitWithClosureCallback(
+      mozilla::MoveOnlyFunction<void(nsITimer*)>&& aCallback,
+      const mozilla::TimeDuration& aDelay, uint32_t aType,
+      const nsACString& aNameString);
 
   // Is this timer currently referenced from a TimerThread::Entry in the list?
   // ALL accesses to mIsInTimerThread are under the TimerThread's Monitor lock,
@@ -185,10 +203,10 @@ class nsTimer final : public nsITimer {
 
   // NOTE: This constructor is not exposed on `nsITimer` as NS_FORWARD_SAFE_
   // does not support forwarding rvalue references.
-  nsresult InitWithClosureCallback(std::function<void(nsITimer*)>&& aCallback,
-                                   const mozilla::TimeDuration& aDelay,
-                                   uint32_t aType,
-                                   const nsACString& aNameString) {
+  nsresult InitWithClosureCallback(
+      mozilla::MoveOnlyFunction<void(nsITimer*)>&& aCallback,
+      const mozilla::TimeDuration& aDelay, uint32_t aType,
+      const nsACString& aNameString) {
     return mImpl ? mImpl->InitWithClosureCallback(std::move(aCallback), aDelay,
                                                   aType, aNameString)
                  : NS_ERROR_NULL_POINTER;
