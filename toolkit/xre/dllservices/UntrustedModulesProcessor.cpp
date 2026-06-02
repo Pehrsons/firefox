@@ -567,23 +567,22 @@ RefPtr<ModulesTrustPromise> UntrustedModulesProcessor::GetModulesTrust(
     return InvokeAsync(mThread, __func__, std::move(run));
   }
 
-  RefPtr<ModulesTrustPromise::Private> p(
-      new ModulesTrustPromise::Private(__func__));
+  MozPromiseHolder<ModulesTrustPromise> holder;
+  RefPtr<ModulesTrustPromise> publicPromise = holder.Ensure(__func__);
   nsCOMPtr<nsISerialEventTarget> evtTarget(mThread);
   StaticString source = __func__;
 
-  auto runWrap = [evtTarget = std::move(evtTarget), p, source,
-                  run = std::move(run)]() mutable -> void {
-    InvokeAsync(evtTarget, source, std::move(run))->ChainTo(p.forget(), source);
-  };
+  MOZ_ALWAYS_SUCCEEDS(NS_DispatchToMainThreadQueue(
+      NS_NewRunnableFunction(
+          source,
+          [evtTarget = std::move(evtTarget), holder = std::move(holder), source,
+           run = std::move(run)]() mutable {
+            InvokeAsync(evtTarget, source, std::move(run))
+                ->ChainTo(std::move(holder), source);
+          }),
+      EventQueuePriority::Idle));
 
-  nsCOMPtr<nsIRunnable> idleRunnable(
-      NS_NewRunnableFunction(source, std::move(runWrap)));
-
-  MOZ_ALWAYS_SUCCEEDS(NS_DispatchToMainThreadQueue(idleRunnable.forget(),
-                                                   EventQueuePriority::Idle));
-
-  return p;
+  return publicPromise;
 }
 
 RefPtr<UntrustedModulesPromise>
@@ -624,48 +623,35 @@ UntrustedModulesProcessor::GetProcessedDataInternalChildProcess() {
   RefPtr<GetModulesTrustPromise> whenProcessed(
       ProcessModuleLoadQueueChildProcess(Priority::Default));
 
-  RefPtr<UntrustedModulesProcessor> self(this);
-  RefPtr<UntrustedModulesPromise::Private> p(
-      new UntrustedModulesPromise::Private(__func__));
-  nsCOMPtr<nsISerialEventTarget> evtTarget(mThread);
-
   StaticString source = __func__;
-  auto completionRoutine = [evtTarget = std::move(evtTarget), p,
-                            self = std::move(self), source,
-                            whenProcessed = std::move(whenProcessed)]() {
-    MOZ_ASSERT(NS_IsMainThread());
-    if (!self->IsReadyForBackgroundProcessing()) {
-      // We can't do any more work, just reject all the things
-      whenProcessed->Then(
-          GetMainThreadSerialEventTarget(), source,
-          [p, source](Maybe<ModulesMapResultWithLoads>&& aResult) {
-            p->Reject(NS_ERROR_ILLEGAL_DURING_SHUTDOWN, source);
-          },
-          [p, source](nsresult aRv) { p->Reject(aRv, source); });
-      return;
-    }
 
-    whenProcessed->Then(
-        evtTarget, source,
-        [p, self = std::move(self),
-         source](Maybe<ModulesMapResultWithLoads>&& aResult) mutable {
-          if (aResult.isSome()) {
-            self->CompleteProcessing(std::move(aResult.ref()));
-          }
-          self->GetAllProcessedData(source)->ChainTo(p.forget(), source);
-        },
-        [p, source](nsresult aRv) { p->Reject(aRv, source); });
-  };
+  if (!IsReadyForBackgroundProcessing()) {
+    // We can't do any more work, just reject all the things
+    return whenProcessed->Then(
+        GetMainThreadSerialEventTarget(), source,
+        [source](GetModulesTrustPromise::ResolveOrRejectValue&& aResult)
+            -> RefPtr<UntrustedModulesPromise> {
+          return UntrustedModulesPromise::CreateAndReject(
+              aResult.IsReject() ? aResult.RejectValue()
+                                 : NS_ERROR_ILLEGAL_DURING_SHUTDOWN,
+              source);
+        });
+  }
 
-  // We always send |completionRoutine| on a trip through the main thread
-  // due to some subtlety with |mThread| being a LazyIdleThread: we can only
-  // Dispatch or Then to |mThread| from its creating thread, which is the
-  // main thread. Hopefully we can get rid of this in the future and just
-  // invoke whenProcessed->Then() directly.
-  MOZ_ALWAYS_SUCCEEDS(NS_DispatchToMainThread(
-      NS_NewRunnableFunction(__func__, std::move(completionRoutine))));
-
-  return p;
+  return whenProcessed->Then(
+      mThread, source,
+      [self = RefPtr{this},
+       source](GetModulesTrustPromise::ResolveOrRejectValue&& aResult)
+          -> RefPtr<UntrustedModulesPromise> {
+        if (aResult.IsReject()) {
+          return UntrustedModulesPromise::CreateAndReject(aResult.RejectValue(),
+                                                          source);
+        }
+        if (aResult.ResolveValue().isSome()) {
+          self->CompleteProcessing(std::move(aResult.ResolveValue().ref()));
+        }
+        return self->GetAllProcessedData(source);
+      });
 }
 
 void UntrustedModulesProcessor::BackgroundProcessModuleLoadQueue() {
@@ -725,45 +711,27 @@ void UntrustedModulesProcessor::BackgroundProcessModuleLoadQueueChildProcess() {
   RefPtr<GetModulesTrustPromise> whenProcessed(
       ProcessModuleLoadQueueChildProcess(Priority::Background));
 
-  RefPtr<UntrustedModulesProcessor> self(this);
-  nsCOMPtr<nsISerialEventTarget> evtTarget(mThread);
-
   constexpr StaticString const source = __func__;
-  auto completionRoutine = [evtTarget = std::move(evtTarget),
-                            self = std::move(self), source,
-                            whenProcessed = std::move(whenProcessed)]() {
-    MOZ_ASSERT(NS_IsMainThread());
-    if (!self->IsReadyForBackgroundProcessing()) {
-      // We can't do any more work, just no-op
-      whenProcessed->Then(
-          GetMainThreadSerialEventTarget(), source,
-          [](Maybe<ModulesMapResultWithLoads>&& aResult) {},
-          [](nsresult aRv) {});
-      return;
-    }
-
+  if (!IsReadyForBackgroundProcessing()) {
+    // We can't do any more work, just no-op
     whenProcessed->Then(
-        evtTarget, source,
-        [self = std::move(self)](Maybe<ModulesMapResultWithLoads>&& aResult) {
-          if (aResult.isNothing() || !self->IsReadyForBackgroundProcessing()) {
-            // Nothing to do
-            return;
-          }
+        GetMainThreadSerialEventTarget(), source,
+        [](Maybe<ModulesMapResultWithLoads>&& aResult) {}, [](nsresult aRv) {});
+    return;
+  }
 
-          BackgroundPriorityRegion bgRgn;
-          self->CompleteProcessing(std::move(aResult.ref()));
-        },
-        [](nsresult aRv) {});
-  };
+  whenProcessed->Then(
+      mThread, source,
+      [self = RefPtr{this}](Maybe<ModulesMapResultWithLoads>&& aResult) {
+        if (aResult.isNothing() || !self->IsReadyForBackgroundProcessing()) {
+          // Nothing to do
+          return;
+        }
 
-  // We always send |completionRoutine| on a trip through the main thread
-  // due to some subtlety with |mThread| being a LazyIdleThread: we can only
-  // Dispatch or Then to |mThread| from its creating thread, which is the
-  // main thread. Hopefully we can get rid of this in the future and just
-  // invoke whenProcessed->Then() directly.
-  DebugOnly<nsresult> rv = NS_DispatchToMainThread(
-      NS_NewRunnableFunction(__func__, std::move(completionRoutine)));
-  MOZ_ASSERT(NS_SUCCEEDED(rv));
+        BackgroundPriorityRegion bgRgn;
+        self->CompleteProcessing(std::move(aResult.ref()));
+      },
+      [](nsresult aRv) {});
 }
 
 UnprocessedModuleLoads UntrustedModulesProcessor::ExtractLoadingEventsToProcess(
@@ -1022,30 +990,28 @@ UntrustedModulesProcessor::ProcessModuleLoadQueueChildProcess(
     return self->SendGetModulesTrust(std::move(moduleIdentifiers), priority);
   };
 
-  RefPtr<GetModulesTrustPromise::Private> p(
-      new GetModulesTrustPromise::Private(__func__));
-
   if (!IsReadyForBackgroundProcessing()) {
-    p->Reject(NS_ERROR_ILLEGAL_DURING_SHUTDOWN, __func__);
-    return p;
+    return GetModulesTrustPromise::CreateAndReject(
+        NS_ERROR_ILLEGAL_DURING_SHUTDOWN, __func__);
   }
 
   // Send the IPC request via the main thread
-  InvokeAsync(GetMainThreadSerialEventTarget(), __func__, std::move(invoker))
+  return InvokeAsync(GetMainThreadSerialEventTarget(), __func__,
+                     std::move(invoker))
       ->Then(
           GetMainThreadSerialEventTarget(), __func__,
-          [p, loads = std::move(loadsToProcess)](
-              Maybe<ModulesMapResult>&& aResult) mutable {
-            ModulesMapResultWithLoads result(std::move(aResult),
+          [loads = std::move(loadsToProcess)](
+              GetModulesTrustIpcPromise::ResolveOrRejectValue&& aResult) mutable
+              -> RefPtr<GetModulesTrustPromise> {
+            if (aResult.IsReject()) {
+              return GetModulesTrustPromise::CreateAndReject(NS_ERROR_FAILURE,
+                                                             __func__);
+            }
+            ModulesMapResultWithLoads result(std::move(aResult.ResolveValue()),
                                              std::move(loads));
-            p->Resolve(Some(ModulesMapResultWithLoads(std::move(result))),
-                       __func__);
-          },
-          [p](ipc::ResponseRejectReason aReason) {
-            p->Reject(NS_ERROR_FAILURE, __func__);
+            return GetModulesTrustPromise::CreateAndResolve(
+                Some(std::move(result)), __func__);
           });
-
-  return p;
 }
 
 void UntrustedModulesProcessor::CompleteProcessing(
