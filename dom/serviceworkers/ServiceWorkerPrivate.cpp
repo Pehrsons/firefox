@@ -224,7 +224,7 @@ nsresult ServiceWorkerPrivate::PendingPushEvent::Send() {
   MOZ_ASSERT(mOwner->mInfo);
 
   mOwner->SendPushEventInternal(std::move(mRegistration), std::move(mArgs))
-      ->ChainTo(mPromiseHolder.Steal(), __func__);
+      ->ChainTo(std::move(mPromiseHolder), __func__);
   return NS_OK;
 }
 
@@ -1373,23 +1373,22 @@ ServiceWorkerPrivate::WakeForExtensionAPIEvent(
   args.apiNamespace() = nsString(aExtensionAPINamespace);
   args.apiEventName() = nsString(aExtensionAPIEventName);
 
-  auto promise =
-      MakeRefPtr<PromiseExtensionWorkerHasListener::Private>(__func__);
-
   RefPtr<ServiceWorkerOpPromise> opPromise = ExecServiceWorkerOp(
       std::move(args), ServiceWorkerLifetimeExtension(FullLifetimeExtension{}));
-  opPromise->Then(
+  RefPtr<PromiseExtensionWorkerHasListener> outPromise = opPromise->Then(
       GetCurrentSerialEventTarget(), __func__,
-      [promise](ServiceWorkerOpResult&& aResult) {
+      [](ServiceWorkerOpResult&& aResult) {
         MOZ_ASSERT(
             aResult.type() ==
             ServiceWorkerOpResult::TServiceWorkerExtensionAPIEventOpResult);
         auto& result = aResult.get_ServiceWorkerExtensionAPIEventOpResult();
-        promise->Resolve(result.extensionAPIEventListenerWasAdded(), __func__);
+        return PromiseExtensionWorkerHasListener::CreateAndResolve(
+            result.extensionAPIEventListenerWasAdded(), __func__);
       },
-      [promise]() { promise->Reject(NS_ERROR_FAILURE, __func__); });
-
-  RefPtr<PromiseExtensionWorkerHasListener> outPromise(promise);
+      [](nsresult aRv) {
+        return PromiseExtensionWorkerHasListener::CreateAndReject(aRv,
+                                                                  __func__);
+      });
   return outPromise;
 }
 
@@ -1861,16 +1860,17 @@ RefPtr<GenericPromise> ServiceWorkerPrivate::SetSkipWaitingFlag() {
 
   mInfo->SetSkipWaitingFlag();
 
-  RefPtr<GenericPromise::Private> promise =
-      new GenericPromise::Private(__func__);
+  MozPromiseHolder<GenericPromise> holder;
+  RefPtr<GenericPromise> promise = holder.Ensure(__func__);
 
   // The ServiceWorker calling skipWaiting on itself is not a basis for lifetime
   // extension on its own.  `TryToActivate` will upgrade the lifetime to a full
   // extension iff there are any controlled pages.
   auto lifetime = ServiceWorkerLifetimeExtension(NoLifetimeExtension{});
 
-  regInfo->TryToActivateAsync(lifetime,
-                              [promise] { promise->Resolve(true, __func__); });
+  regInfo->TryToActivateAsync(lifetime, [holder = std::move(holder)]() mutable {
+    holder.Resolve(true, __func__);
+  });
 
   return promise;
 }
@@ -2100,9 +2100,6 @@ RefPtr<GenericNonExclusivePromise> ServiceWorkerPrivate::ShutdownInternal(
     }
   }
 
-  RefPtr<GenericNonExclusivePromise::Private> promise =
-      new GenericNonExclusivePromise::Private(__func__);
-
   RefPtr<ServiceWorkerOpPromise> opPromise = ExecServiceWorkerOp(
       ServiceWorkerTerminateWorkerOpArgs(aShutdownStateId),
       // It doesn't make sense to extend the lifetime in this case.  This will
@@ -2111,13 +2108,16 @@ RefPtr<GenericNonExclusivePromise> ServiceWorkerPrivate::ShutdownInternal(
       // that situation.
       ServiceWorkerLifetimeExtension(NoLifetimeExtension{}));
 
-  opPromise->Then(
+  RefPtr<GenericNonExclusivePromise> promise = opPromise->Then(
       GetCurrentSerialEventTarget(), __func__,
-      [promise](ServiceWorkerOpResult&& aResult) {
+      [](ServiceWorkerOpResult&& aResult) {
         MOZ_ASSERT(aResult.type() == ServiceWorkerOpResult::Tnsresult);
-        promise->Resolve(true, __func__);
+        return GenericNonExclusivePromise::CreateAndResolve(true, __func__);
       },
-      [promise]() { promise->Reject(NS_ERROR_DOM_ABORT_ERR, __func__); });
+      [](nsresult) {
+        return GenericNonExclusivePromise::CreateAndReject(
+            NS_ERROR_DOM_ABORT_ERR, __func__);
+      });
 
   /**
    * After dispatching a termination operation, no new operations should
@@ -2163,19 +2163,19 @@ RefPtr<ServiceWorkerOpPromise> ServiceWorkerPrivate::ExecServiceWorkerOp(
           ? nullptr
           : CreateEventKeepAliveToken();
 
-  /**
-   * NOTE: moving `aArgs` won't do anything until IPDL `SendMethod()` methods
-   * can accept rvalue references rather than just const references.
-   */
-  RefPtr<ServiceWorkerOpPromise> result =
-      mControllerChild->get()->SendExecServiceWorkerOp(aArgs)->MapErr(
-          GetCurrentSerialEventTarget(), __func__,
-          [self = std::move(self), holder = std::move(holder),
-           token = std::move(token)](
-              PRemoteWorkerControllerChild::ExecServiceWorkerOpPromise::
-                  RejectValueType&& aResult) { return NS_ERROR_FAILURE; });
-
-  return result;
+  return mControllerChild->get()->SendExecServiceWorkerOp(aArgs)->Then(
+      GetCurrentSerialEventTarget(), __func__,
+      [self = std::move(self), holder = std::move(holder),
+       token = std::move(token)](
+          PRemoteWorkerControllerChild::ExecServiceWorkerOpPromise::
+              ResolveOrRejectValue&& aResult) {
+        if (NS_WARN_IF(aResult.IsReject())) {
+          return ServiceWorkerOpPromise::CreateAndReject(NS_ERROR_FAILURE,
+                                                         __func__);
+        }
+        return ServiceWorkerOpPromise::CreateAndResolve(
+            std::move(aResult.ResolveValue()), __func__);
+      });
 }
 
 }  // namespace mozilla::dom

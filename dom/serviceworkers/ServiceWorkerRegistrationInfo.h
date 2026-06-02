@@ -5,8 +5,7 @@
 #ifndef mozilla_dom_serviceworkerregistrationinfo_h
 #define mozilla_dom_serviceworkerregistrationinfo_h
 
-#include <functional>
-
+#include "mozilla/MoveOnlyFunction.h"
 #include "mozilla/dom/IPCNavigationPreloadState.h"
 #include "mozilla/dom/ServiceWorkerInfo.h"
 #include "mozilla/dom/ServiceWorkerLifetimeExtension.h"
@@ -77,7 +76,7 @@ class ServiceWorkerRegistrationInfo final
   NS_DECL_ISUPPORTS
   NS_DECL_NSISERVICEWORKERREGISTRATIONINFO
 
-  using TryToActivateCallback = std::function<void()>;
+  using TryToActivateCallback = MoveOnlyFunction<void()>;
 
   ServiceWorkerRegistrationInfo(
       const nsACString& aScope, WorkerType aType, nsIPrincipal* aPrincipal,
