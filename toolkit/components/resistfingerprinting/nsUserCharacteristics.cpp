@@ -19,7 +19,7 @@
 
 #include "jsapi.h"
 #include "mozilla/Components.h"
-#include "mozilla/dom/Promise-inl.h"
+#include "mozilla/dom/PromiseNativeHandler.h"
 
 #include "mozilla/StaticPrefs_browser.h"
 #include "mozilla/StaticPrefs_dom.h"
@@ -136,32 +136,18 @@ void PopulateMathMLPrefs() { CollectMathMLPrefs(); }
 
 using FunctionName = nsCString;
 using AdditionalContext = nsCString;
-using PopulatePromiseBase =
+using PopulatePromise =
     MozPromise<void_t, std::tuple<FunctionName, nsresult, AdditionalContext>,
                false>;
-using PopulatePromise = PopulatePromiseBase::Private;
-
-#define REJECT(aPromise, aFuncName, aRv, aError)                          \
-  aPromise->Reject(std::tuple<FunctionName, nsresult, AdditionalContext>( \
-                       aFuncName, aRv, aError),                           \
-                   __func__);
-
-#define REJECT_AND_FORGET(aPromise, aFuncName, aRv, aError) \
-  REJECT(aPromise, aFuncName, aRv, aError);                 \
-  return (aPromise).forget();
-
-#define REJECT_VOID(aPromise, aFuncName, aRv, aError) \
-  REJECT(aPromise, aFuncName, aRv, aError);           \
-  return;
+using RejectValue = std::tuple<FunctionName, nsresult, AdditionalContext>;
 
 // ==================================================================
 // ==================================================================
-already_AddRefed<PopulatePromise> ContentPageStuff() {
+RefPtr<PopulatePromise> ContentPageStuff() {
   nsCOMPtr<nsIUserCharacteristicsPageService> ucp =
       do_GetService("@mozilla.org/user-characteristics-page;1");
   MOZ_ASSERT(ucp);
 
-  RefPtr<PopulatePromise> populatePromise = new PopulatePromise(__func__);
   RefPtr<mozilla::dom::Promise> promise;
   nsresult rv = ucp->CreateContentPage(
       nsContentUtils::GetFingerprintingProtectionPrincipal(),
@@ -169,31 +155,42 @@ already_AddRefed<PopulatePromise> ContentPageStuff() {
   if (NS_FAILED(rv)) {
     MOZ_LOG(gUserCharacteristicsLog, mozilla::LogLevel::Error,
             ("Could not create Content Page"));
-    REJECT_AND_FORGET(populatePromise, __func__, rv, "CREATION_FAILED");
+    return PopulatePromise::CreateAndReject(
+        RejectValue(__func__, rv, "CREATION_FAILED"), __func__);
   }
   MOZ_LOG(gUserCharacteristicsLog, mozilla::LogLevel::Debug,
           ("Created Content Page"));
 
-  if (promise) {
-    promise->AddCallbacksWithCycleCollectedArgs(
-        [=](JSContext*, JS::Handle<JS::Value>, mozilla::ErrorResult&) {
-          populatePromise->Resolve(void_t(), __func__);
-        },
-        [=](JSContext*, JS::Handle<JS::Value>, mozilla::ErrorResult& error) {
-          if (error.Failed()) {
-            REJECT_VOID(populatePromise, "ContentPageStuff",
-                        error.StealNSResult(), "REJECTED_WITH_ERROR");
-          }
-          REJECT(populatePromise, "ContentPageStuff", NS_ERROR_FAILURE,
-                 "REJECTED_WITHOUT_ERROR");
-        });
-  } else {
+  if (!promise) {
     MOZ_LOG(gUserCharacteristicsLog, mozilla::LogLevel::Error,
             ("Did not get a Promise back from ContentPageStuff"));
-    REJECT(populatePromise, __func__, NS_ERROR_FAILURE, "NO_PROMISE");
+    return PopulatePromise::CreateAndReject(
+        RejectValue(__func__, NS_ERROR_FAILURE, "NO_PROMISE"), __func__);
   }
 
-  return populatePromise.forget();
+  auto handler = MakeRefPtr<dom::MozPromiseNativeHandler<GenericPromise>>(
+      [](JSContext*, JS::Handle<JS::Value>) {
+        return GenericPromise::CreateAndResolve(true, __func__);
+      },
+      [](JSContext*, JS::Handle<JS::Value>) {
+        return GenericPromise::CreateAndReject(NS_ERROR_FAILURE, __func__);
+      },
+      __func__);
+  promise->AppendNativeHandler(handler);
+  return handler->Promise()->Then(
+      GetCurrentSerialEventTarget(), __func__,
+      [](const GenericPromise::ResolveOrRejectValue& aValue)
+          -> RefPtr<PopulatePromise> {
+        if (aValue.IsResolve()) {
+          return PopulatePromise::CreateAndResolve(void_t(), __func__);
+        }
+        return PopulatePromise::CreateAndReject(
+            RejectValue("ContentPageStuff", aValue.RejectValue(),
+                        aValue.RejectValue() == NS_BINDING_ABORTED
+                            ? "PROMISE_DESTROYED"_ns
+                            : "REJECTED_WITHOUT_ERROR"_ns),
+            __func__);
+      });
 }
 
 void PopulateCSSProperties() {
@@ -444,9 +441,7 @@ nsresult HashFontList(const nsTArray<nsCString>& aFonts, nsCString& aOutHex) {
   return NS_OK;
 }
 
-already_AddRefed<PopulatePromise> PopulateFingerprintedFonts() {
-  RefPtr<PopulatePromise> populatePromise = new PopulatePromise(__func__);
-
+RefPtr<PopulatePromise> PopulateFingerprintedFonts() {
 #include "FingerprintedFonts.inc"
 
 #define FONT_PAIR(list, metric)                                   \
@@ -471,8 +466,9 @@ already_AddRefed<PopulatePromise> PopulateFingerprintedFonts() {
     nsresult rv =
         ProcessFingerprintedFonts(fontList, allowlistedHex, nonallowlistedHex);
     if (NS_FAILED(rv)) {
-      REJECT_AND_FORGET(populatePromise, __func__, rv,
-                        "ProcessFingerprintedFonts"_ns.AsString());
+      return PopulatePromise::CreateAndReject(
+          RejectValue(__func__, rv, "ProcessFingerprintedFonts"_ns.AsString()),
+          __func__);
     }
 
     metrics.first.Set(allowlistedHex);
@@ -483,8 +479,10 @@ already_AddRefed<PopulatePromise> PopulateFingerprintedFonts() {
   {
     gfxPlatformFontList* pfl = gfxPlatformFontList::PlatformFontList();
     if (!pfl) {
-      REJECT_AND_FORGET(populatePromise, __func__, NS_ERROR_FAILURE,
-                        "No platform font list"_ns.AsString());
+      return PopulatePromise::CreateAndReject(
+          RejectValue(__func__, NS_ERROR_FAILURE,
+                      "No platform font list"_ns.AsString()),
+          __func__);
     }
 
     nsTArray<nsCString> variantFontList;
@@ -616,8 +614,7 @@ already_AddRefed<PopulatePromise> PopulateFingerprintedFonts() {
     }
   }
 
-  populatePromise->Resolve(void_t(), __func__);
-  return populatePromise.forget();
+  return PopulatePromise::CreateAndResolve(void_t(), __func__);
 }
 
 void PopulatePrefs() {
@@ -824,11 +821,10 @@ void PopulateFontPrefs() {
       Preferences::HasUserValue("font.name-list.emoji"));
 }
 
-already_AddRefed<PopulatePromise> PopulateMediaDevices() {
-  RefPtr<PopulatePromise> populatePromise = new PopulatePromise(__func__);
-  MediaManager::Get()->GetPhysicalDevices()->Then(
+RefPtr<PopulatePromise> PopulateMediaDevices() {
+  return MediaManager::Get()->GetPhysicalDevices()->Then(
       GetCurrentSerialEventTarget(), __func__,
-      [=](const RefPtr<const MediaManager::MediaDeviceSetRefCnt>& aDevices) {
+      [](const RefPtr<const MediaManager::MediaDeviceSetRefCnt>& aDevices) {
         uint32_t cameraCount = 0;
         uint32_t microphoneCount = 0;
         uint32_t speakerCount = 0;
@@ -859,16 +855,17 @@ already_AddRefed<PopulatePromise> PopulateMediaDevices() {
         glean::characteristics::group_count_wo_speakers.Set(
             static_cast<int64_t>(groupIdsWoSpeakers.size()));
 
-        populatePromise->Resolve(void_t(), __func__);
+        return PopulatePromise::CreateAndResolve(void_t(), __func__);
       },
-      [=](RefPtr<MediaMgrError>&& reason) {
+      [](RefPtr<MediaMgrError>&& reason) {
         // GetPhysicalDevices() never rejects but we'll add the following
         // just in case it changes in the future
         reason->mMessage.StripChar(',');
-        REJECT(populatePromise, "PopulateMediaDevices", NS_ERROR_FAILURE,
-               reason->mMessage);
+        return PopulatePromise::CreateAndReject(
+            RejectValue("PopulateMediaDevices", NS_ERROR_FAILURE,
+                        reason->mMessage),
+            "PopulateMediaDevices");
       });
-  return populatePromise.forget();
 }
 
 void PopulateLanguages() {
@@ -1223,23 +1220,21 @@ void PopulateMisc(bool worksInGtest) {
   }
 }
 
-already_AddRefed<PopulatePromise> PopulateTimeZone() {
-  RefPtr<PopulatePromise> populatePromise = new PopulatePromise(__func__);
-
+RefPtr<PopulatePromise> PopulateTimeZone() {
   AutoTArray<char16_t, 128> tzBuffer;
   auto result = intl::TimeZone::GetDefaultTimeZone(tzBuffer);
   if (result.isOk()) {
     NS_ConvertUTF16toUTF8 timeZone(
         nsDependentString(tzBuffer.Elements(), tzBuffer.Length()));
     glean::characteristics::timezone.Set(timeZone);
-    populatePromise->Resolve(void_t(), __func__);
-  } else {
-    REJECT(populatePromise, __func__, NS_ERROR_FAILURE,
-           nsPrintfCString("ICUError=%" PRIu8,
-                           static_cast<uint8_t>(result.unwrapErr())));
+    return PopulatePromise::CreateAndResolve(void_t(), __func__);
   }
 
-  return populatePromise.forget();
+  return PopulatePromise::CreateAndReject(
+      RejectValue(__func__, NS_ERROR_FAILURE,
+                  nsPrintfCString("ICUError=%" PRIu8,
+                                  static_cast<uint8_t>(result.unwrapErr()))),
+      __func__);
 }
 
 void PopulateModelName() {
@@ -1267,31 +1262,6 @@ void PopulateModelName() {
 #endif
 
   glean::characteristics::machine_model_name.Set(modelName);
-}
-
-const RefPtr<PopulatePromise>& TimoutPromise(
-    const RefPtr<PopulatePromise>& promise, uint32_t delay,
-    const nsCString& funcName) {
-  nsCOMPtr<nsITimer> timeout;
-  nsresult rv = NS_NewTimerWithCallback(
-      getter_AddRefs(timeout),
-      [=](auto) {
-        // NOTE: has no effect if `promise` has already been resolved.
-        REJECT(promise, funcName, NS_ERROR_FAILURE, "TIMEOUT");
-      },
-      delay, nsITimer::TYPE_ONE_SHOT, "UserCharacteristicsPromiseTimeout"_ns);
-  if (NS_FAILED(rv)) {
-    REJECT(promise, funcName, rv, "TIMEOUT_CREATION");
-  }
-
-  auto cancelTimeoutRes = [timeout = std::move(timeout)]() {
-    timeout->Cancel();
-  };
-  auto cancelTimeoutRej = cancelTimeoutRes;
-  promise->Then(GetCurrentSerialEventTarget(), __func__,
-                std::move(cancelTimeoutRes), std::move(cancelTimeoutRej));
-
-  return promise;
 }
 
 // ==================================================================
@@ -1478,7 +1448,7 @@ void nsUserCharacteristics::PopulateDataAndEventuallySubmit(
 
   // ------------------------------------------------------------------------
 
-  nsTArray<RefPtr<PopulatePromiseBase>> promises;
+  nsTArray<RefPtr<PopulatePromise>> promises;
   if (!aTesting) {
     // Many of the later peices of data do not work in a gtest
     // so skip populating them
