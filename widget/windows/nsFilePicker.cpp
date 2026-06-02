@@ -286,14 +286,12 @@ class AsyncAllIterator final {
   NS_INLINE_DECL_REFCOUNTING(AsyncAllIterator)
   AsyncAllIterator(
       nsTArray<T> aItems,
-      std::function<
-          RefPtr<mozilla::MozPromise<bool, nsresult, true>>(const T& item)>
-          aPredicate,
-      RefPtr<mozilla::MozPromise<bool, nsresult, true>::Private> aPromise)
+      std::function<RefPtr<mozilla::GenericPromise>(const T& item)> aPredicate,
+      mozilla::MozPromiseHolder<mozilla::GenericPromise>&& aHolder)
       : mItems(std::move(aItems)),
         mNextIndex(0),
         mPredicate(std::move(aPredicate)),
-        mPromise(std::move(aPromise)) {}
+        mPromise(std::move(aHolder)) {}
 
   void StartIterating() { ContinueIterating(); }
 
@@ -301,7 +299,7 @@ class AsyncAllIterator final {
   ~AsyncAllIterator() = default;
   void ContinueIterating() {
     if (mNextIndex >= mItems.Length()) {
-      mPromise->Resolve(true, __func__);
+      mPromise.Resolve(true, __func__);
       return;
     }
     mPredicate(mItems.ElementAt(mNextIndex))
@@ -309,22 +307,20 @@ class AsyncAllIterator final {
             mozilla::GetMainThreadSerialEventTarget(), __func__,
             [self = RefPtr{this}](bool aResult) {
               if (!aResult) {
-                self->mPromise->Resolve(false, __func__);
+                self->mPromise.Resolve(false, __func__);
                 return;
               }
               ++self->mNextIndex;
               self->ContinueIterating();
             },
             [self = RefPtr{this}](nsresult aError) {
-              self->mPromise->Reject(aError, __func__);
+              self->mPromise.Reject(aError, __func__);
             });
   }
   nsTArray<T> mItems;
   uint32_t mNextIndex;
-  std::function<RefPtr<mozilla::MozPromise<bool, nsresult, true>>(
-      const T& item)>
-      mPredicate;
-  RefPtr<mozilla::MozPromise<bool, nsresult, true>::Private> mPromise;
+  std::function<RefPtr<mozilla::GenericPromise>(const T& item)> mPredicate;
+  mozilla::MozPromiseHolder<mozilla::GenericPromise> mPromise;
 };
 
 /* N.B.: L and R stand for Local and Remote, not just Left and Right */

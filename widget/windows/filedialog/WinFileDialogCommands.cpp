@@ -470,7 +470,8 @@ RefPtr<Promise<Res>> SpawnFileDialogThread(const char (&where)[N],
   });
 
   // our eventual return value
-  RefPtr promise = MakeRefPtr<typename Promise<Res>::Private>(where);
+  MozPromiseHolder<Promise<Res>> holder;
+  RefPtr<Promise<Res>> promise = holder.Ensure(where);
 
   // alias to reduce indentation depth
   auto const dispatch = [&](auto closure) {
@@ -479,7 +480,8 @@ RefPtr<Promise<Res>> SpawnFileDialogThread(const char (&where)[N],
         mozilla::EventQueuePriority::Normal);
   };
 
-  dispatch([thread, promise, where, action = std::move(action)]() {
+  MOZ_ALWAYS_SUCCEEDS(dispatch([thread, holder = std::move(holder), where,
+                                action = std::move(action)]() mutable {
     // Like essentially all COM UI components, the file dialog is STA: it must
     // be associated with a specific thread to create its HWNDs and receive
     // messages for them. If it's launched from a thread in the multithreaded
@@ -531,11 +533,11 @@ RefPtr<Promise<Res>> SpawnFileDialogThread(const char (&where)[N],
     // Actually invoke the action and report the result.
     Result<Res, Error> val = action();
     if (val.isErr()) {
-      promise->Reject(val.unwrapErr(), where);
+      holder.Reject(val.unwrapErr(), where);
     } else {
-      promise->Resolve(val.unwrap(), where);
+      holder.Resolve(val.unwrap(), where);
     }
-  });
+  }));
 
   return promise;
 }
