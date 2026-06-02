@@ -31,17 +31,19 @@ auto TextRecognition::DoFindText(gfx::DataSourceSurface& aSurface,
                                           __func__);
   }
 
-  auto promise = MakeRefPtr<NativePromise::Private>(__func__);
+  MozPromiseHolder<NativePromise> holder;
+  RefPtr<NativePromise> promise = holder.Ensure(__func__);
 
   NSMutableArray* recognitionLanguages = [[NSMutableArray alloc] init];
   for (const auto& locale : aLanguages) {
     [recognitionLanguages addObject:nsCocoaUtils::ToNSString(locale)];
   }
 
-  NS_DispatchBackgroundTask(
+  MOZ_ALWAYS_SUCCEEDS(NS_DispatchBackgroundTask(
       NS_NewRunnableFunction(
           __func__,
-          [promise, imageRef, recognitionLanguages] {
+          [holder = std::move(holder), imageRef,
+           recognitionLanguages]() mutable {
             auto unrefImage = MakeScopeExit([&] {
               ::CGImageRelease(imageRef);
               [recognitionLanguages release];
@@ -103,16 +105,16 @@ auto TextRecognition::DoFindText(gfx::DataSourceSurface& aSurface,
             [requestHandler performRequests:@[ textRecognitionRequest ]
                                       error:&error];
             if (error != nil) {
-              promise->Reject(
+              holder.Reject(
                   nsPrintfCString(
                       "Failed to perform text recognition request (%ld)\n",
                       error.code),
                   __func__);
             } else {
-              promise->Resolve(std::move(result), __func__);
+              holder.Resolve(std::move(result), __func__);
             }
           }),
-      NS_DISPATCH_EVENT_MAY_BLOCK);
+      NS_DISPATCH_EVENT_MAY_BLOCK));
   return promise;
 
   NS_OBJC_END_TRY_IGNORE_BLOCK
