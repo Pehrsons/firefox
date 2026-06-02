@@ -2585,19 +2585,20 @@ template <typename OkT, typename Fn>
 RefPtr<IOUtils::IOPromise<OkT>> IOUtils::EventQueue::Dispatch(Fn aFunc) {
   MOZ_RELEASE_ASSERT(mBackgroundEventTarget);
 
-  auto promise =
-      MakeRefPtr<typename IOUtils::IOPromise<OkT>::Private>(__func__);
-  mBackgroundEventTarget->Dispatch(
-      NS_NewRunnableFunction("IOUtils::EventQueue::Dispatch",
-                             [promise, func = std::move(aFunc)] {
-                               Result<OkT, IOError> result = func();
-                               if (result.isErr()) {
-                                 promise->Reject(result.unwrapErr(), __func__);
-                               } else {
-                                 promise->Resolve(result.unwrap(), __func__);
-                               }
-                             }),
-      NS_DISPATCH_EVENT_MAY_BLOCK);
+  MozPromiseHolder<IOUtils::IOPromise<OkT>> holder;
+  RefPtr<IOUtils::IOPromise<OkT>> promise = holder.Ensure(__func__);
+  MOZ_ALWAYS_SUCCEEDS(mBackgroundEventTarget->Dispatch(
+      NS_NewRunnableFunction(
+          "IOUtils::EventQueue::Dispatch",
+          [holder = std::move(holder), func = std::move(aFunc)]() mutable {
+            Result<OkT, IOError> result = func();
+            if (result.isErr()) {
+              holder.Reject(result.unwrapErr(), __func__);
+            } else {
+              holder.Resolve(result.unwrap(), __func__);
+            }
+          }),
+      NS_DISPATCH_EVENT_MAY_BLOCK));
   return promise;
 };
 
