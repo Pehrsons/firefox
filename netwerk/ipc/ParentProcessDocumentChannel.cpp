@@ -224,11 +224,11 @@ NS_IMETHODIMP ParentProcessDocumentChannel::AsyncOpen(
                       self->mListener = nullptr;
                       self->mCallbacks = nullptr;
                       self->RemoveObserver();
-                      auto p =
-                          MakeRefPtr<RedirectToRealChannelPromise::Private>(
-                              __func__);
-                      p->UseDirectTaskDispatch(__func__);
-                      p->ResolveOrReject(std::move(aValue), __func__);
+                      MozPromiseHolder<RedirectToRealChannelPromise> holder;
+                      RefPtr<RedirectToRealChannelPromise> p =
+                          holder.Ensure(__func__);
+                      holder.UseDirectTaskDispatch(__func__);
+                      holder.ResolveOrReject(std::move(aValue), __func__);
                       return p;
                     });
         // We chain the promise the DLL is waiting on to the one returned by

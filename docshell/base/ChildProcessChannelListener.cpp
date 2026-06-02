@@ -40,8 +40,8 @@ void ChildProcessChannelListener::OnChannelReady(
 }
 
 ChildProcessChannelListener::~ChildProcessChannelListener() {
-  for (const auto& args : mChannelArgs.Values()) {
-    args.mResolver(NS_ERROR_FAILURE);
+  for (auto& entry : mChannelArgs) {
+    entry.GetModifiableData()->mResolver(NS_ERROR_FAILURE);
   }
 }
 

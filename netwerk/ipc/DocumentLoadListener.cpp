@@ -2443,12 +2443,12 @@ DocumentLoadListener::RedirectToParentProcess(uint32_t aRedirectFlags,
   RefPtr<ChildProcessChannelListener> processListener =
       ChildProcessChannelListener::GetSingleton();
 
-  auto promise =
-      MakeRefPtr<PDocumentChannelParent::RedirectToRealChannelPromise::Private>(
-          __func__);
-  promise->UseDirectTaskDispatch(__func__);
-  auto resolve = [promise](nsresult aResult) {
-    promise->Resolve(aResult, __func__);
+  MozPromiseHolder<PDocumentChannelParent::RedirectToRealChannelPromise> holder;
+  RefPtr<PDocumentChannelParent::RedirectToRealChannelPromise> promise =
+      holder.Ensure(__func__);
+  holder.UseDirectTaskDispatch(__func__);
+  auto resolve = [holder = std::move(holder)](nsresult aResult) mutable {
+    holder.Resolve(aResult, __func__);
   };
 
   nsTArray<ipc::Endpoint<extensions::PStreamFilterParent>> endpoints;

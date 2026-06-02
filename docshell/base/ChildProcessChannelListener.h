@@ -7,6 +7,7 @@
 
 #include <functional>
 
+#include "mozilla/MoveOnlyFunction.h"
 #include "mozilla/extensions/StreamFilterParent.h"
 #include "mozilla/net/NeckoChannelParams.h"
 #include "nsDOMNavigationTiming.h"
@@ -20,7 +21,7 @@ class ChildProcessChannelListener final {
   NS_INLINE_DECL_REFCOUNTING(ChildProcessChannelListener)
 
   using Endpoint = mozilla::ipc::Endpoint<extensions::PStreamFilterParent>;
-  using Resolver = std::function<void(const nsresult&)>;
+  using Resolver = MoveOnlyFunction<void(const nsresult&)>;
   using Callback = std::function<nsresult(
       nsDocShellLoadState*, nsTArray<Endpoint>&&, nsDOMNavigationTiming*)>;
 
