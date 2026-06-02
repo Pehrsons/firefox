@@ -29,70 +29,67 @@ IdentityCredentialRequestManager::GetTokenFromPopup(
   MOZ_ASSERT(aRelyingPartyWindow);
   MOZ_ASSERT(aURLToOpen);
 
-  // Create the promise that will be resolved *after* the child process opens
-  // the window
-  RefPtr<MozPromise<std::tuple<nsCString, Maybe<nsCString>>, nsresult,
-                    true>::Private>
-      result = new MozPromise<std::tuple<nsCString, Maybe<nsCString>>, nsresult,
-                              true>::Private(__func__);
   NotNull<nsIURI*> uri = WrapNotNull(aURLToOpen);
   RefPtr<IdentityCredentialRequestManager> self = this;
 
   // Tell the RP child to open an IDP popup.
   // It will either resolve with a failing nsresult or the popup BC.
-  aRelyingPartyWindow->SendOpenContinuationWindow(
-      uri,
-      [result, self](const dom::OpenContinuationWindowResponse& response) {
+  // The returned promise is resolved *after* the child process opens the
+  // window.
+  return aRelyingPartyWindow->SendOpenContinuationWindow(uri)->Then(
+      GetCurrentSerialEventTarget(), __func__,
+      [self](dom::PWebIdentityParent::OpenContinuationWindowPromise::
+                 ResolveOrRejectValue&& aValue) -> RefPtr<TokenPromise> {
+        if (aValue.IsReject()) {
+          return TokenPromise::CreateAndReject(NS_ERROR_DOM_NETWORK_ERR,
+                                               __func__);
+        }
+        const auto& response = aValue.ResolveValue();
         // If it failed, reject now, rejecting the RP child's initial call.
         if (response.type() == dom::OpenContinuationWindowResponse::Tnsresult) {
-          result->Reject(response.get_nsresult(), __func__);
-          return;
+          return TokenPromise::CreateAndReject(response.get_nsresult(),
+                                               __func__);
         }
         // If we have a BC, a popup opened.
-        if (response.type() == dom::OpenContinuationWindowResponse::
-                                   TMaybeDiscardedBrowsingContext) {
-          const dom::MaybeDiscardedBrowsingContext& bc =
-              response.get_MaybeDiscardedBrowsingContext();
-          if (bc.IsNullOrDiscarded()) {
-            result->Reject(NS_ERROR_DOM_NETWORK_ERR, __func__);
-            return;
-          }
-          // Transform the BC into its top-chrome-window-bc, so we have
-          // something stable through navigation and can listen for the popup's
-          // close.
-          dom::CanonicalBrowsingContext* chromeBC =
-              bc.get_canonical()->TopCrossChromeBoundary();
-          if (!chromeBC) {
-            result->Reject(NS_ERROR_DOM_NETWORK_ERR, __func__);
-            return;
-          }
-
-          // There really shouldn't be more than one request per top window
-          MOZ_ASSERT(!self->mPendingTokenRequests.Contains(chromeBC->Id()));
-
-          // Insert a refptr to the promise so we can settle it later, and we
-          // can find it by the BC id!
-          self->mPendingTokenRequests.InsertOrUpdate(chromeBC->Id(), result);
-
-          // If the window closes before we have a chance to resolve it,
-          // remove the promise from our map and reject it.
-          chromeBC->AddFinalDiscardListener([self](uint64_t id) {
-            Maybe<RefPtr<MozPromise<std::tuple<nsCString, Maybe<nsCString>>,
-                                    nsresult, true>::Private>>
-                pending = self->mPendingTokenRequests.Extract(id);
-            // If it already settled before the window closed, just drop the
-            // promise ref.
-            if (pending.isNothing()) {
-              return;
-            }
-            pending.value()->Reject(NS_ERROR_DOM_NETWORK_ERR, __func__);
-          });
+        const dom::MaybeDiscardedBrowsingContext& bc =
+            response.get_MaybeDiscardedBrowsingContext();
+        if (bc.IsNullOrDiscarded()) {
+          return TokenPromise::CreateAndReject(NS_ERROR_DOM_NETWORK_ERR,
+                                               __func__);
         }
-      },
-      [result](const ipc::ResponseRejectReason& rejection) {
-        result->Reject(NS_ERROR_DOM_NETWORK_ERR, __func__);
+        // Transform the BC into its top-chrome-window-bc, so we have
+        // something stable through navigation and can listen for the popup's
+        // close.
+        dom::CanonicalBrowsingContext* chromeBC =
+            bc.get_canonical()->TopCrossChromeBoundary();
+        if (!chromeBC) {
+          return TokenPromise::CreateAndReject(NS_ERROR_DOM_NETWORK_ERR,
+                                               __func__);
+        }
+
+        // There really shouldn't be more than one request per top window
+        MOZ_ASSERT(!self->mPendingTokenRequests.Contains(chromeBC->Id()));
+
+        // Insert a holder so we can settle the promise later, findable by BC
+        // id.
+        MozPromiseHolder<TokenPromise> holder;
+        RefPtr<TokenPromise> promise = holder.Ensure(__func__);
+        self->mPendingTokenRequests.InsertOrUpdate(chromeBC->Id(),
+                                                   std::move(holder));
+
+        // If the window closes before we have a chance to resolve it,
+        // remove the promise from our map and reject it.
+        chromeBC->AddFinalDiscardListener([self](uint64_t id) {
+          auto pending = self->mPendingTokenRequests.Extract(id);
+          // If it already settled before the window closed, just drop the
+          // holder.
+          if (pending.isNothing()) {
+            return;
+          }
+          pending->Reject(NS_ERROR_DOM_NETWORK_ERR, __func__);
+        });
+        return promise;
       });
-  return result.forget();
 }
 
 nsresult IdentityCredentialRequestManager::MaybeResolvePopup(
@@ -116,14 +113,12 @@ nsresult IdentityCredentialRequestManager::MaybeResolvePopup(
   }
 
   // Get its entry, removing it from the map.
-  Maybe<RefPtr<MozPromise<std::tuple<nsCString, Maybe<nsCString>>, nsresult,
-                          true>::Private>>
-      pendingPromise = mPendingTokenRequests.Extract(chromeBC->Id());
+  auto pendingHolder = mPendingTokenRequests.Extract(chromeBC->Id());
 
   // This will be Nothing if the function was called on a window not opened by
   // SendOpenContinuationWindow. This error will be forwarded along to the JS
   // caller.
-  if (!pendingPromise.isSome()) {
+  if (!pendingHolder.isSome()) {
     return NS_ERROR_DOM_NOT_ALLOWED_ERR;
   }
   // Convert the Optional to a Maybe and send a successful response to the RP
@@ -132,8 +127,7 @@ nsresult IdentityCredentialRequestManager::MaybeResolvePopup(
   if (aOptions.mAccountId.WasPassed()) {
     overrideAccountId = Some(aOptions.mAccountId.Value());
   }
-  pendingPromise.value()->Resolve(std::make_tuple(aToken, overrideAccountId),
-                                  __func__);
+  pendingHolder->Resolve(std::make_tuple(aToken, overrideAccountId), __func__);
   return NS_OK;
 }
 

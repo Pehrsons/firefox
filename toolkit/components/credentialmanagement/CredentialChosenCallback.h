@@ -10,6 +10,7 @@
 #include "nsStringFwd.h"
 #include "nsTArray.h"
 
+#include "mozilla/MozPromise.h"
 #include "mozilla/dom/IdentityCredentialSerializationHelpers.h"
 #include "mozilla/dom/Promise.h"
 
@@ -18,14 +19,16 @@ namespace mozilla {
 using dom::IPCIdentityCredential;
 using dom::Promise;
 
+using IdentityCredentialPromise =
+    MozPromise<IPCIdentityCredential, nsresult, true>;
+
 class CredentialChosenCallback final : public nsICredentialChosenCallback,
                                        public nsINamed {
  public:
   explicit CredentialChosenCallback(
       CopyableTArray<IPCIdentityCredential>&& aOptions,
-      const RefPtr<MozPromise<IPCIdentityCredential, nsresult, true>::Private>&
-          aResult)
-      : mOptions(aOptions), mResult(aResult) {}
+      MozPromiseHolder<IdentityCredentialPromise>&& aResult)
+      : mOptions(aOptions), mResult(std::move(aResult)) {}
 
   NS_IMETHOD
   Notify(const nsACString& aCredential) override;
@@ -37,9 +40,7 @@ class CredentialChosenCallback final : public nsICredentialChosenCallback,
 
  private:
   ~CredentialChosenCallback() {
-    if (mResult) {
-      mResult->Reject(NS_ERROR_FAILURE, __func__);
-    }
+    mResult.RejectIfExists(NS_ERROR_FAILURE, __func__);
   };
 
   // mOptions is the list of credentials presented to the user in the credential
@@ -50,7 +51,7 @@ class CredentialChosenCallback final : public nsICredentialChosenCallback,
   // mResult is a promise that will fulfill once the user has made a choice.
   // Dismissal is represented as a reject(NS_OK), and selection resolves with
   // an entry of mOptions.
-  RefPtr<MozPromise<IPCIdentityCredential, nsresult, true>::Private> mResult;
+  MozPromiseHolder<IdentityCredentialPromise> mResult;
 };
 
 }  // namespace mozilla

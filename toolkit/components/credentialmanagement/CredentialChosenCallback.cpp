@@ -13,26 +13,23 @@ using dom::Promise;
 nsresult CredentialChosenCallback::Notify(const nsACString& aCredentialId) {
   MOZ_ASSERT(NS_IsMainThread());
 
-  if (!mResult) {
+  if (mResult.IsEmpty()) {
     return NS_OK;
   }
 
   if (aCredentialId.IsVoid()) {
-    mResult->Reject(NS_OK, __func__);
-    mResult = nullptr;
+    mResult.Reject(NS_OK, __func__);
     return NS_OK;
   }
 
   for (auto option : mOptions) {
     if (option.id().Equals(NS_ConvertUTF8toUTF16(aCredentialId))) {
-      mResult->Resolve(option, __func__);
-      mResult = nullptr;
+      mResult.Resolve(option, __func__);
       return NS_OK;
     }
   }
 
-  mResult->Reject(nsresult::NS_ERROR_NO_CONTENT, __func__);
-  mResult = nullptr;
+  mResult.Reject(nsresult::NS_ERROR_NO_CONTENT, __func__);
   return NS_OK;
 }
 

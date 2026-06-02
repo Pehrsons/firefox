@@ -5,6 +5,7 @@
 #ifndef MOZILLA_IDENTITYCREDENTIALREQUESTMANAGER_H_
 #define MOZILLA_IDENTITYCREDENTIALREQUESTMANAGER_H_
 
+#include "mozilla/MozPromise.h"
 #include "mozilla/dom/IdentityCredentialBinding.h"
 #include "mozilla/dom/WebIdentityParent.h"
 #include "nsISupports.h"
@@ -37,10 +38,9 @@ class IdentityCredentialRequestManager final : nsISupports {
   IdentityCredentialRequestManager() = default;
   ~IdentityCredentialRequestManager() = default;
 
-  nsTHashMap<uint64_t,
-             RefPtr<MozPromise<std::tuple<nsCString, Maybe<nsCString>>,
-                               nsresult, true>::Private>>
-      mPendingTokenRequests;
+  using TokenPromise =
+      MozPromise<std::tuple<nsCString, Maybe<nsCString>>, nsresult, true>;
+  nsTHashMap<uint64_t, MozPromiseHolder<TokenPromise>> mPendingTokenRequests;
 };
 
 }  // namespace mozilla
