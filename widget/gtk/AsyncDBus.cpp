@@ -12,15 +12,15 @@ namespace mozilla::widget {
 
 static void CreateProxyCallback(GObject*, GAsyncResult* aResult,
                                 gpointer aUserData) {
-  RefPtr<DBusProxyPromise::Private> promise =
-      dont_AddRef(static_cast<DBusProxyPromise::Private*>(aUserData));
+  UniquePtr<MozPromiseHolder<DBusProxyPromise>> holder(
+      static_cast<MozPromiseHolder<DBusProxyPromise>*>(aUserData));
   GUniquePtr<GError> error;
   RefPtr<GDBusProxy> proxy = dont_AddRef(
       g_dbus_proxy_new_for_bus_finish(aResult, getter_Transfers(error)));
   if (proxy) {
-    promise->Resolve(std::move(proxy), __func__);
+    holder->Resolve(std::move(proxy), __func__);
   } else {
-    promise->Reject(std::move(error), __func__);
+    holder->Reject(std::move(error), __func__);
   }
   nsAppShell::DBusConnectionCheck();
 }
@@ -31,24 +31,25 @@ RefPtr<DBusProxyPromise> CreateDBusProxyForBus(
     const char* aObjectPath, const char* aInterfaceName,
     GCancellable* aCancellable) {
   nsAppShell::DBusConnectionCheck();
-  auto promise = MakeRefPtr<DBusProxyPromise::Private>(__func__);
+  auto holder = MakeUnique<MozPromiseHolder<DBusProxyPromise>>();
+  RefPtr<DBusProxyPromise> promise = holder->Ensure(__func__);
   g_dbus_proxy_new_for_bus(aBusType, aFlags, aInterfaceInfo, aName, aObjectPath,
                            aInterfaceName, aCancellable, CreateProxyCallback,
-                           do_AddRef(promise).take());
+                           holder.release());
   return promise.forget();
 }
 
 static void ProxyCallCallback(GObject* aSourceObject, GAsyncResult* aResult,
                               gpointer aUserData) {
-  RefPtr<DBusCallPromise::Private> promise =
-      dont_AddRef(static_cast<DBusCallPromise::Private*>(aUserData));
+  UniquePtr<MozPromiseHolder<DBusCallPromise>> holder(
+      static_cast<MozPromiseHolder<DBusCallPromise>*>(aUserData));
   GUniquePtr<GError> error;
   RefPtr<GVariant> result = dont_AddRef(g_dbus_proxy_call_finish(
       G_DBUS_PROXY(aSourceObject), aResult, getter_Transfers(error)));
   if (result) {
-    promise->Resolve(std::move(result), __func__);
+    holder->Resolve(std::move(result), __func__);
   } else {
-    promise->Reject(std::move(error), __func__);
+    holder->Reject(std::move(error), __func__);
   }
   nsAppShell::DBusConnectionCheck();
 }
@@ -57,18 +58,19 @@ RefPtr<DBusCallPromise> DBusProxyCall(GDBusProxy* aProxy, const char* aMethod,
                                       GVariant* aArgs, GDBusCallFlags aFlags,
                                       gint aTimeout,
                                       GCancellable* aCancellable) {
-  auto promise = MakeRefPtr<DBusCallPromise::Private>(__func__);
+  auto holder = MakeUnique<MozPromiseHolder<DBusCallPromise>>();
+  RefPtr<DBusCallPromise> promise = holder->Ensure(__func__);
   nsAppShell::DBusConnectionCheck();
   g_dbus_proxy_call(aProxy, aMethod, aArgs, aFlags, aTimeout, aCancellable,
-                    ProxyCallCallback, do_AddRef(promise).take());
+                    ProxyCallCallback, holder.release());
   return promise.forget();
 }
 
 static void ProxyCallWithUnixFDListCallback(GObject* aSourceObject,
                                             GAsyncResult* aResult,
                                             gpointer aUserData) {
-  RefPtr<DBusCallFDListPromise::Private> promise =
-      dont_AddRef(static_cast<DBusCallFDListPromise::Private*>(aUserData));
+  UniquePtr<MozPromiseHolder<DBusCallFDListPromise>> holder(
+      static_cast<MozPromiseHolder<DBusCallFDListPromise>*>(aUserData));
   GUniquePtr<GError> error;
   RefPtr<GUnixFDList> fdList;
   RefPtr<GVariant> result =
@@ -78,9 +80,9 @@ static void ProxyCallWithUnixFDListCallback(GObject* aSourceObject,
   if (result) {
     auto pair = std::make_pair<RefPtr<GVariant>, RefPtr<GUnixFDList>>(
         std::move(result), std::move(fdList));
-    promise->Resolve(std::move(pair), __func__);
+    holder->Resolve(std::move(pair), __func__);
   } else {
-    promise->Reject(std::move(error), __func__);
+    holder->Reject(std::move(error), __func__);
   }
   nsAppShell::DBusConnectionCheck();
 }
@@ -89,11 +91,12 @@ RefPtr<DBusCallFDListPromise> DBusProxyCallWithUnixFDList(
     GDBusProxy* aProxy, const char* aMethod, GVariant* aArgs,
     GDBusCallFlags aFlags, gint aTimeout, GUnixFDList* aFDList,
     GCancellable* aCancellable) {
-  auto promise = MakeRefPtr<DBusCallFDListPromise::Private>(__func__);
+  auto holder = MakeUnique<MozPromiseHolder<DBusCallFDListPromise>>();
+  RefPtr<DBusCallFDListPromise> promise = holder->Ensure(__func__);
   nsAppShell::DBusConnectionCheck();
   g_dbus_proxy_call_with_unix_fd_list(
       aProxy, aMethod, aArgs, aFlags, aTimeout, aFDList, aCancellable,
-      ProxyCallWithUnixFDListCallback, do_AddRef(promise).take());
+      ProxyCallWithUnixFDListCallback, holder.release());
   return promise.forget();
 }
 

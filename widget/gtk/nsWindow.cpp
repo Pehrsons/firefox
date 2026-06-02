@@ -7475,7 +7475,9 @@ using GdkWaylandWindowExported = void (*)(GdkWindow* window, const char* handle,
                                           gpointer user_data);
 
 RefPtr<nsWindow::ExportHandlePromise> nsWindow::ExportHandle() {
-  auto promise = MakeRefPtr<ExportHandlePromise::Private>(__func__);
+  using Holder = MozPromiseHolder<ExportHandlePromise>;
+  auto holder = MakeUnique<Holder>();
+  RefPtr<ExportHandlePromise> promise = holder->Ensure(__func__);
   auto* toplevel = GetToplevelGdkWindow();
 #ifdef MOZ_WAYLAND
   if (GdkIsWaylandDisplay()) {
@@ -7483,40 +7485,40 @@ RefPtr<nsWindow::ExportHandlePromise> nsWindow::ExportHandle() {
         const GdkWindow*, GdkWaylandWindowExported, gpointer,
         GDestroyNotify))dlsym(RTLD_DEFAULT, "gdk_wayland_window_export_handle");
     if (!sGdkWaylandWindowExportHandle || !toplevel) {
-      promise->Reject(false, __func__);
+      holder->Reject(false, __func__);
+      return promise.forget();
     }
     const bool success = sGdkWaylandWindowExportHandle(
         toplevel,
-        [](GdkWindow*, const char* handle, gpointer promise) {
-          // NOTE: This addrefs, the releaser destroys.
-          RefPtr self = static_cast<ExportHandlePromise::Private*>(promise);
-          self->Resolve(nsPrintfCString("wayland:%s", handle), __func__);
+        [](GdkWindow*, const char* handle, gpointer aHolder) {
+          // NOTE: The releaser owns the holder.
+          static_cast<Holder*>(aHolder)->ResolveIfExists(
+              nsPrintfCString("wayland:%s", handle), __func__);
         },
-        promise.get(),
-        [](gpointer promise) {
-          RefPtr self =
-              dont_AddRef(static_cast<ExportHandlePromise::Private*>(promise));
+        holder.get(),
+        [](gpointer aHolder) {
+          UniquePtr<Holder> holder(static_cast<Holder*>(aHolder));
           // NOTE: This gets ignored if not pending.
-          self->Reject(false, __func__);
+          holder->RejectIfExists(false, __func__);
         });
     if (success) {
-      // Transfer ownership to the callback.
-      promise.get()->AddRef();
+      // Transfer ownership to the releaser.
+      (void)holder.release();
     } else {
-      promise->Reject(false, __func__);
+      holder->Reject(false, __func__);
     }
     return promise.forget();
   }
 #endif
 #ifdef MOZ_X11
   if (GdkIsX11Display()) {
-    promise->Resolve(
+    holder->Resolve(
         nsPrintfCString("x11:%lx", gdk_x11_window_get_xid(toplevel)), __func__);
     return promise.forget();
   }
 #endif
   MOZ_ASSERT_UNREACHABLE("how?");
-  promise->Reject(false, __func__);
+  holder->Reject(false, __func__);
   return promise.forget();
 }
 
