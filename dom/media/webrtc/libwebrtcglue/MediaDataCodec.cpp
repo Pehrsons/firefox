@@ -10,6 +10,7 @@
 #include "WebrtcMediaDataDecoderCodec.h"
 #include "WebrtcMediaDataEncoderCodec.h"
 #include "mozilla/StaticPrefs_media.h"
+#include "nsThreadUtils.h"
 
 namespace mozilla {
 
@@ -26,20 +27,30 @@ media::EncodeSupportSet MediaDataCodec::SupportsEncoderCodec(
 }
 
 /* static */
-media::EncodeSupportSet MediaDataCodec::SupportsEncoderCodec(
-    const EncoderConfig& aConfig) {
+RefPtr<PlatformEncoderModule::SupportsEncoderPromise>
+MediaDataCodec::SupportsEncoderCodec(const EncoderConfig& aConfig) {
   // Mirror WebrtcMediaDataEncoder::SupportsCodec's gate; bug 1980201 tracks
   // adding the remaining codecs (AV1, HEVC) and will let both copies go.
   if (aConfig.mCodec != CodecType::H264 && aConfig.mCodec != CodecType::VP8 &&
       aConfig.mCodec != CodecType::VP9) {
-    return {};
+    return PlatformEncoderModule::SupportsEncoderPromise::CreateAndResolve(
+        media::EncodeSupportSet{}, __func__);
   }
-  auto support = MakeRefPtr<PEMFactory>()->Supports(aConfig);
-  if (aConfig.mCodec == CodecType::H264 &&
-      !StaticPrefs::media_webrtc_hw_h264_enabled()) {
-    support -= media::EncodeSupport::HardwareEncode;
-  }
-  return support;
+  const CodecType codec = aConfig.mCodec;
+  return MakeRefPtr<PEMFactory>()->SupportsAsync(aConfig)->Then(
+      GetCurrentSerialEventTarget(), __func__,
+      [codec](media::EncodeSupportSet aSupport) {
+        if (codec == CodecType::H264 &&
+            !StaticPrefs::media_webrtc_hw_h264_enabled()) {
+          aSupport -= media::EncodeSupport::HardwareEncode;
+        }
+        return PlatformEncoderModule::SupportsEncoderPromise::CreateAndResolve(
+            aSupport, __func__);
+      },
+      [](nsresult aRv) {
+        return PlatformEncoderModule::SupportsEncoderPromise::CreateAndReject(
+            aRv, __func__);
+      });
 }
 
 /* static */

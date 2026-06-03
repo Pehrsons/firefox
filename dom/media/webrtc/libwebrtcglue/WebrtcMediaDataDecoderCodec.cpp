@@ -9,10 +9,12 @@
 #include "ImageContainer.h"
 #include "MediaDataDecoderProxy.h"
 #include "PDMFactory.h"
+#include "PDMFactorySupport.h"
 #include "VideoUtils.h"
 #include "mozilla/StaticPrefs_media.h"
 #include "mozilla/layers/ImageBridgeChild.h"
 #include "mozilla/media/MediaUtils.h"
+#include "nsThreadUtils.h"
 // #include "modules/video_coding/include/video_codec_interface.h"
 #include "modules/video_coding/include/video_error_codes.h"
 #include "modules/video_coding/utility/vp8_header_parser.h"
@@ -45,13 +47,9 @@ CreateDecoderParams::OptionSet WebrtcMediaDataDecoder::WebrtcDecoderOptions() {
 }
 
 /* static */
-media::DecodeSupportSet WebrtcMediaDataDecoder::Supports(
-    webrtc::VideoCodecType aCodecType, SupportDecoderParams aParams) {
-  if (!IsCodecEnabled(aCodecType)) {
-    return {};
-  }
-  aParams.mOptions = WebrtcDecoderOptions();
-  auto support = MakeRefPtr<PDMFactory>()->Supports(aParams, nullptr);
+// Apply WebRTC-specific pref gating to the platform decoder support set.
+static media::DecodeSupportSet AdjustWebrtcDecodeSupport(
+    webrtc::VideoCodecType aCodecType, media::DecodeSupportSet aSupport) {
   // With media.webrtc.hw.h264.enabled off, drop hardware H.264 support so
   // WebRTC uses the software decoder, but only when one actually exists. On
   // hardware-only platforms (which bug 2044499 made us report accurately),
@@ -59,16 +57,37 @@ media::DecodeSupportSet WebrtcMediaDataDecoder::Supports(
   // which isn't a reliable substitute for every WebRTC stream (bug 2052237)
   if (aCodecType == webrtc::VideoCodecType::kVideoCodecH264 &&
       !StaticPrefs::media_webrtc_hw_h264_enabled() &&
-      support.contains(media::DecodeSupport::SoftwareDecode)) {
-    support -= media::DecodeSupport::HardwareDecode;
+      aSupport.contains(media::DecodeSupport::SoftwareDecode)) {
+    aSupport -= media::DecodeSupport::HardwareDecode;
   }
 #ifdef MOZ_WIDGET_GTK
   if (aCodecType == webrtc::VideoCodecType::kVideoCodecVP8 &&
       !StaticPrefs::media_navigator_mediadatadecoder_vp8_hardware_enabled()) {
-    support -= media::DecodeSupport::HardwareDecode;
+    aSupport -= media::DecodeSupport::HardwareDecode;
   }
 #endif
-  return support;
+  return aSupport;
+}
+
+/* static */
+RefPtr<PlatformDecoderModule::SupportsDecoderPromise>
+WebrtcMediaDataDecoder::Supports(webrtc::VideoCodecType aCodecType,
+                                 SupportDecoderParams aParams) {
+  if (!IsCodecEnabled(aCodecType)) {
+    return PlatformDecoderModule::SupportsDecoderPromise::CreateAndResolve(
+        media::DecodeSupportSet{}, __func__);
+  }
+  aParams.mOptions = WebrtcDecoderOptions();
+  return PDMFactorySupport::IsSupportedAsync(aParams)->Then(
+      GetCurrentSerialEventTarget(), __func__,
+      [aCodecType](media::DecodeSupportSet aSupport) {
+        return PlatformDecoderModule::SupportsDecoderPromise::CreateAndResolve(
+            AdjustWebrtcDecodeSupport(aCodecType, aSupport), __func__);
+      },
+      [](nsresult aRv) {
+        return PlatformDecoderModule::SupportsDecoderPromise::CreateAndReject(
+            aRv, __func__);
+      });
 }
 
 WebrtcMediaDataDecoder::WebrtcMediaDataDecoder(nsACString& aCodecMimeType,
