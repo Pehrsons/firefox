@@ -1252,53 +1252,8 @@ MediaCapabilities::CheckVideoDecodingInfo(
                   return new SingleAllocPolicy(
                       TrackInfo::TrackType::kVideoTrack, taskQueue);
                 }();
-                return AllocationWrapper::CreateDecoder(params,
-                                                        sVideoAllocPolicy)
-                    ->Then(
-                        taskQueue, __func__,
-                        [taskQueue, config = std::move(config)](
-                            AllocationWrapper::AllocateDecoderPromise::
-                                ResolveOrRejectValue&& aValue) mutable {
-                          if (aValue.IsReject()) {
-                            return PDMSupportsDecoderPromise::CreateAndReject(
-                                std::move(aValue.RejectValue()), __func__);
-                          }
-                          RefPtr<MediaDataDecoder> decoder =
-                              std::move(aValue.ResolveValue());
-                          RefPtr<PDMSupportsDecoderPromise> p =
-                              decoder->Init()->Then(
-                                  taskQueue, __func__,
-                                  [taskQueue, decoder,
-                                   config = std::move(config)](
-                                      MediaDataDecoder::InitPromise::
-                                          ResolveOrRejectValue&&
-                                              aValue) mutable {
-                                    media::DecodeSupportSet supports;
-                                    if (aValue.IsResolve()) {
-                                      supports +=
-                                          media::DecodeSupport::SoftwareDecode;
-                                      nsAutoCString reason;
-                                      if (decoder->IsHardwareAccelerated(
-                                              reason)) {
-                                        supports += media::DecodeSupport::
-                                            HardwareDecode;
-                                      }
-                                    }
-                                    // Let's keep alive the decoder and the
-                                    // config object until the decoder has been
-                                    // shutdown.
-                                    decoder->Shutdown()->Then(
-                                        taskQueue, __func__,
-                                        [taskQueue, decoder,
-                                         config = std::move(config)](
-                                            const ShutdownPromise::
-                                                ResolveOrRejectValue& aValue) {
-                                        });
-                                    return PDMSupportsDecoderPromise::
-                                        CreateAndResolve(supports, __func__);
-                                  });
-                          return p;
-                        });
+                return PDMFactory::StrictSupportsAsync(params,
+                                                       sVideoAllocPolicy);
               });
         }
 
