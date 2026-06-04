@@ -1332,6 +1332,60 @@ MediaCapabilities::CheckEncryptedDecodingSupport(
       aConfiguration.mKeySystemConfiguration.Value().mKeySystem, configs);
 }
 
+// Runs the strict (codec-creating) WebRTC encode-support probe for aConfig,
+// but serializes all such probes onto one shared serial TaskQueue and chains
+// them so at most one probe encoder is created at a time. This mirrors how the
+// decode path serializes its probes via SingleAllocPolicy (see
+// CheckVideoDecodingInfo), preventing concurrent MediaCapabilities.encodingInfo
+// calls from spinning up many platform encoders at once. Must be called off the
+// main thread.
+static RefPtr<PlatformEncoderModule::SupportsEncoderPromise>
+SerializedStrictSupportsVideoEncodeForWebrtc(const EncoderConfig& aConfig) {
+  // The shared probe queue, and the chain tail it guards. The tail is only ever
+  // read or written on sProbeQueue, so it needs no extra synchronization.
+  static RefPtr<TaskQueue> sProbeQueue = []() {
+    RefPtr<TaskQueue> queue =
+        TaskQueue::Create(GetMediaThreadPool(MediaThreadType::PLATFORM_ENCODER),
+                          "MediaCapabilities::EncodeProbe");
+    SchedulerGroup::Dispatch(NS_NewRunnableFunction(
+        "MediaCapabilities::EncodeProbe:ClearOnShutdown", []() {
+          ClearOnShutdown(&sProbeQueue, ShutdownPhase::XPCOMShutdownThreads);
+        }));
+    return queue;
+  }();
+  static RefPtr<GenericPromise> sTail;
+
+  RefPtr<TaskQueue> queue = sProbeQueue;
+  return InvokeAsync(
+      queue, __func__,
+      [aConfig]() -> RefPtr<PlatformEncoderModule::SupportsEncoderPromise> {
+        // On sProbeQueue: queue this probe after the previous one's full
+        // create -> init -> probe lifecycle has resolved.
+        RefPtr<GenericPromise> prev =
+            sTail ? sTail : GenericPromise::CreateAndResolve(true, __func__);
+        auto result =
+            MakeRefPtr<PlatformEncoderModule::SupportsEncoderPromise::Private>(
+                __func__);
+        sTail = prev->Then(
+            sProbeQueue, __func__,
+            [aConfig, result](GenericPromise::ResolveOrRejectValue&&)
+                -> RefPtr<GenericPromise> {
+              return StrictSupportsVideoEncodeForWebrtc(aConfig, sProbeQueue)
+                  ->Then(
+                      sProbeQueue, __func__,
+                      [result](media::EncodeSupportSet aSupport) {
+                        result->Resolve(aSupport, __func__);
+                        return GenericPromise::CreateAndResolve(true, __func__);
+                      },
+                      [result](nsresult aRv) {
+                        result->Reject(aRv, __func__);
+                        return GenericPromise::CreateAndResolve(true, __func__);
+                      });
+            });
+        return result;
+      });
+}
+
 // https://w3c.github.io/media-capabilities/#abstract-opdef-create-a-mediacapabilitiesencodinginfo
 already_AddRefed<Promise> MediaCapabilities::EncodingInfo(
     const MediaEncodingConfiguration& aConfiguration, ErrorResult& aRv) {
@@ -1444,7 +1498,7 @@ already_AddRefed<Promise> MediaCapabilities::EncodingInfo(
   InvokeAsync(
       taskQueue, __func__,
       [aConfiguration, videoMime, videoSupported, audioMime, audioSupported,
-       taskQueue, info = std::move(info)]() mutable -> RefPtr<PromiseType> {
+       info = std::move(info)]() mutable -> RefPtr<PromiseType> {
         // Step 7 returns early if neither audio nor video are
         // supported. If video isn't supported, audio must be - they
         // can't both be unknown. We can assume audio encoding, which
@@ -1486,7 +1540,7 @@ already_AddRefed<Promise> MediaCapabilities::EncodingInfo(
         auto videoSupport =
             StaticPrefs::media_mediacapabilities_codec_support_cache_enabled()
                 ? SupportsVideoEncodeForWebrtc(encoderConfig)
-                : StrictSupportsVideoEncodeForWebrtc(encoderConfig, taskQueue);
+                : SerializedStrictSupportsVideoEncodeForWebrtc(encoderConfig);
         return videoSupport->Then(
             GetCurrentSerialEventTarget(), __func__,
             [aConfiguration,
