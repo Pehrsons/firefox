@@ -90,6 +90,37 @@ WebrtcMediaDataDecoder::Supports(webrtc::VideoCodecType aCodecType,
       });
 }
 
+/* static */
+RefPtr<PlatformDecoderModule::SupportsDecoderPromise>
+WebrtcMediaDataDecoder::StrictSupports(webrtc::VideoCodecType aCodecType,
+                                       const SupportDecoderParams& aParams) {
+  if (!IsCodecEnabled(aCodecType)) {
+    return PlatformDecoderModule::SupportsDecoderPromise::CreateAndResolve(
+        media::DecodeSupportSet{}, __func__);
+  }
+  // Build the same CreateDecoderParams the real WebRTC decoder uses (see
+  // CreateDecoder()) so the hardware-acceleration probe is representative on
+  // platforms that require a compositor.
+  RefPtr<layers::KnowsCompositor> knowsCompositor =
+      layers::ImageBridgeChild::GetSingleton();
+  RefPtr<layers::ImageContainer> imageContainer =
+      MakeAndAddRef<layers::ImageContainer>(
+          layers::ImageUsageType::Webrtc, layers::ImageContainer::ASYNCHRONOUS);
+  CreateDecoderParams params{aParams.mConfig,        WebrtcDecoderOptions(),
+                             TrackInfo::kVideoTrack, imageContainer,
+                             knowsCompositor,        aParams.mRate};
+  return PDMFactory::StrictSupportsAsync(params)->Then(
+      GetCurrentSerialEventTarget(), __func__,
+      [aCodecType](media::DecodeSupportSet aSupport) {
+        return PlatformDecoderModule::SupportsDecoderPromise::CreateAndResolve(
+            AdjustWebrtcDecodeSupport(aCodecType, aSupport), __func__);
+      },
+      [](nsresult aRv) {
+        return PlatformDecoderModule::SupportsDecoderPromise::CreateAndReject(
+            aRv, __func__);
+      });
+}
+
 WebrtcMediaDataDecoder::WebrtcMediaDataDecoder(nsACString& aCodecMimeType,
                                                TrackingId aTrackingId)
     : mThreadPool(GetMediaThreadPool(MediaThreadType::SUPERVISOR)),

@@ -729,29 +729,33 @@ void MediaCapabilities::CreateWebRTCDecodingInfo(
         SupportDecoderParams videoParameters(
             *trackInfo,
             media::VideoFrameRate(static_cast<float>(v.mFramerate)));
-        return SupportsVideoDecodeForWebrtc(mime, videoParameters)
-            ->Then(GetCurrentSerialEventTarget(), __func__,
-                   [aConfiguration, info, lowResolution](
-                       PDMSupportsDecoderPromise::ResolveOrRejectValue&&
-                           aValue) mutable -> RefPtr<PromiseType> {
-                     // Treat an internal failure as unsupported.
-                     if (aValue.IsReject() || aValue.ResolveValue().isEmpty()) {
-                       MediaCapabilitiesDecodingInfo unsupported;
-                       unsupported.mSupported = false;
-                       unsupported.mSmooth = false;
-                       unsupported.mPowerEfficient = false;
-                       LOG("{} -> {}", aConfiguration, unsupported);
-                       return PromiseType::CreateAndResolve(
-                           std::move(unsupported),
-                           "MediaCapabilities::CreateWebRTCDecodingInfo");
-                     }
-                     const bool hwSupported = aValue.ResolveValue().contains(
-                         media::DecodeSupport::HardwareDecode);
-                     info.mPowerEfficient = hwSupported || lowResolution;
-                     return PromiseType::CreateAndResolve(
-                         std::move(info),
-                         "MediaCapabilities::CreateWebRTCDecodingInfo");
-                   });
+        auto videoSupport =
+            StaticPrefs::media_mediacapabilities_codec_support_cache_enabled()
+                ? SupportsVideoDecodeForWebrtc(mime, videoParameters)
+                : StrictSupportsVideoDecodeForWebrtc(mime, videoParameters);
+        return videoSupport->Then(
+            GetCurrentSerialEventTarget(), __func__,
+            [aConfiguration, info,
+             lowResolution](PDMSupportsDecoderPromise::ResolveOrRejectValue&&
+                                aValue) mutable -> RefPtr<PromiseType> {
+              // Treat an internal failure as unsupported.
+              if (aValue.IsReject() || aValue.ResolveValue().isEmpty()) {
+                MediaCapabilitiesDecodingInfo unsupported;
+                unsupported.mSupported = false;
+                unsupported.mSmooth = false;
+                unsupported.mPowerEfficient = false;
+                LOG("{} -> {}", aConfiguration, unsupported);
+                return PromiseType::CreateAndResolve(
+                    std::move(unsupported),
+                    "MediaCapabilities::CreateWebRTCDecodingInfo");
+              }
+              const bool hwSupported = aValue.ResolveValue().contains(
+                  media::DecodeSupport::HardwareDecode);
+              info.mPowerEfficient = hwSupported || lowResolution;
+              return PromiseType::CreateAndResolve(
+                  std::move(info),
+                  "MediaCapabilities::CreateWebRTCDecodingInfo");
+            });
       })
       ->Then(
           targetThread, __func__,

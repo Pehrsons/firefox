@@ -38,6 +38,14 @@ class WebrtcMediaDataDecoder : public WebrtcVideoDecoder {
   static RefPtr<PlatformDecoderModule::SupportsDecoderPromise> Supports(
       webrtc::VideoCodecType aCodecType, SupportDecoderParams aParams);
 
+  // Strict variant of Supports(): actually creates the decoder that would
+  // handle aParams (with the same compositor and options the real WebRTC
+  // decoder uses) and reports support reflecting whether it is
+  // hardware-accelerated, rather than trusting the reported codec support.
+  // Used by MediaCapabilities. Must be called off the main thread.
+  static RefPtr<PlatformDecoderModule::SupportsDecoderPromise> StrictSupports(
+      webrtc::VideoCodecType aCodecType, const SupportDecoderParams& aParams);
+
   static bool IsCodecEnabled(webrtc::VideoCodecType aCodecType);
 
   WebrtcMediaDataDecoder(nsACString& aCodecMimeType, TrackingId aTrackingId);

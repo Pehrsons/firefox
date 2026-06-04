@@ -50,37 +50,58 @@ static media::DecodeSupportSet WebrtcSoftwareDecodeFallback(
   return {};
 }
 
+// Resolve aPlatformSupport, and when it reports nothing fall back to
+// libwebrtc's built-in software/GMP decode support. Shared by SupportsCodec
+// and StrictSupportsCodec, which differ only in how the platform support is
+// obtained.
+static RefPtr<PlatformDecoderModule::SupportsDecoderPromise>
+WithWebrtcDecodeFallback(
+    webrtc::VideoCodecType aCodec, const MediaExtendedMIMEType& aMime,
+    const SupportDecoderParams& aParams,
+    RefPtr<PlatformDecoderModule::SupportsDecoderPromise> aPlatformSupport) {
+  // SupportDecoderParams is stack-only and holds a reference to its config, so
+  // clone the bits the fallback needs to survive the asynchronous wait.
+  MediaExtendedMIMEType mime = aMime;
+  UniquePtr<TrackInfo> config = aParams.mConfig.Clone();
+  const media::VideoFrameRate rate = aParams.mRate;
+  return aPlatformSupport->Then(
+      GetCurrentSerialEventTarget(), __func__,
+      [aCodec, mime, config = std::move(config),
+       rate](media::DecodeSupportSet aSupport)
+          -> RefPtr<PlatformDecoderModule::SupportsDecoderPromise> {
+        if (!aSupport.isEmpty()) {
+          return PlatformDecoderModule::SupportsDecoderPromise::
+              CreateAndResolve(aSupport, __func__);
+        }
+        SupportDecoderParams params{*config, rate};
+        return PlatformDecoderModule::SupportsDecoderPromise::CreateAndResolve(
+            WebrtcSoftwareDecodeFallback(aCodec, mime, params), __func__);
+      },
+      [](nsresult aRv) {
+        return PlatformDecoderModule::SupportsDecoderPromise::CreateAndReject(
+            aRv, __func__);
+      });
+}
+
 /* static */
 RefPtr<PlatformDecoderModule::SupportsDecoderPromise>
 WebrtcVideoDecoderFactory::SupportsCodec(const MediaExtendedMIMEType& aMime,
                                          const SupportDecoderParams& aParams) {
   const auto codec =
       webrtc::PayloadStringToCodecType(std::string(aMime.Subtype().View()));
-  // SupportDecoderParams is stack-only and holds a reference to its config, so
-  // clone the bits the fallback needs to survive the asynchronous wait.
-  MediaExtendedMIMEType mime = aMime;
-  UniquePtr<TrackInfo> config = aParams.mConfig.Clone();
-  const media::VideoFrameRate rate = aParams.mRate;
-  return WebrtcMediaDataDecoder::Supports(codec, aParams)
-      ->Then(
-          GetCurrentSerialEventTarget(), __func__,
-          [codec, mime, config = std::move(config),
-           rate](media::DecodeSupportSet aSupport)
-              -> RefPtr<PlatformDecoderModule::SupportsDecoderPromise> {
-            if (!aSupport.isEmpty()) {
-              return PlatformDecoderModule::SupportsDecoderPromise::
-                  CreateAndResolve(aSupport, __func__);
-            }
-            SupportDecoderParams params{*config, rate};
-            return PlatformDecoderModule::SupportsDecoderPromise::
-                CreateAndResolve(
-                    WebrtcSoftwareDecodeFallback(codec, mime, params),
-                    __func__);
-          },
-          [](nsresult aRv) {
-            return PlatformDecoderModule::SupportsDecoderPromise::
-                CreateAndReject(aRv, __func__);
-          });
+  return WithWebrtcDecodeFallback(
+      codec, aMime, aParams, WebrtcMediaDataDecoder::Supports(codec, aParams));
+}
+
+/* static */
+RefPtr<PlatformDecoderModule::SupportsDecoderPromise>
+WebrtcVideoDecoderFactory::StrictSupportsCodec(
+    const MediaExtendedMIMEType& aMime, const SupportDecoderParams& aParams) {
+  const auto codec =
+      webrtc::PayloadStringToCodecType(std::string(aMime.Subtype().View()));
+  return WithWebrtcDecodeFallback(
+      codec, aMime, aParams,
+      WebrtcMediaDataDecoder::StrictSupports(codec, aParams));
 }
 
 // libwebrtc's built-in software encode support for aConfig, independent of any
