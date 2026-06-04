@@ -9,8 +9,8 @@
 #include "PlatformDecoderModule.h"
 #include "VideoUtils.h"
 #include "gtest/gtest.h"
-#include "mozilla/Preferences.h"
 #include "mozilla/SpinEventLoopUntil.h"
+#include "mozilla/TaskQueue.h"
 #include "mozilla/gfx/gfxVars.h"
 #include "mozilla/gtest/ScopedPrefSetter.h"
 #include "mozilla/media/webrtc/CodecInfo.h"
@@ -79,25 +79,62 @@ class WebRTCCodecInfoTest : public testing::Test {
     if (!gfx::gfxVars::IsInitialized()) {
       gfx::gfxVars::Initialize();
     }
+    // Used by the strict encode path to create the probe encoder.
+    mTaskQueue =
+        TaskQueue::Create(GetMediaThreadPool(MediaThreadType::PLATFORM_ENCODER),
+                          "TestWebRTCCodecInfo");
   }
 
-  static media::EncodeSupportSet QueryEncode(
-      const MediaExtendedMIMEType& aMime) {
-    media::EncodeSupportSet result;
+  void TearDown() override {
+    MOZ_ASSERT(NS_IsMainThread());
+    if (mTaskQueue) {
+      mTaskQueue->BeginShutdown();
+      mTaskQueue->AwaitShutdownAndIdle();
+      mTaskQueue = nullptr;
+    }
+  }
+
+  // Spin the event loop until aPromise resolves, returning its value (or a
+  // default-constructed value on rejection).
+  template <typename Promise>
+  static typename Promise::ResolveValueType Await(RefPtr<Promise> aPromise) {
+    typename Promise::ResolveValueType result{};
     bool done = false;
-    SupportsVideoEncodeForWebrtc(MakeWebrtcEncoderConfig(aMime))
-        ->Then(
-            GetMainThreadSerialEventTarget(), __func__,
-            [&](media::EncodeSupportSet aSupport) {
-              result = aSupport;
-              done = true;
-            },
-            [&](nsresult) { done = true; });
-    SpinEventLoopUntil("TestWebRTCCodecInfo::QueryEncode"_ns,
-                       [&] { return done; });
+    aPromise->Then(
+        GetMainThreadSerialEventTarget(), __func__,
+        [&](typename Promise::ResolveValueType aValue) {
+          result = aValue;
+          done = true;
+        },
+        [&](typename Promise::RejectValueType) { done = true; });
+    SpinEventLoopUntil("TestWebRTCCodecInfo::Await"_ns, [&] { return done; });
     return result;
   }
-  static media::DecodeSupportSet QueryDecode(
+
+  media::EncodeSupportSet QueryEncode(const MediaExtendedMIMEType& aMime) {
+    return Await(SupportsVideoEncodeForWebrtc(MakeWebrtcEncoderConfig(aMime)));
+  }
+  // Strict variant: creates the encoder and probes it for hardware
+  // acceleration instead of trusting the reported codec support (mirrors the
+  // MediaCapabilities cache-disabled path).
+  media::EncodeSupportSet StrictQueryEncode(
+      const MediaExtendedMIMEType& aMime) {
+    return Await(StrictSupportsVideoEncodeForWebrtc(
+        MakeWebrtcEncoderConfig(aMime), mTaskQueue));
+  }
+
+  media::DecodeSupportSet QueryDecode(const MediaExtendedMIMEType& aMime) {
+    UniquePtr<TrackInfo> info =
+        CreateTrackInfoWithMIMEType(aMime.Type().AsString());
+    if (!info) {
+      return {};
+    }
+    SupportDecoderParams params(*info);
+    return Await(SupportsVideoDecodeForWebrtc(aMime, params));
+  }
+  // Strict variant: creates the decoder and probes it for hardware
+  // acceleration instead of trusting the reported codec support.
+  media::DecodeSupportSet StrictQueryDecode(
       const MediaExtendedMIMEType& aMime) {
     UniquePtr<TrackInfo> info =
         CreateTrackInfoWithMIMEType(aMime.Type().AsString());
@@ -105,45 +142,29 @@ class WebRTCCodecInfoTest : public testing::Test {
       return {};
     }
     SupportDecoderParams params(*info);
-    media::DecodeSupportSet result;
-    bool done = false;
-    SupportsVideoDecodeForWebrtc(aMime, params)
-        ->Then(
-            GetMainThreadSerialEventTarget(), __func__,
-            [&](media::DecodeSupportSet aSupport) {
-              result = aSupport;
-              done = true;
-            },
-            [&](nsresult) { done = true; });
-    SpinEventLoopUntil("TestWebRTCCodecInfo::QueryDecode"_ns,
-                       [&] { return done; });
-    return result;
+    return Await(StrictSupportsVideoDecodeForWebrtc(aMime, params));
   }
 
   // Returns false if the MIME string is unparseable or unsupported.
-  static bool SupportsSWEncode(const WebrtcCodecInfo& aInfo,
-                               const char* aMime) {
+  bool SupportsSWEncode(const WebrtcCodecInfo& aInfo, const char* aMime) {
     Maybe<MediaExtendedMIMEType> mime = MakeMediaExtendedMIMEType(aMime);
     return mime && aInfo.CheckEncodeType(*mime) &&
            (!mime->Type().HasVideoMajorType() ||
             QueryEncode(*mime).contains(media::EncodeSupport::SoftwareEncode));
   }
-  static bool SupportsSWDecode(const WebrtcCodecInfo& aInfo,
-                               const char* aMime) {
+  bool SupportsSWDecode(const WebrtcCodecInfo& aInfo, const char* aMime) {
     Maybe<MediaExtendedMIMEType> mime = MakeMediaExtendedMIMEType(aMime);
     return mime && aInfo.CheckDecodeType(*mime) &&
            (!mime->Type().HasVideoMajorType() ||
             QueryDecode(*mime).contains(media::DecodeSupport::SoftwareDecode));
   }
-  static bool SupportsHWEncode(const WebrtcCodecInfo& aInfo,
-                               const char* aMime) {
+  bool SupportsHWEncode(const WebrtcCodecInfo& aInfo, const char* aMime) {
     Maybe<MediaExtendedMIMEType> mime = MakeMediaExtendedMIMEType(aMime);
     return mime && aInfo.CheckEncodeType(*mime) &&
            mime->Type().HasVideoMajorType() &&
            QueryEncode(*mime).contains(media::EncodeSupport::HardwareEncode);
   }
-  static bool SupportsHWDecode(const WebrtcCodecInfo& aInfo,
-                               const char* aMime) {
+  bool SupportsHWDecode(const WebrtcCodecInfo& aInfo, const char* aMime) {
     Maybe<MediaExtendedMIMEType> mime = MakeMediaExtendedMIMEType(aMime);
     return mime && aInfo.CheckDecodeType(*mime) &&
            mime->Type().HasVideoMajorType() &&
@@ -152,7 +173,7 @@ class WebRTCCodecInfoTest : public testing::Test {
 
   // Helper function used to verify audio encode/decode is still working for use
   // in the video pref tests.
-  static void TestAudioDecodeEncodeSWHW(const WebrtcCodecInfo* aCodecInfo) {
+  void TestAudioDecodeEncodeSWHW(const WebrtcCodecInfo* aCodecInfo) {
     for (const auto& type : kAudioTypes) {
       EXPECT_TRUE(SupportsSWDecode(*aCodecInfo, type))
           << "Type failed: " << type;
@@ -164,6 +185,8 @@ class WebRTCCodecInfoTest : public testing::Test {
           << "Type failed: " << type;
     }
   }
+
+  RefPtr<TaskQueue> mTaskQueue;
 };
 
 // Test that invalid MIME types return false for all support queries.
@@ -347,4 +370,76 @@ TEST_F(WebRTCCodecInfoTest, H264BaselineBlockedByWebRTCPref) {
   EXPECT_TRUE(SupportsSWEncode(*codecInfo, "video/h264"));
   // Audio shouldn't be affected
   TestAudioDecodeEncodeSWHW(codecInfo.get());
+}
+
+// The strict path (the MediaCapabilities cache-disabled path) creates the real
+// platform decoder to probe support. VP8/VP9 are backed by bundled ffvpx and
+// AV1 falls back to libwebrtc software, so software decode must be reported on
+// every host. Hardware acceleration is host-dependent and is not asserted.
+TEST_F(WebRTCCodecInfoTest, StrictModeDecodeReportsSoftware) {
+  for (const char* type : {"video/vp8", "video/vp9", "video/av1"}) {
+    Maybe<MediaExtendedMIMEType> mime = MakeMediaExtendedMIMEType(type);
+    ASSERT_TRUE(mime)
+    << "Type: " << type;
+    EXPECT_TRUE(
+        StrictQueryDecode(*mime).contains(media::DecodeSupport::SoftwareDecode))
+        << "Type: " << type;
+  }
+}
+
+// Strict mode must report the same software-decode support as the reported
+// path for the common WebRTC video codecs.
+TEST_F(WebRTCCodecInfoTest, StrictModeDecodeMatchesReported) {
+  for (const auto& type : kVideoTypes) {
+    Maybe<MediaExtendedMIMEType> mime = MakeMediaExtendedMIMEType(type);
+    ASSERT_TRUE(mime)
+    << "Type: " << type;
+    const bool reportedSW =
+        QueryDecode(*mime).contains(media::DecodeSupport::SoftwareDecode);
+    const bool strictSW =
+        StrictQueryDecode(*mime).contains(media::DecodeSupport::SoftwareDecode);
+    EXPECT_EQ(reportedSW, strictSW) << "Type: " << type;
+  }
+}
+
+// In the default (PreferWebRTCEncoder) strategy, libwebrtc software encode is
+// reported for VP8/VP9/AV1 regardless of strictness.
+TEST_F(WebRTCCodecInfoTest, StrictModeEncodeReportsSoftware) {
+  for (const char* type : {"video/vp8", "video/vp9", "video/av1"}) {
+    Maybe<MediaExtendedMIMEType> mime = MakeMediaExtendedMIMEType(type);
+    ASSERT_TRUE(mime)
+    << "Type: " << type;
+    EXPECT_TRUE(
+        StrictQueryEncode(*mime).contains(media::EncodeSupport::SoftwareEncode))
+        << "Type: " << type;
+  }
+}
+
+// Force the platform-encoder strategy so the strict PEMFactory creation path is
+// actually exercised (the default strategy short-circuits to libwebrtc software
+// for VPX). libwebrtc software encode guarantees SoftwareEncode for VP8/VP9
+// regardless of platform-encoder availability, so this is robust across hosts.
+TEST_F(WebRTCCodecInfoTest, StrictModeEncodeExercisesPlatformPath) {
+  const ScopedPrefSetter strategyPref("media.webrtc.encoder_creation_strategy",
+                                      1U /* PreferPlatformEncoder */);
+  for (const char* type : {"video/vp8", "video/vp9"}) {
+    Maybe<MediaExtendedMIMEType> mime = MakeMediaExtendedMIMEType(type);
+    ASSERT_TRUE(mime)
+    << "Type: " << type;
+    EXPECT_TRUE(
+        StrictQueryEncode(*mime).contains(media::EncodeSupport::SoftwareEncode))
+        << "Type: " << type;
+  }
+}
+
+// The H264 hardware WebRTC pref must still gate the strict path: hardware
+// decode/encode must be absent when the pref is disabled.
+TEST_F(WebRTCCodecInfoTest, StrictModeH264HWBlockedByWebRTCPref) {
+  const ScopedPrefSetter h264Pref("media.webrtc.hw.h264.enabled", false);
+  Maybe<MediaExtendedMIMEType> mime = MakeMediaExtendedMIMEType("video/h264");
+  ASSERT_TRUE(mime);
+  EXPECT_FALSE(
+      StrictQueryDecode(*mime).contains(media::DecodeSupport::HardwareDecode));
+  EXPECT_FALSE(
+      StrictQueryEncode(*mime).contains(media::EncodeSupport::HardwareEncode));
 }

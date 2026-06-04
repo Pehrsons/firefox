@@ -42,6 +42,16 @@ class PEMFactory final {
   RefPtr<PEMSupportsEncoderPromise> SupportsAsync(
       const EncoderConfig& aConfig) const;
 
+  // Strictest support query: actually creates the encoder that would handle
+  // aConfig on aTaskQueue, initializes it, and reports support reflecting
+  // whether that encoder is hardware-accelerated. Whereas SupportsAsync()
+  // trusts the reported codec support, this verifies it by briefly creating
+  // (and immediately destroying) a real encoder, so it is correspondingly more
+  // expensive. Resolves with an empty EncodeSupportSet if the encoder cannot
+  // be created or initialized. Must be called off the main thread.
+  RefPtr<PEMSupportsEncoderPromise> StrictSupportsAsync(
+      const EncoderConfig& aConfig, const RefPtr<TaskQueue>& aTaskQueue);
+
   static media::MediaCodecsSupported Supported(bool aForceRefresh = false);
   static media::EncodeSupportSet SupportsCodec(
       CodecType aCodec, const media::MediaCodecsSupported& aSupported,

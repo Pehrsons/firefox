@@ -138,6 +138,14 @@ class WebrtcVideoEncoderFactory : public GmpPluginNotifierInterface,
   static RefPtr<PlatformEncoderModule::SupportsEncoderPromise> SupportsCodec(
       const EncoderConfig& aConfig);
 
+  // Strict variant of SupportsCodec(): actually creates the encoder on
+  // aTaskQueue and probes it for hardware acceleration rather than trusting
+  // the reported support. Used by MediaCapabilities. Must be called off the
+  // main thread.
+  static RefPtr<PlatformEncoderModule::SupportsEncoderPromise>
+  StrictSupportsCodec(const EncoderConfig& aConfig,
+                      const RefPtr<TaskQueue>& aTaskQueue);
+
   void DisconnectAll() override { mInternalFactory->DisconnectAll(); }
 
   MediaEventSource<uint64_t>& CreatedGmpPluginEvent() override {

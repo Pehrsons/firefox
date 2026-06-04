@@ -14,20 +14,43 @@
 
 namespace mozilla {
 
-// Sets a boolean preference for the lifetime of the instance and restores the
+// Sets a preference for the lifetime of the instance and restores the
 // previous value on destruction, so a test does not leak its pref change into
 // later tests. Must be constructed and destroyed on the main thread.
+template <typename T>
 class MOZ_RAII ScopedPrefSetter {
+ private:
+  static nsresult SetPref(const char* aName, T aValue,
+                          PrefValueKind aKind = PrefValueKind::User) {
+    if constexpr (std::is_same_v<T, bool>) {
+      return Preferences::SetBool(aName, aValue, aKind);
+    } else if constexpr (std::is_same_v<T, uint32_t>) {
+      return Preferences::SetUint(aName, aValue, aKind);
+    } else {
+      static_assert(false, "Type not supported with SetPref");
+    }
+  }
+
+  static T GetPref(const char* aName, T aFallback,
+                   PrefValueKind aKind = PrefValueKind::User) {
+    if constexpr (std::is_same_v<T, bool>) {
+      return Preferences::GetBool(aName, aFallback, aKind);
+    } else if constexpr (std::is_same_v<T, uint32_t>) {
+      return Preferences::GetUint(aName, aFallback, aKind);
+    } else {
+      static_assert(false, "Type not supported with GetPref");
+    }
+  }
+
  public:
-  ScopedPrefSetter(const char* aPrefName, bool aValue)
-      : mPrefName(aPrefName),
-        mOriginalValue(Preferences::GetBool(aPrefName, false)) {
+  ScopedPrefSetter(const char* aPrefName, T aValue)
+      : mPrefName(aPrefName), mOriginalValue(GetPref(aPrefName, T{})) {
     MOZ_ASSERT(NS_IsMainThread());
-    Preferences::SetBool(mPrefName, aValue);
+    SetPref(mPrefName, aValue);
   }
   ~ScopedPrefSetter() {
     MOZ_ASSERT(NS_IsMainThread());
-    Preferences::SetBool(mPrefName, mOriginalValue);
+    SetPref(mPrefName, mOriginalValue);
   }
 
   ScopedPrefSetter(const ScopedPrefSetter&) = delete;
@@ -37,7 +60,7 @@ class MOZ_RAII ScopedPrefSetter {
 
  private:
   const char* mPrefName;
-  const bool mOriginalValue;
+  const T mOriginalValue;
 };
 
 }  // namespace mozilla

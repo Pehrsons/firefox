@@ -14,6 +14,7 @@
 namespace mozilla {
 class EncoderConfig;
 class MediaExtendedMIMEType;
+class TaskQueue;
 struct SupportDecoderParams;
 
 // Query the webrtc decoder/encoder factory whether the codec is supported in
@@ -25,14 +26,17 @@ SupportsVideoDecodeForWebrtc(const MediaExtendedMIMEType& aMime,
 [[nodiscard]] RefPtr<PlatformEncoderModule::SupportsEncoderPromise>
 SupportsVideoEncodeForWebrtc(const EncoderConfig& aConfig);
 
-// Strict variant of the above: instead of trusting the reported codec
-// support, it actually creates the decoder and probes it for hardware
-// acceleration. More expensive; used by MediaCapabilities for its
-// cache-disabled path.
+// Strict variants of the above: instead of trusting the reported codec
+// support, they actually create the codec and probe it for hardware
+// acceleration (the encoder is created on aTaskQueue). More expensive; used by
+// MediaCapabilities for its cache-disabled path.
 // Must be called off the main thread as a decoder may be created synchronously.
 [[nodiscard]] RefPtr<PlatformDecoderModule::SupportsDecoderPromise>
 StrictSupportsVideoDecodeForWebrtc(const MediaExtendedMIMEType& aMime,
                                    const SupportDecoderParams& aParams);
+[[nodiscard]] RefPtr<PlatformEncoderModule::SupportsEncoderPromise>
+StrictSupportsVideoEncodeForWebrtc(const EncoderConfig& aConfig,
+                                   const RefPtr<TaskQueue>& aTaskQueue);
 
 // Interface for querying WebRTC codec support and hardware acceleration.
 //

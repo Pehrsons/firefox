@@ -1444,7 +1444,7 @@ already_AddRefed<Promise> MediaCapabilities::EncodingInfo(
   InvokeAsync(
       taskQueue, __func__,
       [aConfiguration, videoMime, videoSupported, audioMime, audioSupported,
-       info = std::move(info)]() mutable -> RefPtr<PromiseType> {
+       taskQueue, info = std::move(info)]() mutable -> RefPtr<PromiseType> {
         // Step 7 returns early if neither audio nor video are
         // supported. If video isn't supported, audio must be - they
         // can't both be unknown. We can assume audio encoding, which
@@ -1483,77 +1483,78 @@ already_AddRefed<Promise> MediaCapabilities::EncodingInfo(
           }
         }
         auto encoderConfig = BuildEncoderConfig(*videoMime, v);
-        return SupportsVideoEncodeForWebrtc(encoderConfig)
-            ->Then(
-                GetCurrentSerialEventTarget(), __func__,
-                [aConfiguration,
-                 info](media::EncodeSupportSet aVideoSupport) mutable
-                    -> RefPtr<PromiseType> {
-                  if (aVideoSupport.isEmpty()) {
-                    MediaCapabilitiesInfo unsupported;
-                    unsupported.mSupported = false;
-                    unsupported.mSmooth = false;
-                    unsupported.mPowerEfficient = false;
-                    LOG("{} -> {}", aConfiguration, unsupported);
-                    return PromiseType::CreateAndResolve(
-                        std::move(unsupported),
-                        "MediaCapabilities::EncodingInfo");
-                  }
-                  const auto& v = aConfiguration.mVideo.Value();
-                  const bool hwSupported = aVideoSupport.contains(
-                      media::EncodeSupport::HardwareEncode);
-                  const CheckedInt<uint32_t> pixels =
-                      CheckedInt<uint32_t>(v.mWidth) *
-                      CheckedInt<uint32_t>(v.mHeight);
-                  const bool lowResolution =
-                      pixels.isValid() &&
-                      pixels.value() <= kLowResolutionPixelCount;
+        auto videoSupport =
+            StaticPrefs::media_mediacapabilities_codec_support_cache_enabled()
+                ? SupportsVideoEncodeForWebrtc(encoderConfig)
+                : StrictSupportsVideoEncodeForWebrtc(encoderConfig, taskQueue);
+        return videoSupport->Then(
+            GetCurrentSerialEventTarget(), __func__,
+            [aConfiguration,
+             info](media::EncodeSupportSet aVideoSupport) mutable
+                -> RefPtr<PromiseType> {
+              if (aVideoSupport.isEmpty()) {
+                MediaCapabilitiesInfo unsupported;
+                unsupported.mSupported = false;
+                unsupported.mSmooth = false;
+                unsupported.mPowerEfficient = false;
+                LOG("{} -> {}", aConfiguration, unsupported);
+                return PromiseType::CreateAndResolve(
+                    std::move(unsupported), "MediaCapabilities::EncodingInfo");
+              }
+              const auto& v = aConfiguration.mVideo.Value();
+              const bool hwSupported =
+                  aVideoSupport.contains(media::EncodeSupport::HardwareEncode);
+              const CheckedInt<uint32_t> pixels =
+                  CheckedInt<uint32_t>(v.mWidth) *
+                  CheckedInt<uint32_t>(v.mHeight);
+              const bool lowResolution =
+                  pixels.isValid() &&
+                  pixels.value() <= kLowResolutionPixelCount;
 
-                  // Step 9: If the user agent is able to encode the media
-                  // represented by configuration at the indicated framerate,
-                  // set smooth to true. Otherwise set it to false.
-                  //
-                  // NOTE: The spec doesn't give hard guidelines for smooth.
-                  // We will hardware encode or low resolution encoding counts
-                  // as "smooth". For the highest accuracy we'd want to use
-                  // benchmarking code similar to what we had in the tree
-                  // earlier for decoding which was removed due to maintenance
-                  // concerns.
-                  info.mSmooth &= hwSupported || IsWebRTCSWEncodeSmooth(v);
+              // Step 9: If the user agent is able to encode the media
+              // represented by configuration at the indicated framerate,
+              // set smooth to true. Otherwise set it to false.
+              //
+              // NOTE: The spec doesn't give hard guidelines for smooth.
+              // We will hardware encode or low resolution encoding counts
+              // as "smooth". For the highest accuracy we'd want to use
+              // benchmarking code similar to what we had in the tree
+              // earlier for decoding which was removed due to maintenance
+              // concerns.
+              info.mSmooth &= hwSupported || IsWebRTCSWEncodeSmooth(v);
 
-                  // Step 10: If the user agent is able to encode the media
-                  // represented by configuration in a power efficient manner,
-                  // set powerEfficient to true. Otherwise set it to false.
-                  //
-                  // Encoding or decoding is considered power efficient when the
-                  // power draw is optimal. The definition of optimal power draw
-                  // for encoding or decoding is left to the user agent.
-                  // However, a common implementation strategy is to consider
-                  // hardware usage as indicative of optimal power draw. User
-                  // agents SHOULD NOT mark hardware encoding or decoding as
-                  // power efficient by default, as non-hardware-accelerated
-                  // codecs can be just as efficient, particularly with
-                  // low-resolution video. User agents SHOULD NOT take the
-                  // device's power source into consideration when determining
-                  // encoding power efficiency unless the device's power source
-                  // has side effects such as enabling different encoding or
-                  // decoding modules.
-                  info.mPowerEfficient &= (hwSupported || lowResolution);
+              // Step 10: If the user agent is able to encode the media
+              // represented by configuration in a power efficient manner,
+              // set powerEfficient to true. Otherwise set it to false.
+              //
+              // Encoding or decoding is considered power efficient when the
+              // power draw is optimal. The definition of optimal power draw
+              // for encoding or decoding is left to the user agent.
+              // However, a common implementation strategy is to consider
+              // hardware usage as indicative of optimal power draw. User
+              // agents SHOULD NOT mark hardware encoding or decoding as
+              // power efficient by default, as non-hardware-accelerated
+              // codecs can be just as efficient, particularly with
+              // low-resolution video. User agents SHOULD NOT take the
+              // device's power source into consideration when determining
+              // encoding power efficiency unless the device's power source
+              // has side effects such as enabling different encoding or
+              // decoding modules.
+              info.mPowerEfficient &= (hwSupported || lowResolution);
 
-                  LOG("{} -> {}", aConfiguration, info);
-                  return PromiseType::CreateAndResolve(
-                      std::move(info), "MediaCapabilities::EncodingInfo");
-                },
-                [](nsresult) -> RefPtr<PromiseType> {
-                  // Treat an internal failure as unsupported.
-                  MediaCapabilitiesInfo unsupported;
-                  unsupported.mSupported = false;
-                  unsupported.mSmooth = false;
-                  unsupported.mPowerEfficient = false;
-                  return PromiseType::CreateAndResolve(
-                      std::move(unsupported),
-                      "MediaCapabilities::EncodingInfo");
-                });
+              LOG("{} -> {}", aConfiguration, info);
+              return PromiseType::CreateAndResolve(
+                  std::move(info), "MediaCapabilities::EncodingInfo");
+            },
+            [](nsresult) -> RefPtr<PromiseType> {
+              // Treat an internal failure as unsupported.
+              MediaCapabilitiesInfo unsupported;
+              unsupported.mSupported = false;
+              unsupported.mSmooth = false;
+              unsupported.mPowerEfficient = false;
+              return PromiseType::CreateAndResolve(
+                  std::move(unsupported), "MediaCapabilities::EncodingInfo");
+            });
       })
       ->Then(
           targetThread, __func__,
