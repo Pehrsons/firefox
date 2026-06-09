@@ -36,10 +36,7 @@ void ConstrainPreservingAspectRatio(uint16_t aMaxWidth, uint16_t aMaxHeight,
 
 namespace mozilla {
 
-#ifdef LOGTAG
-#  undef LOGTAG
-#endif
-#define LOGTAG "WebrtcVideoSessionConduit"
+#define LOGTAG "WebrtcVideoStreamFactory"
 
 #define DEFAULT_VIDEO_MAX_FRAMERATE 30u
 
@@ -357,3 +354,5 @@ unsigned int VideoStreamFactory::SelectFrameRate(unsigned int aOldFramerate,
 }
 
 }  // namespace mozilla
+
+#undef LOGTAG

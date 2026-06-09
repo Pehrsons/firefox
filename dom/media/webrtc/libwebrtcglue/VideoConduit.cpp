@@ -115,9 +115,6 @@ namespace mozilla {
 namespace {
 
 const char* vcLogTag = "WebrtcVideoSessionConduit";
-#ifdef LOGTAG
-#  undef LOGTAG
-#endif
 #define LOGTAG vcLogTag
 
 using namespace webrtc;
@@ -2184,3 +2181,5 @@ Maybe<int> WebrtcVideoConduit::ActiveRecvPayloadType() const {
 }
 
 }  // namespace mozilla
+
+#undef LOGTAG

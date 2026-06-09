@@ -72,9 +72,6 @@ namespace mozilla {
 namespace {
 
 static const char* acLogTag = "WebrtcAudioSessionConduit";
-#ifdef LOGTAG
-#  undef LOGTAG
-#endif
 #define LOGTAG acLogTag
 
 using namespace webrtc;
@@ -1142,3 +1139,5 @@ Maybe<int> WebrtcAudioConduit::ActiveRecvPayloadType() const {
 }
 
 }  // namespace mozilla
+
+#undef LOGTAG

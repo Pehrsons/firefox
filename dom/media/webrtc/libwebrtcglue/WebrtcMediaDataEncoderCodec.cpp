@@ -25,12 +25,10 @@ namespace mozilla {
 
 extern LazyLogModule sPEMLog;
 
-#undef LOG
 #define LOG(msg, ...)                                                      \
   MOZ_LOG_FMT(sPEMLog, LogLevel::Debug, "WebrtcMediaDataEncoder={}, " msg, \
               fmt::ptr(this), ##__VA_ARGS__)
 
-#undef LOG_V
 #define LOG_V(msg, ...)                                                      \
   MOZ_LOG_FMT(sPEMLog, LogLevel::Verbose, "WebrtcMediaDataEncoder={}, " msg, \
               fmt::ptr(this), ##__VA_ARGS__)
@@ -660,3 +658,6 @@ int32_t WebrtcMediaDataEncoder::SetRates(
 }
 
 }  // namespace mozilla
+
+#undef LOG_V
+#undef LOG
