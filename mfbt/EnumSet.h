@@ -7,6 +7,8 @@
 #ifndef mozilla_EnumSet_h
 #define mozilla_EnumSet_h
 
+#include "fmt/format.h"
+#include "fmt/ranges.h"
 #include "mozilla/Assertions.h"
 #include "mozilla/Attributes.h"
 
@@ -350,5 +352,17 @@ class EnumSet {
 };
 
 }  // namespace mozilla
+
+template <typename T>
+struct fmt::formatter<mozilla::EnumSet<T>> {
+  constexpr format_parse_context::iterator parse(format_parse_context& aCtx) {
+    return aCtx.begin();
+  }
+  format_context::iterator format(const mozilla::EnumSet<T>& aSet,
+                                  fmt::format_context& aCtx) {
+    return fmt::format_to(aCtx.out(), "{{{}}}",
+                          fmt::join(aSet.begin(), aSet.end(), "|"));
+  }
+};
 
 #endif /* mozilla_EnumSet_h_*/
