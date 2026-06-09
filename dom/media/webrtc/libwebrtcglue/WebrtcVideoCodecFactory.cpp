@@ -11,6 +11,7 @@
 #include "WebrtcGmpVideoCodec.h"
 #include "WebrtcMediaDataDecoderCodec.h"
 #include "WebrtcMediaDataEncoderCodec.h"
+#include "common/browser_logging/CSFLog.h"
 #include "mozilla/StaticPrefs_media.h"
 #include "nsThreadUtils.h"
 
@@ -24,6 +25,9 @@
 #include "modules/video_coding/codecs/vp9/include/vp9.h"
 
 namespace mozilla {
+
+#define LOGTAG "WebrtcVideoCodecFactory"
+#define LOGD(...) CSFLogDebug(LOGTAG, __VA_ARGS__)
 
 // Keep in sync with the doc comment on media.webrtc.encoder_creation_strategy
 // in StaticPrefList.yaml.
@@ -70,14 +74,25 @@ WithWebrtcDecodeFallback(
        rate](media::DecodeSupportSet aSupport)
           -> RefPtr<PlatformDecoderModule::SupportsDecoderPromise> {
         if (!aSupport.isEmpty()) {
+          LOGD("WebRTC decode support for %s: platform decoder reports %s",
+               mime.OriginalString().get(), fmt::to_string(aSupport).c_str());
           return PlatformDecoderModule::SupportsDecoderPromise::
               CreateAndResolve(aSupport, __func__);
         }
         SupportDecoderParams params{*config, rate};
+        const media::DecodeSupportSet fallbackSupport =
+            WebrtcSoftwareDecodeFallback(aCodec, mime, params);
+        LOGD(
+            "WebRTC decode support for %s: no platform decoder, using "
+            "libwebrtc built-in fallback (%s)",
+            mime.OriginalString().get(),
+            fmt::to_string(fallbackSupport).c_str());
         return PlatformDecoderModule::SupportsDecoderPromise::CreateAndResolve(
-            WebrtcSoftwareDecodeFallback(aCodec, mime, params), __func__);
+            fallbackSupport, __func__);
       },
       [](nsresult aRv) {
+        LOGD("WebRTC decode support query failed: rv=%s",
+             GetStaticErrorName(aRv));
         return PlatformDecoderModule::SupportsDecoderPromise::CreateAndReject(
             aRv, __func__);
       });
@@ -89,6 +104,8 @@ WebrtcVideoDecoderFactory::SupportsCodec(const MediaExtendedMIMEType& aMime,
                                          const SupportDecoderParams& aParams) {
   const auto codec =
       webrtc::PayloadStringToCodecType(std::string(aMime.Subtype().View()));
+  LOGD("WebRTC decode support: querying cached codec-support snapshot for %s",
+       aMime.OriginalString().get());
   return WithWebrtcDecodeFallback(
       codec, aMime, aParams, WebrtcMediaDataDecoder::Supports(codec, aParams));
 }
@@ -99,6 +116,8 @@ WebrtcVideoDecoderFactory::StrictSupportsCodec(
     const MediaExtendedMIMEType& aMime, const SupportDecoderParams& aParams) {
   const auto codec =
       webrtc::PayloadStringToCodecType(std::string(aMime.Subtype().View()));
+  LOGD("WebRTC decode support: probing decoder for %s",
+       aMime.OriginalString().get());
   return WithWebrtcDecodeFallback(
       codec, aMime, aParams,
       WebrtcMediaDataDecoder::StrictSupports(codec, aParams));
@@ -144,19 +163,41 @@ EncoderSupportsWithPemFn(const EncoderConfig& aConfig,
       // capability is intentionally hidden to keep reported support aligned
       // with the encoder that will actually be used.
       if (libwebrtcSupport.isEmpty()) {
+        LOGD(
+            "WebRTC encode support for %s: prefer-libwebrtc strategy, no "
+            "libwebrtc encoder, querying platform encoder support",
+            EnumValueToString(aConfig.mCodec));
         return aPemSupport();
       }
+      LOGD(
+          "WebRTC encode support for %s: prefer-libwebrtc strategy, using "
+          "libwebrtc built-in encoder (%s), platform encoder support hidden",
+          EnumValueToString(aConfig.mCodec),
+          fmt::to_string(libwebrtcSupport).c_str());
       return PlatformEncoderModule::SupportsEncoderPromise::CreateAndResolve(
           libwebrtcSupport, __func__);
     }
     case EncoderCreationStrategy::PreferPlatformEncoder: {
       return aPemSupport()->Then(
           GetCurrentSerialEventTarget(), __func__,
-          [libwebrtcSupport](media::EncodeSupportSet aPemSupport) {
+          [libwebrtcSupport,
+           codec = aConfig.mCodec](media::EncodeSupportSet aPemSupport) {
+            const media::EncodeSupportSet combined =
+                aPemSupport + libwebrtcSupport;
+            LOGD(
+                "WebRTC encode support for %s: prefer-platform strategy, "
+                "platform encoder reports %s + libwebrtc %s -> %s",
+                EnumValueToString(codec), fmt::to_string(aPemSupport).c_str(),
+                fmt::to_string(libwebrtcSupport).c_str(),
+                fmt::to_string(combined).c_str());
             return PlatformEncoderModule::SupportsEncoderPromise::
-                CreateAndResolve(aPemSupport + libwebrtcSupport, __func__);
+                CreateAndResolve(combined, __func__);
           },
-          [](nsresult aRv) {
+          [codec = aConfig.mCodec](nsresult aRv) {
+            LOGD(
+                "WebRTC encode support for %s: platform encoder support query "
+                "failed: rv=%s",
+                EnumValueToString(codec), GetStaticErrorName(aRv));
             return PlatformEncoderModule::SupportsEncoderPromise::
                 CreateAndReject(aRv, __func__);
           });
@@ -169,6 +210,8 @@ EncoderSupportsWithPemFn(const EncoderConfig& aConfig,
 /* static */
 RefPtr<PlatformEncoderModule::SupportsEncoderPromise>
 WebrtcVideoEncoderFactory::SupportsCodec(const EncoderConfig& aConfig) {
+  LOGD("WebRTC encode support: querying cached codec-support snapshot for %s",
+       EnumValueToString(aConfig.mCodec));
   return EncoderSupportsWithPemFn(aConfig, [&aConfig]() {
     return MediaDataCodec::SupportsEncoderCodec(aConfig);
   });
@@ -178,6 +221,8 @@ WebrtcVideoEncoderFactory::SupportsCodec(const EncoderConfig& aConfig) {
 RefPtr<PlatformEncoderModule::SupportsEncoderPromise>
 WebrtcVideoEncoderFactory::StrictSupportsCodec(
     const EncoderConfig& aConfig, const RefPtr<TaskQueue>& aTaskQueue) {
+  LOGD("WebRTC encode support: probing encoder for %s",
+       EnumValueToString(aConfig.mCodec));
   return EncoderSupportsWithPemFn(aConfig, [&aConfig, &aTaskQueue]() {
     return MediaDataCodec::StrictSupportsEncoderCodec(aConfig, aTaskQueue);
   });
@@ -191,9 +236,12 @@ std::unique_ptr<webrtc::VideoDecoder> WebrtcVideoDecoderFactory::Create(
   // Attempt to create a decoder using MediaDataDecoder.
   decoder = MediaDataCodec::CreateDecoder(type, mTrackingId);
   if (decoder) {
+    LOGD("Created platform MediaDataDecoder for %s", aFormat.name.c_str());
     return decoder;
   }
 
+  LOGD("No platform decoder for %s; falling back to libwebrtc built-in decoder",
+       aFormat.name.c_str());
   switch (type) {
     case webrtc::VideoCodecType::kVideoCodecH264: {
       // Get an external decoder
@@ -330,14 +378,21 @@ WebrtcVideoEncoderFactory::InternalFactory::Create(
         NS_WARNING(
             "Failed creating libwebrtc video encoder, falling back on platform "
             "encoder");
+        LOGD("No libwebrtc encoder for %s; falling back to platform encoder",
+             aFormat.name.c_str());
         return createPlatformEncoder();
       }
+      LOGD("Created libwebrtc built-in encoder for %s", aFormat.name.c_str());
       return encoder;
     }
     case EncoderCreationStrategy::PreferPlatformEncoder:
       platformEncoder = createPlatformEncoder();
       encoder = createWebRTCEncoder();
       if (encoder && platformEncoder) {
+        LOGD(
+            "Created platform encoder for %s with libwebrtc software fallback "
+            "wrapper",
+            aFormat.name.c_str());
         return webrtc::CreateVideoEncoderSoftwareFallbackWrapper(
             aEnv, std::move(encoder), std::move(platformEncoder), false);
       }
@@ -346,8 +401,12 @@ WebrtcVideoEncoderFactory::InternalFactory::Create(
                                    "codec %s, only using platform encoder",
                                    aFormat.name.c_str())
                        .get());
+        LOGD("Created platform encoder for %s (no libwebrtc fallback)",
+             aFormat.name.c_str());
         return platformEncoder;
       }
+      LOGD("Created libwebrtc encoder for %s (no platform encoder available)",
+           aFormat.name.c_str());
       return encoder;
   };
 
@@ -355,5 +414,8 @@ WebrtcVideoEncoderFactory::InternalFactory::Create(
 
   return nullptr;
 }
+
+#undef LOGD
+#undef LOGTAG
 
 }  // namespace mozilla
