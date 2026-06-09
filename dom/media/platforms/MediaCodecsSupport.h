@@ -5,6 +5,7 @@
 #define DOM_MEDIA_PLATFORMS_MEDIACODECSSUPPORT_H_
 #include <array>
 
+#include "fmt/format.h"
 #include "mozilla/ClearOnShutdown.h"
 #include "mozilla/EnumSet.h"
 #include "mozilla/StaticMutex.h"
@@ -249,5 +250,23 @@ struct MaxEnumValue<media::MediaCodecsSupport> {
       static_cast<unsigned int>(media::MediaCodecsSupport::SENTINEL);
 };
 }  // namespace mozilla
+
+template <>
+struct fmt::formatter<mozilla::media::DecodeSupport> {
+  constexpr format_parse_context::iterator parse(format_parse_context& aCtx) {
+    return aCtx.begin();
+  }
+  format_context::iterator format(const mozilla::media::DecodeSupport& aConfig,
+                                  fmt::format_context& aCtx) const;
+};
+
+template <>
+struct fmt::formatter<mozilla::media::EncodeSupport> {
+  constexpr format_parse_context::iterator parse(format_parse_context& aCtx) {
+    return aCtx.begin();
+  }
+  format_context::iterator format(const mozilla::media::EncodeSupport& aConfig,
+                                  fmt::format_context& aCtx) const;
+};
 
 #endif /* MediaCodecsSupport_h_ */

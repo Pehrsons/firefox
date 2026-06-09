@@ -12,6 +12,7 @@
 #include "PlatformDecoderModule.h"
 #include "VPXDecoder.h"
 #include "VideoUtils.h"
+#include "fmt/format.h"
 #include "mozilla/AppShutdown.h"
 #include "mozilla/gfx/gfxVars.h"
 #include "nsTHashMap.h"
@@ -381,5 +382,35 @@ std::array<CodecDefinition, 13> MCSInfo::GetAllCodecDefinitions() {
 #undef MEDIA_CODEC_DEF_ENTRY_META
 
 }  // namespace mozilla::media
+
+fmt::format_context::iterator
+fmt::formatter<mozilla::media::DecodeSupport>::format(
+    const mozilla::media::DecodeSupport& aConfig,
+    fmt::format_context& aCtx) const {
+  switch (aConfig) {
+    case mozilla::media::DecodeSupport::HardwareDecode:
+      return fmt::format_to(aCtx.out(), "HWDecode");
+    case mozilla::media::DecodeSupport::SoftwareDecode:
+      return fmt::format_to(aCtx.out(), "SWDecode");
+    case mozilla::media::DecodeSupport::UnsureDueToLackOfExtension:
+      return fmt::format_to(aCtx.out(), "UnsureDecodeDueToLackOfExtension");
+  }
+  return fmt::format_to(aCtx.out(), "UnknownDecode");
+}
+
+fmt::format_context::iterator
+fmt::formatter<mozilla::media::EncodeSupport>::format(
+    const mozilla::media::EncodeSupport& aConfig,
+    fmt::format_context& aCtx) const {
+  switch (aConfig) {
+    case mozilla::media::EncodeSupport::HardwareEncode:
+      return fmt::format_to(aCtx.out(), "HWEncode");
+    case mozilla::media::EncodeSupport::SoftwareEncode:
+      return fmt::format_to(aCtx.out(), "SWEncode");
+    case mozilla::media::EncodeSupport::UnsureDueToLackOfExtension:
+      return fmt::format_to(aCtx.out(), "UnsureEncodeDueToLackOfExtension");
+  }
+  return fmt::format_to(aCtx.out(), "UnknownEncode");
+}
 
 #undef CODEC_SUPPORT_LOG
