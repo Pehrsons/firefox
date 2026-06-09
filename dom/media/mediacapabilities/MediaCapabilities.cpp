@@ -680,6 +680,8 @@ void MediaCapabilities::CreateWebRTCDecodingInfo(
         info.mPowerEfficient = true;
 
         if (!videoContainer) {
+          LOG("{} -> {} (audio only, video not supported)", aConfiguration,
+              info);
           return PromiseType::CreateAndResolve(
               std::move(info), "MediaCapabilities::CreateWebRTCDecodingInfo");
         }
@@ -744,7 +746,8 @@ void MediaCapabilities::CreateWebRTCDecodingInfo(
                 unsupported.mSupported = false;
                 unsupported.mSmooth = false;
                 unsupported.mPowerEfficient = false;
-                LOG("{} -> {}", aConfiguration, unsupported);
+                LOG("{} -> {}{}", aConfiguration, unsupported,
+                    aValue.IsReject() ? " (decode support query failed)" : "");
                 return PromiseType::CreateAndResolve(
                     std::move(unsupported),
                     "MediaCapabilities::CreateWebRTCDecodingInfo");
@@ -752,6 +755,8 @@ void MediaCapabilities::CreateWebRTCDecodingInfo(
               const bool hwSupported = aValue.ResolveValue().contains(
                   media::DecodeSupport::HardwareDecode);
               info.mPowerEfficient = hwSupported || lowResolution;
+              LOG("{} -> {} (hwSupported={}, lowResolution={})", aConfiguration,
+                  info, hwSupported, lowResolution);
               return PromiseType::CreateAndResolve(
                   std::move(info),
                   "MediaCapabilities::CreateWebRTCDecodingInfo");
@@ -879,6 +884,8 @@ void MediaCapabilities::CreateMediaCapabilitiesDecodingInfo(
     info.mSupported = false;
     info.mSmooth = false;
     info.mPowerEfficient = false;
+    LOG("{} -> {} (codec support check: video {}, audio {})", aConfiguration,
+        info, videoSupported, audioSupported);
     aPromise->MaybeResolve(std::move(info));
     return;
   }
@@ -1470,6 +1477,8 @@ already_AddRefed<Promise> MediaCapabilities::EncodingInfo(
     info.mSupported = false;
     info.mSmooth = false;
     info.mPowerEfficient = false;
+    LOG("{} -> {} (codec support check: video {}, audio {})", aConfiguration,
+        info, videoSupported, audioSupported);
     encodePromise->MaybeResolve(std::move(info));
     return encodePromise.forget();
   }
@@ -1510,7 +1519,8 @@ already_AddRefed<Promise> MediaCapabilities::EncodingInfo(
         info.mPowerEfficient = true;
 
         if (videoSupported != CodecSupport::Supported) {
-          LOG("{} -> {}", aConfiguration, info);
+          LOG("{} -> {} (audio only, video not supported)", aConfiguration,
+              info);
           return PromiseType::CreateAndResolve(
               std::move(info), "MediaCapabilities::EncodingInfo");
         }
@@ -1596,16 +1606,19 @@ already_AddRefed<Promise> MediaCapabilities::EncodingInfo(
               // decoding modules.
               info.mPowerEfficient &= (hwSupported || lowResolution);
 
-              LOG("{} -> {}", aConfiguration, info);
+              LOG("{} -> {} (hwSupported={}, lowResolution={})", aConfiguration,
+                  info, hwSupported, lowResolution);
               return PromiseType::CreateAndResolve(
                   std::move(info), "MediaCapabilities::EncodingInfo");
             },
-            [](nsresult) -> RefPtr<PromiseType> {
+            [aConfiguration](nsresult) -> RefPtr<PromiseType> {
               // Treat an internal failure as unsupported.
               MediaCapabilitiesInfo unsupported;
               unsupported.mSupported = false;
               unsupported.mSmooth = false;
               unsupported.mPowerEfficient = false;
+              LOG("{} -> {} (encode support query failed)", aConfiguration,
+                  unsupported);
               return PromiseType::CreateAndResolve(
                   std::move(unsupported), "MediaCapabilities::EncodingInfo");
             });
