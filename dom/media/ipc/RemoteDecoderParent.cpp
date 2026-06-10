@@ -4,6 +4,7 @@
 #include "RemoteDecoderParent.h"
 
 #include "RemoteCDMParent.h"
+#include "RemoteDecodeUtils.h"
 #include "RemoteMediaManagerParent.h"
 #include "mozilla/EnumeratedRange.h"
 
@@ -76,6 +77,13 @@ mozilla::ipc::IPCResult RemoteDecoderParent::RecvInit(
               nsCString hardwareReason;
               bool hardwareAccelerated =
                   self->mDecoder->IsHardwareAccelerated(hardwareReason);
+              MOZ_LOG_FMT(gRemoteDecodeLog, LogLevel::Debug,
+                          "RemoteDecoderParent[{}]: Init done, decoder='{}' "
+                          "codec='{}' hardwareAccelerated={} reason='{}'",
+                          fmt::ptr(self.get()),
+                          self->mDecoder->GetDescriptionName(),
+                          self->mDecoder->GetCodecName(), hardwareAccelerated,
+                          hardwareReason);
               nsTArray<DecodePropertyIPDL> properties;
               for (auto name : MakeInclusiveEnumeratedRange(
                        MediaDataDecoder::sHighestPropertyName)) {
