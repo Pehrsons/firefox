@@ -520,11 +520,10 @@ RefPtr<PEMSupportsEncoderPromise> PEMFactory::StrictSupportsAsync(
                                    ? EncodeSupport::HardwareEncode
                                    : EncodeSupport::SoftwareEncode;
                     LOG("StrictSupportsAsync(%s): created and probed '%s' -> "
-                        "HW:%d, SW:%d",
+                        "%s",
                         EnumValueToString(codec),
                         encoder->GetDescriptionName().get(),
-                        support.contains(EncodeSupport::HardwareEncode),
-                        support.contains(EncodeSupport::SoftwareEncode));
+                        fmt::to_string(support).c_str());
                   } else {
                     LOG("StrictSupportsAsync(%s): encoder '%s' failed to "
                         "initialize, reporting unsupported",

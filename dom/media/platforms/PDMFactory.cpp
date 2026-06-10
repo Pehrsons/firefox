@@ -510,6 +510,8 @@ RefPtr<PDMSupportsDecoderPromise> PDMFactory::SupportsAsync(
                 support += value.ResolveValue();
               }
             }
+            MOZ_LOG_FMT(sPDMLog, LogLevel::Debug, "SupportsAsync({}): {}",
+                        mimeType, support);
             return PDMSupportsDecoderPromise::CreateAndResolve(support,
                                                                __func__);
           },
@@ -525,17 +527,22 @@ RefPtr<PDMSupportsDecoderPromise> PDMFactory::StrictSupportsAsync(
   return AllocationWrapper::CreateDecoder(aParams, aPolicy)
       ->Then(
           GetCurrentSerialEventTarget(), __func__,
-          [](AllocationWrapper::AllocateDecoderPromise::ResolveOrRejectValue&&
-                 aValue) -> RefPtr<PDMSupportsDecoderPromise> {
+          [mimeType = aParams.mConfig.mMimeType](
+              AllocationWrapper::AllocateDecoderPromise::ResolveOrRejectValue&&
+                  aValue) -> RefPtr<PDMSupportsDecoderPromise> {
             if (aValue.IsReject()) {
               // The decoder could not be created: report unsupported.
+              MOZ_LOG_FMT(sPDMLog, LogLevel::Debug,
+                          "StrictSupportsAsync({}): could not create a "
+                          "decoder, reporting unsupported",
+                          mimeType);
               return PDMSupportsDecoderPromise::CreateAndResolve(
                   DecodeSupportSet{}, __func__);
             }
             RefPtr<MediaDataDecoder> decoder = std::move(aValue.ResolveValue());
             return decoder->Init()->Then(
                 GetCurrentSerialEventTarget(), __func__,
-                [decoder](
+                [decoder, mimeType](
                     MediaDataDecoder::InitPromise::ResolveOrRejectValue&& aInit)
                     -> RefPtr<PDMSupportsDecoderPromise> {
                   DecodeSupportSet support{};
@@ -544,6 +551,17 @@ RefPtr<PDMSupportsDecoderPromise> PDMFactory::StrictSupportsAsync(
                     support += decoder->IsHardwareAccelerated(reason)
                                    ? DecodeSupport::HardwareDecode
                                    : DecodeSupport::SoftwareDecode;
+                    MOZ_LOG_FMT(sPDMLog, LogLevel::Debug,
+                                "StrictSupportsAsync({}): created and probed "
+                                "'{}' -> {}",
+                                mimeType, decoder->GetDescriptionName(),
+                                support);
+                  } else {
+                    MOZ_LOG_FMT(
+                        sPDMLog, LogLevel::Debug,
+                        "StrictSupportsAsync({}): decoder '{}' failed to "
+                        "initialize, reporting unsupported",
+                        mimeType, decoder->GetDescriptionName());
                   }
                   // Keep the decoder alive until its shutdown completes.
                   decoder->Shutdown()->Then(
