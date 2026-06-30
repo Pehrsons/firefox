@@ -891,7 +891,7 @@ void MediaCapabilities::CreateMediaCapabilitiesDecodingInfo(
 }
 
 static MediaCapabilitiesDecodingInfo CreateVideoDecodingInfo(
-    const TrackInfo& aConfig, const bool aShouldResistFingerprinting,
+    const gfx::IntSize& aResolution, const bool aShouldResistFingerprinting,
     const bool aHardwareAccelerated) {
   MediaCapabilitiesDecodingInfo info;
   info.mSupported = true;
@@ -900,13 +900,11 @@ static MediaCapabilitiesDecodingInfo CreateVideoDecodingInfo(
   if (aShouldResistFingerprinting) {
     return info;
   }
-  MOZ_ASSERT(aConfig.IsVideo());
   // mImage dimensions are int32_t from gfx::IntSize. CheckedInt rejects
   // negative inputs (mapping to !isValid()) and rejects width*height
   // overflow, in either case treating the result as not-low-resolution.
-  const auto& image = aConfig.GetAsVideoInfo()->mImage;
-  const CheckedInt<uint32_t> pixels =
-      CheckedInt<uint32_t>(image.width) * CheckedInt<uint32_t>(image.height);
+  const CheckedInt<uint32_t> pixels = CheckedInt<uint32_t>(aResolution.width) *
+                                      CheckedInt<uint32_t>(aResolution.height);
   const bool lowResolution =
       pixels.isValid() && pixels.value() <= kLowResolutionPixelCount;
   info.mPowerEfficient = aHardwareAccelerated || lowResolution;
@@ -1201,120 +1199,141 @@ MediaCapabilities::CheckVideoDecodingInfo(
     UniquePtr<TrackInfo> aConfig) {
   MOZ_ASSERT(aConfig && aConfig->IsVideo());
   MOZ_ASSERT(aTaskQueue);
+  const bool checkDecoderInstance =
+      !StaticPrefs::media_mediacapabilities_codec_support_cache_enabled();
   RefPtr<nsISerialEventTarget> target = aTaskQueue;
   return InvokeAsync(
       target, __func__,
       [taskQueue = std::move(aTaskQueue), compositor = std::move(aCompositor),
        frameRate = aFrameRate,
        shouldResistFingerprinting = aShouldResistFingerprinting,
-       config = std::move(aConfig)]() mutable -> RefPtr<CapabilitiesPromise> {
-        if (StaticPrefs::
-                media_mediacapabilities_codec_support_cache_enabled()) {
-          // Query the cached codec-support snapshot, waiting asynchronously for
-          // remote processes to report accurate hardware support. No decoder is
-          // created.
-          const nsCString type = config->mMimeType;
-          LOG("Using decoder support cache for codec mime type '{}'", type);
-          SupportDecoderParams params{*config,
-                                      media::VideoFrameRate(frameRate)};
-          return PDMFactorySupport::IsSupportedAsync(params)->Then(
-              GetCurrentSerialEventTarget(), __func__,
-              [config = std::move(config),
-               shouldResistFingerprinting](media::DecodeSupportSet aSupport)
-                  -> RefPtr<CapabilitiesPromise> {
-                LOG("Decoder support cache request for codec mime type '{}' "
-                    "resolved with sw={}, hw={}",
-                    config->mMimeType,
-                    aSupport.contains(media::DecodeSupport::SoftwareDecode),
-                    aSupport.contains(media::DecodeSupport::HardwareDecode));
-                if (aSupport.isEmpty()) {
-                  return CapabilitiesPromise::CreateAndReject(NS_ERROR_FAILURE,
-                                                              __func__);
-                }
-                bool hwAccel =
-                    aSupport.contains(media::DecodeSupport::HardwareDecode);
-                return CapabilitiesPromise::CreateAndResolve(
-                    CreateVideoDecodingInfo(*config, shouldResistFingerprinting,
-                                            hwAccel),
-                    __func__);
-              },
-              [type](nsresult aRv) -> RefPtr<CapabilitiesPromise> {
-                LOG("Decoder support cache request for codec mime type '{}' "
-                    "rejected with {}",
-                    type, aRv);
-                return CapabilitiesPromise::CreateAndReject(NS_ERROR_FAILURE,
-                                                            __func__);
+       config = std::move(aConfig),
+       checkDecoderInstance]() mutable -> RefPtr<CapabilitiesPromise> {
+        // Query the cached codec-support snapshot, waiting asynchronously for
+        // remote processes to report accurate hardware support. No decoder is
+        // created.
+        const nsCString type = config->mMimeType;
+        const gfx::IntSize resolution = config->GetAsVideoInfo()->mImage;
+        SupportDecoderParams params{*config, media::VideoFrameRate(frameRate)};
+        RefPtr<PDMSupportsDecoderPromise> supportsPromise =
+            PDMFactorySupport::IsSupportedAsync(params);
+
+        if (checkDecoderInstance) {
+          // Strict path: create a decoder and query it directly for hardware
+          // acceleration. MediaDataDecoder keeps a reference to the
+          // config object, so we must keep it alive until the decoder has
+          // been shutdown.
+          LOG("Using strict decoder probing for codec mime type '{}'", type);
+          supportsPromise = supportsPromise->Then(
+              GetCurrentSerialEventTarget(),
+              "MediaCapabilities::CheckVideoDecodingInfo",
+              [taskQueue = std::move(taskQueue),
+               compositor = std::move(compositor), config = std::move(config),
+               frameRate](
+                  PDMSupportsDecoderPromise::ResolveOrRejectValue&&) mutable
+                  -> RefPtr<PDMSupportsDecoderPromise> {
+                static Atomic<uint32_t> sTrackingIdCounter(0);
+                TrackingId trackingId(TrackingId::Source::MediaCapabilities,
+                                      sTrackingIdCounter++,
+                                      TrackingId::TrackAcrossProcesses::Yes);
+                CreateDecoderParams params{
+                    *config, compositor,
+                    CreateDecoderParams::VideoFrameRate(frameRate),
+                    TrackInfo::kVideoTrack, Some(std::move(trackingId))};
+                // We want to ensure that all decoder's queries are occurring
+                // only once at a time as it can quickly exhaust the system
+                // resources otherwise.
+                static RefPtr<AllocPolicy> sVideoAllocPolicy = [&taskQueue]() {
+                  SchedulerGroup::Dispatch(NS_NewRunnableFunction(
+                      "MediaCapabilities::AllocPolicy:Video", []() {
+                        ClearOnShutdown(&sVideoAllocPolicy,
+                                        ShutdownPhase::XPCOMShutdownThreads);
+                      }));
+                  return new SingleAllocPolicy(
+                      TrackInfo::TrackType::kVideoTrack, taskQueue);
+                }();
+                return AllocationWrapper::CreateDecoder(params,
+                                                        sVideoAllocPolicy)
+                    ->Then(
+                        taskQueue, __func__,
+                        [taskQueue, config = std::move(config)](
+                            AllocationWrapper::AllocateDecoderPromise::
+                                ResolveOrRejectValue&& aValue) mutable {
+                          if (aValue.IsReject()) {
+                            return PDMSupportsDecoderPromise::CreateAndReject(
+                                std::move(aValue.RejectValue()), __func__);
+                          }
+                          RefPtr<MediaDataDecoder> decoder =
+                              std::move(aValue.ResolveValue());
+                          RefPtr<PDMSupportsDecoderPromise> p =
+                              decoder->Init()->Then(
+                                  taskQueue, __func__,
+                                  [taskQueue, decoder,
+                                   config = std::move(config)](
+                                      MediaDataDecoder::InitPromise::
+                                          ResolveOrRejectValue&&
+                                              aValue) mutable {
+                                    media::DecodeSupportSet supports;
+                                    if (aValue.IsResolve()) {
+                                      supports +=
+                                          media::DecodeSupport::SoftwareDecode;
+                                      nsAutoCString reason;
+                                      if (decoder->IsHardwareAccelerated(
+                                              reason)) {
+                                        supports += media::DecodeSupport::
+                                            HardwareDecode;
+                                      }
+                                    }
+                                    // Let's keep alive the decoder and the
+                                    // config object until the decoder has been
+                                    // shutdown.
+                                    decoder->Shutdown()->Then(
+                                        taskQueue, __func__,
+                                        [taskQueue, decoder,
+                                         config = std::move(config)](
+                                            const ShutdownPromise::
+                                                ResolveOrRejectValue& aValue) {
+                                        });
+                                    return PDMSupportsDecoderPromise::
+                                        CreateAndResolve(supports, __func__);
+                                  });
+                          return p;
+                        });
               });
         }
 
-        // Strict path: create a decoder and query it directly for hardware
-        // acceleration. MediaDataDecoder keeps a reference to the
-        // config object, so we must keep it alive until the decoder has
-        // been shutdown.
-        LOG("Using strict decoder probing for codec mime type '{}'",
-            config->mMimeType);
-        static Atomic<uint32_t> sTrackingIdCounter(0);
-        TrackingId trackingId(TrackingId::Source::MediaCapabilities,
-                              sTrackingIdCounter++,
-                              TrackingId::TrackAcrossProcesses::Yes);
-        CreateDecoderParams params{
-            *config, compositor, CreateDecoderParams::VideoFrameRate(frameRate),
-            TrackInfo::kVideoTrack, Some(std::move(trackingId))};
-        // We want to ensure that all decoder's queries are occurring only
-        // once at a time as it can quickly exhaust the system resources
-        // otherwise.
-        static RefPtr<AllocPolicy> sVideoAllocPolicy = [&taskQueue]() {
-          SchedulerGroup::Dispatch(NS_NewRunnableFunction(
-              "MediaCapabilities::AllocPolicy:Video", []() {
-                ClearOnShutdown(&sVideoAllocPolicy,
-                                ShutdownPhase::XPCOMShutdownThreads);
-              }));
-          return new SingleAllocPolicy(TrackInfo::TrackType::kVideoTrack,
-                                       taskQueue);
-        }();
-        return AllocationWrapper::CreateDecoder(params, sVideoAllocPolicy)
-            ->Then(
-                taskQueue, __func__,
-                [taskQueue, shouldResistFingerprinting,
-                 config = std::move(config)](
-                    AllocationWrapper::AllocateDecoderPromise::
-                        ResolveOrRejectValue&& aValue) mutable {
-                  if (aValue.IsReject()) {
-                    return CapabilitiesPromise::CreateAndReject(
-                        std::move(aValue.RejectValue()), __func__);
-                  }
-                  RefPtr<MediaDataDecoder> decoder =
-                      std::move(aValue.ResolveValue());
-                  RefPtr<CapabilitiesPromise> p = decoder->Init()->Then(
-                      taskQueue, __func__,
-                      [taskQueue, decoder, shouldResistFingerprinting,
-                       config = std::move(config)](
-                          MediaDataDecoder::InitPromise::ResolveOrRejectValue&&
-                              aValue) mutable {
-                        RefPtr<CapabilitiesPromise> p;
-                        if (aValue.IsReject()) {
-                          p = CapabilitiesPromise::CreateAndReject(
-                              std::move(aValue.RejectValue()), __func__);
-                        } else {
-                          nsAutoCString reason;
-                          bool hwAccel = decoder->IsHardwareAccelerated(reason);
-                          auto info = CreateVideoDecodingInfo(
-                              *config, shouldResistFingerprinting, hwAccel);
-                          p = CapabilitiesPromise::CreateAndResolve(
-                              std::move(info), __func__);
-                        }
-                        MOZ_ASSERT(p.get(), "the promise has been created");
-                        // Let's keep alive the decoder and the config object
-                        // until the decoder has been shutdown.
-                        decoder->Shutdown()->Then(
-                            taskQueue, __func__,
-                            [taskQueue, decoder, config = std::move(config)](
-                                const ShutdownPromise::ResolveOrRejectValue&
-                                    aValue) {});
-                        return p;
-                      });
-                  return p;
-                });
+        return supportsPromise->Then(
+            GetCurrentSerialEventTarget(), __func__,
+            [type, resolution, shouldResistFingerprinting,
+             checkDecoderInstance](
+                PDMSupportsDecoderPromise::ResolveOrRejectValue&&
+                    aValue) mutable -> RefPtr<CapabilitiesPromise> {
+              if (aValue.IsReject()) {
+                LOG("Decoder support {} request for codec mime type '{}' "
+                    "rejected with {}",
+                    checkDecoderInstance ? "strict" : "cache", type,
+                    aValue.RejectValue());
+                return CapabilitiesPromise::CreateAndReject(NS_ERROR_FAILURE,
+                                                            __func__);
+              }
+
+              media::DecodeSupportSet support = aValue.ResolveValue();
+              LOG("Decoder support {} request for codec mime type '{}' "
+                  "resolved with sw={}, hw={}",
+                  checkDecoderInstance ? "strict" : "cache", type,
+                  support.contains(media::DecodeSupport::SoftwareDecode),
+                  support.contains(media::DecodeSupport::HardwareDecode));
+              if (support.isEmpty()) {
+                return CapabilitiesPromise::CreateAndReject(NS_ERROR_FAILURE,
+                                                            __func__);
+              }
+              bool hwAccel =
+                  support.contains(media::DecodeSupport::HardwareDecode);
+              return CapabilitiesPromise::CreateAndResolve(
+                  CreateVideoDecodingInfo(resolution,
+                                          shouldResistFingerprinting, hwAccel),
+                  __func__);
+            });
       });
 }
 
