@@ -13899,6 +13899,15 @@
   value: true
   mirror: always
 
+# Use the Media Foundation camera backend. When disabled, or when Media
+# Foundation is unavailable, the DirectShow backend is used. Mirrored once
+# since the backend is chosen when a capture device is first enumerated and
+# cannot be swapped underneath a running capture.
+- name: media.webrtc.capture.camera.allow-mediafoundation
+  type: bool
+  value: false
+  mirror: once
+
 - name: media.webrtc.capture.screen.allow-wgc
   type: RelaxedAtomicBool
   value: false

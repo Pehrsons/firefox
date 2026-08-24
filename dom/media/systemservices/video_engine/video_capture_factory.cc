@@ -15,6 +15,11 @@
 #  include "video_engine/placeholder_device_info.h"
 #endif
 
+#if defined(XP_WIN) && defined(MOZ_WMF)
+#  include "mf_video_capture/device_info_mf.h"
+#  include "mf_video_capture/video_capture_mf.h"
+#endif
+
 #if defined(WEBRTC_USE_PIPEWIRE) && defined(MOZ_ENABLE_DBUS)
 #  include "mozilla/widget/AsyncDBus.h"
 #endif
@@ -59,6 +64,12 @@ VideoCaptureFactory::CreateDeviceInfo(
       }
       return deviceInfo;
     }
+#if defined(XP_WIN) && defined(MOZ_WMF)
+    if (webrtc::videocapturemodule::MediaFoundationCaptureEnabled()) {
+      deviceInfo.reset(new webrtc::videocapturemodule::DeviceInfoMF());
+      return deviceInfo;
+    }
+#endif
 #if (defined(WEBRTC_LINUX) || defined(WEBRTC_BSD)) && !defined(WEBRTC_ANDROID)
 #  if defined(WEBRTC_USE_PIPEWIRE)
     // Special case when PipeWire is not initialized yet and we need to insert
@@ -102,6 +113,13 @@ VideoCaptureFactory::CreateVideoCapture(
           webrtc::videocapturemodule::VideoCaptureFake::Create(target);
       return result;
     }
+#if defined(XP_WIN) && defined(MOZ_WMF)
+    if (webrtc::videocapturemodule::MediaFoundationCaptureEnabled()) {
+      result.mCapturer = webrtc::videocapturemodule::VideoCaptureMF::Create(
+          webrtc::Clock::GetRealTimeClockOnlyUseForRelativeTime(), aUniqueId);
+      return result;
+    }
+#endif
 #if (defined(WEBRTC_LINUX) || defined(WEBRTC_BSD)) && !defined(WEBRTC_ANDROID)
     result.mCapturer = webrtc::VideoCaptureFactory::Create(
         mVideoCaptureOptions.get(), aUniqueId);
