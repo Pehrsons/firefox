@@ -50,6 +50,13 @@ if CONFIG["MOZ_WEBRTC"]:
         CMMFLAGS += [
             "-fobjc-arc",
         ]
+    elif CONFIG["OS_TARGET"] == "WINNT" and CONFIG["MOZ_WMF"]:
+        # Not unified: these pull in windows.h and Media Foundation headers.
+        SOURCES += [
+            "mf_video_capture/device_info_mf.cc",
+            "mf_video_capture/mf_capture_utils.cc",
+            "mf_video_capture/video_capture_mf.cc",
+        ]
 
     if CONFIG["OS_TARGET"] == "Android":
         UNIFIED_SOURCES += [
