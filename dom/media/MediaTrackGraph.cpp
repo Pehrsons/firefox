@@ -4004,12 +4004,7 @@ void MediaTrackGraphImpl::ApplyAudioContextOperationImpl(
   for (MediaTrack* track : aMessage->mTracks) {
     track->IncrementSuspendCount();
   }
-  // Resolve after main thread state is up to date with completed processing.
-  DispatchToMainThreadStableState(NS_NewRunnableFunction(
-      "MediaTrackGraphImpl::ApplyAudioContextOperationImpl",
-      [holder = std::move(aMessage->mHolder), state]() mutable {
-        holder.Resolve(state, __func__);
-      }));
+  aMessage->mHolder.Resolve(state, __func__);
 }
 
 MediaTrackGraphImpl::PendingResumeOperation::PendingResumeOperation(
@@ -4022,16 +4017,13 @@ MediaTrackGraphImpl::PendingResumeOperation::PendingResumeOperation(
 
 void MediaTrackGraphImpl::PendingResumeOperation::Apply(
     MediaTrackGraphImpl* aGraph) {
+  // The graph is provided through the parameter so that it is available even
+  // when mDestinationTrack is destroyed.
   MOZ_ASSERT(aGraph->OnGraphThread());
   for (MediaTrack* track : mTracks) {
     track->DecrementSuspendCount();
   }
-  // The graph is provided through the parameter so that it is available even
-  // when the track is destroyed.
-  aGraph->DispatchToMainThreadStableState(NS_NewRunnableFunction(
-      "PendingResumeOperation::Apply", [holder = std::move(mHolder)]() mutable {
-        holder.Resolve(AudioContextState::Running, __func__);
-      }));
+  mHolder.Resolve(AudioContextState::Running, __func__);
 }
 
 void MediaTrackGraphImpl::PendingResumeOperation::Abort() {
