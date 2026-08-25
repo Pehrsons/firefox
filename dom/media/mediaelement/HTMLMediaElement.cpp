@@ -867,6 +867,8 @@ class HTMLMediaElement::MediaStreamRenderer {
       : mVideoContainer(aVideoContainer),
         mAudioOutputKey(aAudioOutputKey),
         mWatchManager(this, aMainThread),
+        mGraphCurrentTime(aMainThread, kUnseededGraphTime,
+                          "MediaStreamRenderer::mGraphCurrentTime"),
         mFirstFrameVideoOutput(aFirstFrameVideoOutput) {
     if (mFirstFrameVideoOutput) {
       mWatchManager.Watch(mFirstFrameVideoOutput->mFirstFrameRendered,
@@ -890,13 +892,20 @@ class HTMLMediaElement::MediaStreamRenderer {
       RemoveTrack(mVideoTrack.Ref()->AsVideoStreamTrack());
     }
     mWatchManager.Shutdown();
+    mGraphCurrentTime.DisconnectIfConnected();
     mFirstFrameVideoOutput = nullptr;
     mVideoOutput = nullptr;
   }
 
   void UpdateGraphTime() {
-    mGraphTime =
-        mGraphTimeDummy->mTrack->Graph()->CurrentTime() - *mGraphTimeOffset;
+    MOZ_ASSERT(mGraphCurrentTime.Ref() != kUnseededGraphTime);
+    if (!mGraphTimeOffset) {
+      // First update after connecting the mirror, i.e. the seeding update.
+      // Anchor the offset here so that mGraphTime is continuous across the
+      // connect.
+      mGraphTimeOffset = Some(mGraphCurrentTime.Ref() - mGraphTime);
+    }
+    mGraphTime = mGraphCurrentTime.Ref() - *mGraphTimeOffset;
   }
 
   void SetFirstFrameRendered() {
@@ -923,12 +932,18 @@ class HTMLMediaElement::MediaStreamRenderer {
     mProgressingCurrentTime = aProgress;
     MediaTrackGraph* graph = mGraphTimeDummy->mTrack->Graph();
     if (mProgressingCurrentTime) {
-      mGraphTimeOffset = Some(graph->CurrentTime().Ref() - mGraphTime);
-      mWatchManager.Watch(graph->CurrentTime(),
+      // mGraphTimeDummy holds a track, so the graph outlives this connection.
+      // A mirror is seeded asynchronously, so the offset is anchored in
+      // UpdateGraphTime() when the seeding update arrives rather than read
+      // synchronously here.
+      mGraphTimeOffset = Nothing();
+      mGraphCurrentTime.Connect(&graph->CanonicalCurrentTime());
+      mWatchManager.Watch(mGraphCurrentTime,
                           &MediaStreamRenderer::UpdateGraphTime);
     } else {
-      mWatchManager.Unwatch(graph->CurrentTime(),
+      mWatchManager.Unwatch(mGraphCurrentTime,
                             &MediaStreamRenderer::UpdateGraphTime);
+      mGraphCurrentTime.DisconnectIfConnected();
     }
   }
 
@@ -1225,6 +1240,13 @@ class HTMLMediaElement::MediaStreamRenderer {
       mDeviceStartedRequest;
 
   WatchManager<MediaStreamRenderer> mWatchManager;
+
+  // Mirror of the graph's current time, connected while progressing. Seeded
+  // asynchronously on connect, so it starts at a time the graph can never
+  // report. That guarantees the seeding update is a change, and so notifies
+  // watchers, even when the graph's time equals the initial value.
+  static constexpr GraphTime kUnseededGraphTime = -1;
+  Mirror<GraphTime> mGraphCurrentTime;
 
   // A dummy MediaTrack to guarantee a MediaTrackGraph is kept alive while
   // we're actively rendering, so we can track the graph's current time. Set

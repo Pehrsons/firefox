@@ -14,6 +14,7 @@
 #include "mozilla/LinkedList.h"
 #include "mozilla/Maybe.h"
 #include "mozilla/Mutex.h"
+#include "mozilla/StateMirroring.h"
 #include "mozilla/StateWatching.h"
 #include "mozilla/TaskQueue.h"
 #include "nsAutoRef.h"
@@ -1252,10 +1253,13 @@ class MediaTrackGraph {
   }
 
   /**
-   * Returns a watchable of the graph's main-thread observable graph time.
-   * Main thread only.
+   * The graph's observable graph time, updated by the graph thread once per
+   * iteration that updates main thread state. Exists from adding the first
+   * track on the main thread until the graph is destroyed, which removing the
+   * last track or port starts. Callers must hold a main thread track or port.
+   * Main thread.
    */
-  virtual Watchable<GraphTime>& CurrentTime() = 0;
+  virtual AbstractCanonical<GraphTime>& CanonicalCurrentTime() = 0;
 
   /**
    * Graph thread function to return the time at which all processing has been

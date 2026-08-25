@@ -284,7 +284,7 @@ class MediaTrackGraphImpl : public MediaTrackGraph,
   /**
    * Returns true if this MediaTrackGraph should keep running
    */
-  bool UpdateMainThreadState();
+  bool UpdateMainThreadState(bool aUpdateMainThread);
 
   /**
    * Proxy method called by GraphDriver to iterate the graph.
@@ -316,11 +316,14 @@ class MediaTrackGraphImpl : public MediaTrackGraph,
    * See EnsureRunInStableState
    */
   void EnsureStableStateEventPosted() MOZ_REQUIRES(mMonitor);
+
+  enum class MainThreadStateUpdateFlag { FinalUpdate, UpdateMainThread };
+  using MainThreadStateUpdateFlags = EnumSet<MainThreadStateUpdateFlag>;
   /**
    * Generate messages to the main thread to update it for all state changes.
    * mMonitor must be held.
    */
-  void PrepareUpdatesToMainThreadState(bool aFinalUpdate)
+  void PrepareUpdatesToMainThreadState(MainThreadStateUpdateFlags aFlags)
       MOZ_REQUIRES(mMonitor);
   /**
    * If we are rendering in non-realtime mode, we don't want to send messages to
@@ -675,7 +678,7 @@ class MediaTrackGraphImpl : public MediaTrackGraph,
   already_AddRefed<MediaInputPort> ConnectToCaptureTrack(
       uint64_t aWindowId, MediaTrack* aMediaTrack);
 
-  Watchable<GraphTime>& CurrentTime() override;
+  AbstractCanonical<GraphTime>& CanonicalCurrentTime() override;
 
   /**
    * Interrupt any JS running on the graph thread.
@@ -692,6 +695,21 @@ class MediaTrackGraphImpl : public MediaTrackGraph,
   NS_IMETHOD RegisterShutdownTask(nsITargetShutdownTask* aTask) override;
   NS_IMETHOD UnregisterShutdownTask(nsITargetShutdownTask* aTask) override;
   NS_IMETHOD_(FeatureFlags) GetFeatures() override;
+
+  /**
+   * Create the graph thread's canonicals. Called on the main thread as the
+   * first track is added, before the graph thread may run again.
+   */
+  void CreateCanonicals();
+
+  /**
+   * Disconnect and destroy the graph thread's canonicals. A canonical holds a
+   * strong reference to its owner thread, which for this graph is the graph
+   * itself, so they must be destroyed explicitly to break that cycle. Called
+   * on the main thread from Destroy(), i.e. once the graph thread has stopped
+   * and all tracks and ports are gone.
+   */
+  void DisconnectCanonicals();
 
  protected:
   [[nodiscard]] nsresult QueueMessageForTailDispatch(
@@ -1174,16 +1192,23 @@ class MediaTrackGraphImpl : public MediaTrackGraph,
 #endif
 
   /**
-   * The graph's main-thread observable graph time.
-   * Updated by the stable state runnable after each iteration.
+   * State the graph publishes for mirroring. Set on the graph thread.
+   *
+   * A struct in a Maybe, rather than a plain member, for two reasons: a
+   * canonical holds a strong reference to its owner thread, which for this
+   * graph is the graph itself, so it must be destroyed explicitly to break
+   * that cycle; and Canonical overloads operator&, so Maybe<Canonical<T>> does
+   * not compile. Created by CreateCanonicals() as the first track is added on
+   * main thread, reset by DisconnectCanonicals().
    */
-  Watchable<GraphTime> mMainThreadGraphTime;
+  struct Canonicals {
+    explicit Canonicals(AbstractThread* aGraphThread)
+        : mCurrentTime(aGraphThread, 0,
+                       "MediaTrackGraphImpl::Canonicals::mCurrentTime") {}
 
-  /**
-   * Set based on mProcessedTime at end of iteration.
-   * Read by stable state runnable on main thread. Protected by mMonitor.
-   */
-  GraphTime mNextMainThreadGraphTime MOZ_GUARDED_BY(mMonitor) = 0;
+    Canonical<GraphTime> mCurrentTime;
+  };
+  Maybe<Canonicals> mCanonicals;
 
   /**
    * Cached audio output latency, in seconds. Main thread only. This is reset

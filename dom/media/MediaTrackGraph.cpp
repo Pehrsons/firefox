@@ -1149,13 +1149,13 @@ bool MediaTrackGraphImpl::ShouldUpdateMainThread() {
   return false;
 }
 
-void MediaTrackGraphImpl::PrepareUpdatesToMainThreadState(bool aFinalUpdate) {
+void MediaTrackGraphImpl::PrepareUpdatesToMainThreadState(
+    MainThreadStateUpdateFlags aFlags) {
   MOZ_ASSERT(OnGraphThreadOrNotRunning());
   mMonitor.AssertCurrentThreadOwns();
 
-  // We don't want to frequently update the main thread about timing update
-  // when we are not running in realtime.
-  if (aFinalUpdate || ShouldUpdateMainThread()) {
+  if (aFlags.contains(MainThreadStateUpdateFlag::FinalUpdate) ||
+      aFlags.contains(MainThreadStateUpdateFlag::UpdateMainThread)) {
     // Strip updates that will be obsoleted below, so as to keep the length of
     // mTrackUpdates sane.
     size_t keptUpdateCount = 0;
@@ -1191,7 +1191,6 @@ void MediaTrackGraphImpl::PrepareUpdatesToMainThreadState(bool aFinalUpdate) {
           track->GraphTimeToTrackTime(mProcessedTime);
       update->mNextMainThreadEnded = track->mNotifiedEnded;
     }
-    mNextMainThreadGraphTime = mProcessedTime;
     if (!mPendingUpdateRunnables.IsEmpty()) {
       mUpdateRunnables.AppendElements(std::move(mPendingUpdateRunnables));
     }
@@ -1200,7 +1199,7 @@ void MediaTrackGraphImpl::PrepareUpdatesToMainThreadState(bool aFinalUpdate) {
   // If this is the final update, then a stable state event will soon be
   // posted just before this thread finishes, and so there is no need to also
   // post here.
-  if (!aFinalUpdate &&
+  if (!aFlags.contains(MainThreadStateUpdateFlag::FinalUpdate) &&
       // Don't send the message to the main thread if it's not going to have
       // any work to do.
       !(mUpdateRunnables.IsEmpty() && mTrackUpdates.IsEmpty())) {
@@ -1540,7 +1539,7 @@ void MediaTrackGraphImpl::Process(MixerCallbackReceiver* aMixerReceiver) {
   }
 }
 
-bool MediaTrackGraphImpl::UpdateMainThreadState() {
+bool MediaTrackGraphImpl::UpdateMainThreadState(bool aUpdateMainThread) {
   MOZ_ASSERT(OnGraphThread());
   if (mForceShutDownReceived) {
     for (MediaTrack* track : AllTracks()) {
@@ -1549,9 +1548,16 @@ bool MediaTrackGraphImpl::UpdateMainThreadState() {
   }
   {
     MonitorAutoLock lock(mMonitor);
-    bool finalUpdate =
+    const bool finalUpdate =
         mForceShutDownReceived || (IsEmpty() && mBackMessageQueue.IsEmpty());
-    PrepareUpdatesToMainThreadState(finalUpdate);
+    MainThreadStateUpdateFlags flags;
+    if (finalUpdate) {
+      flags += MainThreadStateUpdateFlag::FinalUpdate;
+    }
+    if (aUpdateMainThread) {
+      flags += MainThreadStateUpdateFlag::UpdateMainThread;
+    }
+    PrepareUpdatesToMainThreadState(flags);
     if (!finalUpdate) {
       return true;
     }
@@ -1663,11 +1669,22 @@ auto MediaTrackGraphImpl::OneIterationImpl(
 
   ProcessChunkMetadata(oldProcessedTime);
 
+  // We don't want to frequently update the main thread about timing update
+  // when we are not running in realtime. ShouldUpdateMainThread() records when
+  // it last returned true, so it must be called exactly once per iteration.
+  // The canonicals are set here rather than with the rest of the main thread
+  // state because they notify their mirrors from a direct task, which the
+  // drain below must pick up.
+  const bool updateMainThread = ShouldUpdateMainThread();
+  if (updateMainThread) {
+    mCanonicals->mCurrentTime.Set(mProcessedTime);
+  }
+
   // Note that after draining, no more direct tasks may be added, as asserted by
   // AutoTaskDispatcher.
   DrainDirectTasks();
 
-  bool stillProcessing = UpdateMainThreadState();
+  bool stillProcessing = UpdateMainThreadState(updateMainThread);
   // The main thread state update runnable has been dispatched. Fire the tail
   // dispatcher now.
   // NOTE that ideally we'd fire the tail dispatcher at the end of the
@@ -2033,8 +2050,6 @@ void MediaTrackGraphImpl::RunInStableState(bool aSourceIsMTG) {
       }
     }
     mTrackUpdates.Clear();
-
-    mMainThreadGraphTime = mNextMainThreadGraphTime;
 
     if (LifecycleState() == LIFECYCLE_WAITING_FOR_MAIN_THREAD_CLEANUP &&
         IsEmpty()) {
@@ -3443,7 +3458,6 @@ MediaTrackGraphImpl::MediaTrackGraphImpl(uint64_t aWindowID,
       mCanRunMessagesSynchronously(false)
 #endif
       ,
-      mMainThreadGraphTime(0, "MediaTrackGraphImpl::mMainThreadGraphTime"),
       mAudioOutputLatency(0.0),
       mMaxOutputChannelCount(0) {
 }
@@ -3451,6 +3465,7 @@ MediaTrackGraphImpl::MediaTrackGraphImpl(uint64_t aWindowID,
 void MediaTrackGraphImpl::Init(GraphDriverType aDriverRequested,
                                GraphRunType aRunTypeRequested,
                                uint32_t aChannelCount) {
+  MOZ_ASSERT(NS_IsMainThread());
   mSelfRef = this;
   mEndTime = aDriverRequested == OFFLINE_THREAD_DRIVER ? 0 : GRAPH_TIME_MAX;
   mRealtime = aDriverRequested != OFFLINE_THREAD_DRIVER;
@@ -3518,9 +3533,30 @@ bool MediaTrackGraphImpl::InDriverIteration(const GraphDriver* aDriver) const {
 }
 #endif
 
+void MediaTrackGraphImpl::CreateCanonicals() {
+  MOZ_ASSERT(NS_IsMainThread());
+  MOZ_ASSERT(!mCanonicals);
+  mCanonicals.emplace(this);
+}
+
+void MediaTrackGraphImpl::DisconnectCanonicals() {
+  MOZ_ASSERT(NS_IsMainThread());
+  MOZ_ASSERT(!mGraphDriverRunning);
+  if (!mCanonicals) {
+    return;
+  }
+  // A canonical holds a strong reference to its owner thread, which for this
+  // graph is the graph itself, so the canonical must be destroyed explicitly
+  // or the graph would never be freed.
+  mCanonicals->mCurrentTime.DisconnectAll();
+  mCanonicals.reset();
+}
+
 void MediaTrackGraphImpl::Destroy() {
   // First unregister from memory reporting.
   UnregisterWeakMemoryReporter(this);
+
+  DisconnectCanonicals();
 
   // Clear the self reference which will destroy this instance if all
   // associated GraphDrivers are destroyed.
@@ -3811,6 +3847,9 @@ void MediaTrackGraph::AddTrack(MediaTrack* aTrack) {
     MOZ_DIAGNOSTIC_ASSERT(p, "Graph must not be shutting down");
   }
 #endif
+  if (graph->mMainThreadTrackCount == 0) {
+    graph->CreateCanonicals();
+  }
   if (graph->mMainThreadTrackCount == 0 && graph->mRealtime) {
     nsCOMPtr<nsIObserverService> observerService =
         mozilla::services::GetObserverService();
@@ -4244,9 +4283,10 @@ void MediaTrackGraph::DispatchToMainThreadStableState(
       ->mPendingUpdateRunnables.AppendElement(std::move(aRunnable));
 }
 
-Watchable<mozilla::GraphTime>& MediaTrackGraphImpl::CurrentTime() {
+AbstractCanonical<GraphTime>& MediaTrackGraphImpl::CanonicalCurrentTime() {
   MOZ_ASSERT(NS_IsMainThread());
-  return mMainThreadGraphTime;
+  MOZ_ASSERT(mCanonicals, "Callers must hold a main thread track or port");
+  return mCanonicals->mCurrentTime;
 }
 
 GraphTime MediaTrackGraph::ProcessedTime() const {
