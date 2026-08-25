@@ -64,6 +64,16 @@ void GetProductId(const char* aSymbolicLink, char* aProductUniqueIdUTF8,
                   uint32_t aProductUniqueIdUTF8Length);
 
 /**
+ * True if the two device ids name the same underlying device instance. A Media
+ * Foundation symbolic link and a DirectShow DevicePath for one camera are
+ * identical except for the trailing device interface class GUID, so comparing
+ * everything before that GUID is what makes ids from the two backends
+ * comparable. Ids with no GUID at all, which is what DeviceInfoDS falls back to
+ * for software filters that have no DevicePath, only match themselves.
+ */
+bool IsSameDeviceInstance(const nsACString& aIdA, const nsACString& aIdB);
+
+/**
  * A camera as reported by MFEnumDeviceSources. mUniqueId is the Media
  * Foundation symbolic link, which serves the same purpose as the DirectShow
  * DevicePath: a stable per-device identifier. Note that the two are not

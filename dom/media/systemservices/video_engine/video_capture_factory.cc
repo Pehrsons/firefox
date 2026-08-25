@@ -117,7 +117,12 @@ VideoCaptureFactory::CreateVideoCapture(
     if (webrtc::videocapturemodule::MediaFoundationCaptureEnabled()) {
       result.mCapturer = webrtc::videocapturemodule::VideoCaptureMF::Create(
           webrtc::Clock::GetRealTimeClockOnlyUseForRelativeTime(), aUniqueId);
-      return result;
+      if (result.mCapturer) {
+        return result;
+      }
+      // DeviceInfoMF also reports the devices Media Foundation does not
+      // enumerate, so an id it cannot match is expected to be a DirectShow one.
+      // Fall through to the DirectShow capturer for those.
     }
 #endif
 #if (defined(WEBRTC_LINUX) || defined(WEBRTC_BSD)) && !defined(WEBRTC_ANDROID)

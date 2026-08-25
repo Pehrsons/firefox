@@ -7,10 +7,12 @@
 #include <dbt.h>
 #include <ksmedia.h>
 
+#include <algorithm>
 #include <cstdlib>
 #include <cstring>
 #include <utility>
 
+#include "modules/video_capture/video_capture_factory.h"
 #include "mozilla/mscom/EnsureMTA.h"
 #include "rtc_base/logging.h"
 
@@ -234,6 +236,43 @@ void DeviceInfoMF::EnsureDeviceList() {
     entry.mDevice = std::move(device);
     mDevices.AppendElement(std::move(entry));
   }
+
+  AppendDirectShowOnlyDevices();
+}
+
+void DeviceInfoMF::AppendDirectShowOnlyDevices() {
+  RTC_DCHECK_RUN_ON(&mChecker);
+
+  if (!mDirectShowInfo) {
+    mDirectShowInfo.reset(webrtc::VideoCaptureFactory::CreateDeviceInfo());
+    if (!mDirectShowInfo) {
+      RTC_LOG(LS_WARNING) << "Failed to create the DirectShow device info, "
+                             "DirectShow-only devices will be missing";
+      return;
+    }
+  }
+
+  const uint32_t count = mDirectShowInfo->NumberOfDevices();
+  for (uint32_t i = 0; i < count; ++i) {
+    char name[kVideoCaptureDeviceNameLength] = {};
+    char uniqueId[kVideoCaptureUniqueNameLength] = {};
+    if (mDirectShowInfo->GetDeviceName(i, name, sizeof(name), uniqueId,
+                                       sizeof(uniqueId)) != 0) {
+      continue;
+    }
+    if (std::any_of(mDevices.begin(), mDevices.end(),
+                    [&](const Device& aOther) {
+                      return IsSameDeviceInstance(aOther.mDevice.mUniqueId,
+                                                  nsDependentCString(uniqueId));
+                    })) {
+      continue;
+    }
+    RTC_LOG(LS_INFO) << "Adding DirectShow-only capture device " << uniqueId;
+    Device entry;
+    entry.mDevice.mUniqueId = uniqueId;
+    entry.mDevice.mName = name;
+    mDevices.AppendElement(std::move(entry));
+  }
 }
 
 void DeviceInfoMF::ReleaseDevices() {
@@ -260,7 +299,7 @@ DeviceInfoMF::Device* DeviceInfoMF::FindDevice(
     // Media Foundation symbolic links, like DirectShow device paths, are not
     // guaranteed to keep their case between enumerations.
     if (device.mDevice.mUniqueId.Equals(nsDependentCString(aDeviceUniqueIdUTF8),
-                                       nsCaseInsensitiveCStringComparator)) {
+                                        nsCaseInsensitiveCStringComparator)) {
       return &device;
     }
   }
@@ -278,8 +317,22 @@ auto DeviceInfoMF::EnsureCapabilities(Device& aDevice)
   RTC_LOG(LS_INFO) << "Enumerating capabilities for device "
                    << aDevice.mDevice.mUniqueId.get();
   nsTArray<VideoCaptureCapability> capabilities;
-  if (FAILED(GetDeviceCapabilities(aDevice.mDevice.mActivate.Get(),
-                                   capabilities))) {
+  if (aDevice.IsDirectShow()) {
+    if (!mDirectShowInfo) {
+      return nullptr;
+    }
+    const char* uniqueId = aDevice.mDevice.mUniqueId.get();
+    const int32_t count = mDirectShowInfo->NumberOfCapabilities(uniqueId);
+    for (int32_t i = 0; i < count; ++i) {
+      VideoCaptureCapability capability;
+      if (mDirectShowInfo->GetCapability(uniqueId, static_cast<uint32_t>(i),
+                                         capability) != 0) {
+        return nullptr;
+      }
+      capabilities.AppendElement(capability);
+    }
+  } else if (FAILED(GetDeviceCapabilities(aDevice.mDevice.mActivate.Get(),
+                                          capabilities))) {
     // Leave the capabilities unset so that a later attempt can succeed, for
     // instance once the device is no longer in use by another application.
     return nullptr;

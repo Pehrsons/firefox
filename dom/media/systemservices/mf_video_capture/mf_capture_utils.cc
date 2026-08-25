@@ -56,6 +56,15 @@ nsCString GetAllocatedStringAsUtf8(IMFActivate* aActivate,
   return ToUtf8(value);
 }
 
+// Everything before the trailing device interface class GUID, which is the only
+// part of the id that a Media Foundation symbolic link and a DirectShow
+// DevicePath for the same device disagree on.
+nsDependentCSubstring DeviceInstancePrefix(const nsACString& aId) {
+  const int32_t index = aId.RFind("#{"_ns);
+  return nsDependentCSubstring(aId, 0,
+                               index < 0 ? aId.Length() : uint32_t(index));
+}
+
 HRESULT EnumerateCaptureDevicesMTA(nsTArray<MFCaptureDevice>& aDevices) {
   ComPtr<IMFAttributes> attributes;
   HRESULT hr = mozilla::wmf::MFCreateAttributes(&attributes, 1);
@@ -293,6 +302,11 @@ void GetProductId(const char* aSymbolicLink, char* aProductUniqueIdUTF8,
   }
   memcpy(aProductUniqueIdUTF8, start, bytesToCopy);
   aProductUniqueIdUTF8[bytesToCopy] = '\0';
+}
+
+bool IsSameDeviceInstance(const nsACString& aIdA, const nsACString& aIdB) {
+  return DeviceInstancePrefix(aIdA).Equals(DeviceInstancePrefix(aIdB),
+                                           nsCaseInsensitiveCStringComparator);
 }
 
 HRESULT EnumerateCaptureDevices(nsTArray<MFCaptureDevice>& aDevices) {

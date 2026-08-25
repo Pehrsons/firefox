@@ -6,6 +6,7 @@
 #define DOM_MEDIA_SYSTEMSERVICES_MF_VIDEO_CAPTURE_DEVICE_INFO_MF_H_
 
 #include <atomic>
+#include <memory>
 #include <vector>
 
 #include "api/sequence_checker.h"
@@ -63,21 +64,30 @@ class DeviceInfoMF : public DeviceInfoImpl {
     MFCaptureDevice mDevice;
     // Nothing() until the capabilities of this device have been enumerated.
     mozilla::Maybe<nsTArray<VideoCaptureCapability>> mCapabilities;
+    // Media Foundation always hands out an IMFActivate, so its absence marks a
+    // device that came from DirectShow and that mDirectShowInfo owns.
+    bool IsDirectShow() const { return !mDevice.mActivate; }
   };
 
   void EnsureDeviceList();
+  // Appends the devices DirectShow reports that Media Foundation does not,
+  // which is how virtual cameras registered as DirectShow filters stay visible.
+  void AppendDirectShowOnlyDevices();
   // Drops the device list, releasing its COM references in the multithreaded
   // apartment.
   void ReleaseDevices();
   Device* FindDevice(const char* aDeviceUniqueIdUTF8);
   // Enumerates aDevice's capabilities if that has not been done yet. Returns
   // nullptr if the device could not be opened.
-  const nsTArray<VideoCaptureCapability>* EnsureCapabilities(
-      Device& aDevice);
+  const nsTArray<VideoCaptureCapability>* EnsureCapabilities(Device& aDevice);
 
   SequenceChecker mChecker;
   std::atomic<bool> mInvalidateDevices;
   nsTArray<Device> mDevices RTC_GUARDED_BY(mChecker);
+  // Created on first use, and only to enumerate and drive the devices Media
+  // Foundation does not report.
+  std::unique_ptr<VideoCaptureModule::DeviceInfo> mDirectShowInfo
+      RTC_GUARDED_BY(mChecker);
   // Hidden window used to receive WM_DEVICECHANGE, as in DeviceInfoDS.
   HWND mWindow RTC_GUARDED_BY(mChecker);
   HDEVNOTIFY mDeviceNotify RTC_GUARDED_BY(mChecker);

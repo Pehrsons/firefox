@@ -656,10 +656,9 @@ void VideoCaptureMF::DeliverSoftwareFrame(
   }
 
   if (MutexLock lock(&api_lock_); MOZ_LIKELY(mTrackingId)) {
-    mCaptureRecorder.Start(
-        0, "VideoCaptureMediaFoundation"_ns, *mTrackingId, aCapability.width,
-        aCapability.height,
-        ToImageType(aCapability.videoType));
+    mCaptureRecorder.Start(0, "VideoCaptureMediaFoundation"_ns, *mTrackingId,
+                           aCapability.width, aCapability.height,
+                           ToImageType(aCapability.videoType));
   }
 
   SetStride(stride);
