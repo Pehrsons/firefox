@@ -663,6 +663,16 @@ int MediaEngineRemoteVideoSource::DeliverFrame(
 
   gfx::IntSize dstSize = CalculateDesiredSize(input);
 
+  // CalculateDesiredSize works in the orientation the capability was
+  // negotiated in, i.e. the frame as the backend produced it. When the parent
+  // straightened a quarter turn for us the frame we received is transposed
+  // relative to that, so the target has to follow, or we squeeze a portrait
+  // frame back into a landscape target.
+  if ((aProps.backendRotation() == 90 || aProps.backendRotation() == 270) &&
+      aProps.rotation() != aProps.backendRotation()) {
+    std::swap(dstSize.width, dstSize.height);
+  }
+
   std::function<void()> callback_unused = []() {};
   webrtc::scoped_refptr<webrtc::I420BufferInterface> buffer =
       webrtc::WrapI420Buffer(
@@ -719,11 +729,11 @@ int MediaEngineRemoteVideoSource::DeliverFrame(
 #ifdef DEBUG
   static uint32_t frame_num = 0;
   LOG_FRAME(
-      "frame {} ({}x{})->({}x{}); rotation {}, rtpTimeStamp {}, ntpTimeMs "
-      "{}, renderTimeMs {}",
+      "frame {} ({}x{})->({}x{}); rotation {} (backend {}), rtpTimeStamp {}, "
+      "ntpTimeMs {}, renderTimeMs {}",
       frame_num++, aProps.width(), aProps.height(), dstSize.width,
-      dstSize.height, aProps.rotation(), aProps.rtpTimeStamp(),
-      aProps.ntpTimeMs(), aProps.renderTimeMs());
+      dstSize.height, aProps.rotation(), aProps.backendRotation(),
+      aProps.rtpTimeStamp(), aProps.ntpTimeMs(), aProps.renderTimeMs());
 #endif
 
   if (mScaledImageSize != dstSize) {

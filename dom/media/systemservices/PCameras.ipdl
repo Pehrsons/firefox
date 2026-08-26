@@ -43,8 +43,16 @@ struct VideoFrameProperties
   uint32_t rtpTimeStamp;
   int64_t ntpTimeMs;
   int64_t renderTimeMs;
+  // The rotation still to be applied to the buffer to straighten it, i.e.
+  // kVideoRotation_0 when the parent already straightened it.
   // See webrtc/**/rotation.h
   int rotation;
+  // The rotation the capture backend reported, before the parent had a chance
+  // to apply it. Equal to rotation when media.webrtc.capture.apply-rotation is
+  // false. Needed because the negotiated capability describes the frame as the
+  // backend produced it, so size calculations must use this rather than
+  // rotation.
+  int backendRotation;
   int yAllocatedSize;
   int uAllocatedSize;
   int vAllocatedSize;

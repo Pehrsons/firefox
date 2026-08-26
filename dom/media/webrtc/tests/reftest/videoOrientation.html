@@ -14,7 +14,7 @@
 (async () => {
   try {
     const stream =
-      await navigator.mediaDevices.getUserMedia({video: {width: 320, height: 240}});
+      await navigator.mediaDevices.getUserMedia({video: {width: 640, height: 480}});
     const video = document.getElementById("v");
     video.srcObject = stream;
     await new Promise(resolve =>

@@ -1,9 +1,38 @@
-defaults pref(media.navigator.permission.disabled,true) pref(media.devices.insecure.enabled,true) pref(media.getusermedia.insecure.enabled,true) pref(media.navigator.streams.fake,true) pref(media.getusermedia.camera.fake.test-pattern,true)
+defaults pref(media.navigator.permission.disabled,true) pref(media.devices.insecure.enabled,true) pref(media.getusermedia.insecure.enabled,true) pref(media.getusermedia.camera.fake.test-pattern,true)
 
+# The rendered frame must end up upright regardless of where the rotation is
+# applied, so all three configurations below share the same references.
+#
+# The query strings on the test url only serve to give each configuration a
+# distinct name in the reftest log; the page ignores them.
+#
 # The fuzz tolerance covers 4:2:0 chroma-subsampling blend along the
 # red/blue quadrant boundary (an L-shaped edge, not the whole frame), not a
-# systematic YUV->sRGB conversion error.
-fuzzy(0-150,0-2200) pref(media.getusermedia.camera.fake.rotation,0)   == videoOrientation.html videoOrientation-ref.html?angle=0
-fuzzy(0-150,0-2200) pref(media.getusermedia.camera.fake.rotation,90)  == videoOrientation.html videoOrientation-ref.html?angle=90
-fuzzy(0-150,0-2200) pref(media.getusermedia.camera.fake.rotation,180) == videoOrientation.html videoOrientation-ref.html?angle=180
-fuzzy(0-150,0-2200) pref(media.getusermedia.camera.fake.rotation,270) == videoOrientation.html videoOrientation-ref.html?angle=270
+# systematic YUV->sRGB conversion error. Rotating and rescaling widens that
+# blend, so the quarter-turn cases sit higher than 0/180.
+
+# Real capture backend (through CamerasParent), parent straightens the frame.
+fuzzy(0-94,0-2176) pref(media.getusermedia.camera.fake.force,true) pref(media.webrtc.capture.apply-rotation,true) pref(media.getusermedia.camera.fake.rotation,0)   == videoOrientation.html?capture-applied videoOrientation-ref.html?angle=0
+fuzzy(0-94,0-2016) pref(media.getusermedia.camera.fake.force,true) pref(media.webrtc.capture.apply-rotation,true) pref(media.getusermedia.camera.fake.rotation,90)  == videoOrientation.html?capture-applied videoOrientation-ref.html?angle=90
+fuzzy(0-94,0-2176) pref(media.getusermedia.camera.fake.force,true) pref(media.webrtc.capture.apply-rotation,true) pref(media.getusermedia.camera.fake.rotation,180) == videoOrientation.html?capture-applied videoOrientation-ref.html?angle=180
+fuzzy(0-94,0-2016) pref(media.getusermedia.camera.fake.force,true) pref(media.webrtc.capture.apply-rotation,true) pref(media.getusermedia.camera.fake.rotation,270) == videoOrientation.html?capture-applied videoOrientation-ref.html?angle=270
+
+# Real capture backend, rotation left as metadata for the consumer to apply.
+# The non-zero rotations fail: MediaEngineRemoteVideoSource does not pass the
+# rotation on when it appends the frame - AppendWebrtcLocalFrame has no
+# rotation parameter, unlike AppendWebrtcRemoteFrame - so the compositor never
+# learns it has to rotate. Note 180 fails too, which rules out a dimension
+# problem: the rotation is simply dropped. The enginefake rows below render the
+# same frames correctly, so the compositor side of the plumbing is fine; only
+# the capture path loses the tag. Remove the `fails` once that is plumbed.
+fuzzy(0-94,0-2176) pref(media.getusermedia.camera.fake.force,true) pref(media.webrtc.capture.apply-rotation,false) pref(media.getusermedia.camera.fake.rotation,0)   == videoOrientation.html?capture-unapplied videoOrientation-ref.html?angle=0
+fails pref(media.getusermedia.camera.fake.force,true) pref(media.webrtc.capture.apply-rotation,false) pref(media.getusermedia.camera.fake.rotation,90)  == videoOrientation.html?capture-unapplied videoOrientation-ref.html?angle=90
+fails pref(media.getusermedia.camera.fake.force,true) pref(media.webrtc.capture.apply-rotation,false) pref(media.getusermedia.camera.fake.rotation,180) == videoOrientation.html?capture-unapplied videoOrientation-ref.html?angle=180
+fails pref(media.getusermedia.camera.fake.force,true) pref(media.webrtc.capture.apply-rotation,false) pref(media.getusermedia.camera.fake.rotation,270) == videoOrientation.html?capture-unapplied videoOrientation-ref.html?angle=270
+
+# MediaEngineFake, which bypasses CamerasParent entirely and so never applies
+# rotation itself. Equivalent to the unapplied case above, by a different path.
+fuzzy(0-94,0-2176) pref(media.navigator.streams.fake,true) pref(media.getusermedia.camera.fake.rotation,0)   == videoOrientation.html?enginefake videoOrientation-ref.html?angle=0
+fuzzy(0-133,0-2656) pref(media.navigator.streams.fake,true) pref(media.getusermedia.camera.fake.rotation,90)  == videoOrientation.html?enginefake videoOrientation-ref.html?angle=90
+fuzzy(0-133,0-2656) pref(media.navigator.streams.fake,true) pref(media.getusermedia.camera.fake.rotation,180) == videoOrientation.html?enginefake videoOrientation-ref.html?angle=180
+fuzzy(0-133,0-2656) pref(media.navigator.streams.fake,true) pref(media.getusermedia.camera.fake.rotation,270) == videoOrientation.html?enginefake videoOrientation-ref.html?angle=270

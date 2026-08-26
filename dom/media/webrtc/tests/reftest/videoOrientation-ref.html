@@ -17,26 +17,26 @@
     background: rgb(0, 0, 255);
   }
 
-  /* Base 320x240 frame; the bottom-right quadrant is the fake camera's
+  /* Base 640x480 frame; the bottom-right quadrant is the fake camera's
      test-pattern marker before any rotation is applied. Dimensions swap
      for 90/270 along with the frame. */
-  .rot0 #frame, .rot180 #frame { width: 320px; height: 240px; }
-  .rot90 #frame, .rot270 #frame { width: 240px; height: 320px; }
-  .rot0 #square, .rot180 #square { width: 160px; height: 120px; }
-  .rot90 #square, .rot270 #square { width: 120px; height: 160px; }
+  .rot0 #frame, .rot180 #frame { width: 640px; height: 480px; }
+  .rot90 #frame, .rot270 #frame { width: 480px; height: 640px; }
+  .rot0 #square, .rot180 #square { width: 320px; height: 240px; }
+  .rot90 #square, .rot270 #square { width: 240px; height: 320px; }
 
   /* Where the quadrant lands after each rotation, starting from its
      unrotated bottom-right position. */
-  .rot0 #square { left: 160px; top: 120px; }
-  .rot90 #square { left: 0; top: 160px; }
+  .rot0 #square { left: 320px; top: 240px; }
+  .rot90 #square { left: 0; top: 320px; }
   .rot180 #square { left: 0; top: 0; }
-  .rot270 #square { left: 120px; top: 0; }
+  .rot270 #square { left: 240px; top: 0; }
 </style>
 </head>
 <body>
 <!--
   Independent, trivially-correct rendering of the fake test-pattern frame
-  (320x240 red background, bottom-right quadrant blue) as it should appear
+  (640x480 red background, bottom-right quadrant blue) as it should appear
   after the CVO rotation named by the angle query param.
 -->
 <div id="frame"></div>

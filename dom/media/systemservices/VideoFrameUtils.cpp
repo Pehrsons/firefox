@@ -22,6 +22,7 @@ uint32_t VideoFrameUtils::TotalRequiredBufferSize(
 
 void VideoFrameUtils::InitFrameBufferProperties(
     const webrtc::VideoFrame& aVideoFrame,
+    webrtc::VideoRotation aBackendRotation,
     camera::VideoFrameProperties& aDestProps) {
   aDestProps.captureTime() = TimeStamp::Now();
 
@@ -33,6 +34,7 @@ void VideoFrameUtils::InitFrameBufferProperties(
   aDestProps.ntpTimeMs() = aVideoFrame.ntp_time_ms();
   aDestProps.renderTimeMs() = aVideoFrame.render_time_ms();
   aDestProps.rotation() = aVideoFrame.rotation();
+  aDestProps.backendRotation() = aBackendRotation;
 
   auto i420 = aVideoFrame.video_frame_buffer()->ToI420();
   auto height = i420->height();
