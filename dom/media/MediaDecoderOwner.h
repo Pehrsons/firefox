@@ -167,7 +167,8 @@ class MediaDecoderOwner {
   enum class ForceInvalidate { No, Yes };
   virtual void Invalidate(ImageSizeChanged aImageSizeChanged,
                           const Maybe<nsIntSize>& aNewIntrinsicSize,
-                          ForceInvalidate aForceInvalidate) {}
+                          ForceInvalidate aForceInvalidate,
+                          VideoRotation aRotation) {}
 
   // Called after the MediaStream we're playing rendered a frame to aContainer
   // with a different principalHandle than the previous frame.

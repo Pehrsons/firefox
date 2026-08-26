@@ -5,6 +5,7 @@
 #ifndef VideoOutput_h
 #define VideoOutput_h
 
+#include "MediaInfo.h"
 #include "MediaTrackListener.h"
 #include "VideoFrameContainer.h"
 
@@ -103,6 +104,7 @@ class VideoOutput : public DirectMediaTrackListener {
           image, chunk.mTimeStamp, frameId, mProducerID,
           chunk.mProcessingDuration, chunk.mMediaTime, chunk.mWebrtcCaptureTime,
           chunk.mWebrtcReceiveTime, chunk.mRtpTimestamp);
+      nonOwningImage.mRotation = Some(chunk.mRotation);
       images.AppendElement(std::move(nonOwningImage));
 
       lastPrincipalHandle = chunk.GetPrincipalHandle();
@@ -132,9 +134,20 @@ class VideoOutput : public DirectMediaTrackListener {
 
     mVideoFrameContainer->SetCurrentFrames(
         mFrames[0].second.mFrame.GetIntrinsicSize(), images);
-    mMainThread->Dispatch(NewRunnableMethod("VideoFrameContainer::Invalidate",
-                                            mVideoFrameContainer,
-                                            &VideoFrameContainer::Invalidate));
+
+    VideoRotation newRotation =
+        mVideoFrameContainer->GetRotation().valueOr(VideoRotation::kDegree_0);
+    if (newRotation != mLastRotation) {
+      mLastRotation = newRotation;
+      mMainThread->Dispatch(NewRunnableMethod<uint32_t>(
+          "VideoFrameContainer::InvalidateWithFlags", mVideoFrameContainer,
+          &VideoFrameContainer::InvalidateWithFlags,
+          VideoFrameContainer::INVALIDATE_FORCE));
+    } else {
+      mMainThread->Dispatch(NewRunnableMethod(
+          "VideoFrameContainer::Invalidate", mVideoFrameContainer,
+          &VideoFrameContainer::Invalidate));
+    }
   }
 
   FrameID NewFrameID() {
@@ -237,6 +250,7 @@ class VideoOutput : public DirectMediaTrackListener {
 
   Mutex mMutex MOZ_UNANNOTATED;
   TimeStamp mLastFrameTime;
+  VideoRotation mLastRotation = VideoRotation::kDegree_0;
   // Once the frame is forced to black, we initialize mBlackImage for use in any
   // following forced-black frames.
   RefPtr<Image> mBlackImage;

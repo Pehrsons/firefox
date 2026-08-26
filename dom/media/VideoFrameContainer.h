@@ -96,6 +96,13 @@ class VideoFrameContainer {
 
   bool SupportsOnly8BitImage() const { return mSupportsOnly8BitImage; }
 
+  // The rotation carried by the most recent frame handed to
+  // SetCurrentFrame(s)(). Call only on the main thread.
+  Maybe<VideoRotation> GetRotation() const {
+    NS_ASSERTION(NS_IsMainThread(), "Must call on main thread");
+    return mMainThreadState.mRotation;
+  }
+
  protected:
   void SetCurrentFramesLocked(
       const gfx::IntSize& aIntrinsicSize,
@@ -121,6 +128,8 @@ class VideoFrameContainer {
     // size on the element, request a frame reflow and then reset this to
     // Nothing.
     Maybe<gfx::IntSize> mNewIntrinsicSize;
+    // The main thread mirror of mRotation below, in case it has changed.
+    Maybe<VideoRotation> mRotation;
   } mMainThreadState;
 
   Mutex mMutex;
@@ -130,6 +139,10 @@ class VideoFrameContainer {
   // specifies that the Image should be stretched to have the correct aspect
   // ratio.
   Maybe<gfx::IntSize> mIntrinsicSize MOZ_GUARDED_BY(mMutex);
+  // The rotation of the last image passed to SetCurrentFramesLocked(), used
+  // to detect a change since the previous call. Mirrored to
+  // mMainThreadState.mRotation for consumption on the main thread.
+  Maybe<VideoRotation> mRotation MOZ_GUARDED_BY(mMutex);
   // We maintain our own mFrameID which is auto-incremented at every
   // SetCurrentFrame() or NewFrameID() call.
   ImageContainer::FrameID mFrameID;

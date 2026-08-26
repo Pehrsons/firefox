@@ -1563,6 +1563,8 @@ class MediaPipelineReceiveVideo::PipelineListener
     }
 
     VideoSegment segment;
+    mozilla::VideoRotation rotation =
+        static_cast<mozilla::VideoRotation>(aVideoFrame.rotation());
     auto size = image->GetSize();
     auto processingDuration =
         aVideoFrame.processing_time()
@@ -1573,7 +1575,7 @@ class MediaPipelineReceiveVideo::PipelineListener
         image.forget(), size, principal,
         /* aForceBlack */ false, TimeStamp::Now(), processingDuration,
         aVideoFrame.rtp_timestamp(), aVideoFrame.ntp_time_ms(),
-        receiveTime ? receiveTime->us() : 0);
+        receiveTime ? receiveTime->us() : 0, rotation);
     mSource->AppendData(&segment);
   }
 

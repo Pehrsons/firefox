@@ -427,6 +427,7 @@ class ImageContainer final : public SupportsThreadSafeWeakPtr<ImageContainer> {
     CaptureTime mWebrtcCaptureTime = AsVariant(Nothing());
     ReceiveTime mWebrtcReceiveTime;
     RtpTimestamp mRtpTimestamp;
+    Maybe<VideoRotation> mRotation;
   };
   /**
    * Set aImages as the list of timestamped to display. The Images must have
@@ -529,6 +530,7 @@ class ImageContainer final : public SupportsThreadSafeWeakPtr<ImageContainer> {
     FrameID mFrameID = 0;
     ProducerID mProducerID = 0;
     bool mComposited = false;
+    Maybe<VideoRotation> mRotation;
   };
   /**
    * Copy the current Image list to aImages.

@@ -138,6 +138,16 @@ void VideoFrameContainer::SetCurrentFramesLocked(
         }));
   }
 
+  Maybe<VideoRotation> rotation =
+      aImages.IsEmpty() ? Nothing() : aImages[0].mRotation;
+  if (rotation != mRotation) {
+    mRotation = rotation;
+    mMainThread->Dispatch(NS_NewRunnableFunction(
+        "RotationChanged", [this, self = RefPtr(this), rotation]() {
+          mMainThreadState.mRotation = rotation;
+        }));
+  }
+
   gfx::IntSize oldFrameSize = mImageContainer->GetCurrentSize();
 
   // When using the OMX decoder, destruction of the current image can indirectly
@@ -208,6 +218,7 @@ void VideoFrameContainer::ClearFutureFrames(TimeStamp aNow) {
         img->mImage, img->mTimeStamp, img->mFrameID, img->mProducerID,
         img->mProcessingDuration, img->mMediaTime, img->mWebrtcCaptureTime,
         img->mWebrtcReceiveTime, img->mRtpTimestamp));
+    currentFrame.LastElement().mRotation = img->mRotation;
     mImageContainer->SetCurrentImages(currentFrame);
   }
 }
@@ -249,7 +260,10 @@ void VideoFrameContainer::InvalidateWithFlags(uint32_t aFlags) {
 
   MediaDecoderOwner::ForceInvalidate forceInvalidate{
       (aFlags & INVALIDATE_FORCE) != 0};
-  mOwner->Invalidate(imageSizeChanged, newIntrinsicSize, forceInvalidate);
+  VideoRotation rotation =
+      mMainThreadState.mRotation.valueOr(VideoRotation::kDegree_0);
+  mOwner->Invalidate(imageSizeChanged, newIntrinsicSize, forceInvalidate,
+                     rotation);
 }
 
 }  // namespace mozilla

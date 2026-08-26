@@ -4620,10 +4620,6 @@ TEST_F(JsepSessionTest, TestExtmap) {
       "draft-holmer-rmcat-transport-wide-cc-extensions-01"_ns,
       offerExtmap[3].extensionname);
   ASSERT_EQ(7U, offerExtmap[3].entry);
-  ASSERT_EQ("foo"_ns, offerExtmap[4].extensionname);
-  ASSERT_EQ(8U, offerExtmap[4].entry);
-  ASSERT_EQ("bar"_ns, offerExtmap[5].extensionname);
-  ASSERT_EQ(9U, offerExtmap[5].entry);
 
   UniquePtr<Sdp> parsedAnswer(Parse(answer));
   ASSERT_EQ(1U, parsedAnswer->GetMediaSectionCount());
@@ -4645,7 +4641,7 @@ TEST_F(JsepSessionTest, TestExtmap) {
   ASSERT_EQ(7U, answerExtmap[2].entry);
   // We ensure that the entry for "bar" matches what was in the offer
   ASSERT_EQ("bar"_ns, answerExtmap[3].extensionname);
-  ASSERT_EQ(9U, answerExtmap[3].entry);
+  ASSERT_EQ(10U, answerExtmap[3].entry);
 }
 
 TEST_F(JsepSessionTest, TestExtmapDefaults) {
@@ -4690,7 +4686,7 @@ TEST_F(JsepSessionTest, TestExtmapDefaults) {
   ASSERT_TRUE(
       offerVideoMediaAttrs.HasAttribute(SdpAttribute::kExtmapAttribute));
   auto& offerVideoExtmap = offerVideoMediaAttrs.GetExtmap().mExtmaps;
-  ASSERT_EQ(5U, offerVideoExtmap.size());
+  ASSERT_EQ(6U, offerVideoExtmap.size());
 
   ASSERT_EQ(3U, offerVideoExtmap[0].entry);
   ASSERT_EQ("urn:ietf:params:rtp-hdrext:sdes:mid"_ns,
@@ -4737,7 +4733,7 @@ TEST_F(JsepSessionTest, TestExtmapDefaults) {
   ASSERT_TRUE(
       answerVideoMediaAttrs.HasAttribute(SdpAttribute::kExtmapAttribute));
   auto& answerVideoExtmap = answerVideoMediaAttrs.GetExtmap().mExtmaps;
-  ASSERT_EQ(4U, answerVideoExtmap.size());
+  ASSERT_EQ(5U, answerVideoExtmap.size());
 
   ASSERT_EQ(3U, answerVideoExtmap[0].entry);
   ASSERT_EQ("urn:ietf:params:rtp-hdrext:sdes:mid"_ns,
@@ -4792,11 +4788,11 @@ TEST_F(JsepSessionTest, TestExtmapWithDuplicates) {
       offerExtmap[3].extensionname);
   ASSERT_EQ(7U, offerExtmap[3].entry);
   ASSERT_EQ("foo"_ns, offerExtmap[4].extensionname);
-  ASSERT_EQ(8U, offerExtmap[4].entry);
+  ASSERT_EQ(9U, offerExtmap[4].entry);
   ASSERT_EQ("bar"_ns, offerExtmap[5].extensionname);
-  ASSERT_EQ(9U, offerExtmap[5].entry);
+  ASSERT_EQ(10U, offerExtmap[5].entry);
   ASSERT_EQ("baz"_ns, offerExtmap[6].extensionname);
-  ASSERT_EQ(10U, offerExtmap[6].entry);
+  ASSERT_EQ(111U, offerExtmap[6].entry);
 }
 
 TEST_F(JsepSessionTest, TestExtmapZeroId) {

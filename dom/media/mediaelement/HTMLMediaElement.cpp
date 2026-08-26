@@ -2721,7 +2721,8 @@ void HTMLMediaElement::AbortExistingLoads() {
   if (IsVideo() && hadVideo) {
     // Ensure we render transparent black after resetting video resolution.
     Maybe<nsIntSize> size = Some(nsIntSize(0, 0));
-    Invalidate(ImageSizeChanged::Yes, size, ForceInvalidate::No);
+    Invalidate(ImageSizeChanged::Yes, size, ForceInvalidate::No,
+               VideoRotation::kDegree_0);
   }
 
   // As aborting current load would stop current playback, so we have no need to
@@ -6304,7 +6305,7 @@ void HTMLMediaElement::MetadataLoaded(const MediaInfo* aInfo,
   if (IsVideo() && HasVideo()) {
     QueueEvent(u"resize"_ns);
     Invalidate(ImageSizeChanged::No, Some(mMediaInfo.mVideo.mDisplay),
-               ForceInvalidate::No);
+               ForceInvalidate::No, mMediaInfo.mVideo.mRotation);
   }
   NS_ASSERTION(!HasVideo() || (mMediaInfo.mVideo.mDisplay.width > 0 &&
                                mMediaInfo.mVideo.mDisplay.height > 0),
@@ -7379,10 +7380,11 @@ void HTMLMediaElement::NotifyDecoderPrincipalChanged() {
 
 void HTMLMediaElement::Invalidate(ImageSizeChanged aImageSizeChanged,
                                   const Maybe<nsIntSize>& aNewIntrinsicSize,
-                                  ForceInvalidate aForceInvalidate) {
+                                  ForceInvalidate aForceInvalidate,
+                                  VideoRotation aRotation) {
   nsIFrame* frame = GetPrimaryFrame();
   if (aNewIntrinsicSize) {
-    UpdateMediaSize(aNewIntrinsicSize.value());
+    UpdateMediaSize(aNewIntrinsicSize.value(), aRotation);
     if (frame) {
       nsPresContext* presContext = frame->PresContext();
       PresShell* presShell = presContext->PresShell();
@@ -7407,15 +7409,28 @@ void HTMLMediaElement::Invalidate(ImageSizeChanged aImageSizeChanged,
   SVGObserverUtils::InvalidateDirectRenderingObservers(this);
 }
 
-void HTMLMediaElement::UpdateMediaSize(const nsIntSize& aSize) {
+static nsIntSize EffectiveVideoSize(const nsIntSize& aSize,
+                                    VideoRotation aRotation) {
+  if (aRotation == VideoRotation::kDegree_90 ||
+      aRotation == VideoRotation::kDegree_270) {
+    return nsIntSize(aSize.height, aSize.width);
+  }
+  return aSize;
+}
+
+void HTMLMediaElement::UpdateMediaSize(const nsIntSize& aSize,
+                                       VideoRotation aRotation) {
   MOZ_ASSERT(NS_IsMainThread());
 
   if (IsVideo() && mReadyState != HAVE_NOTHING &&
-      mMediaInfo.mVideo.mDisplay != aSize) {
+      EffectiveVideoSize(mMediaInfo.mVideo.mDisplay,
+                         mMediaInfo.mVideo.mRotation) !=
+          EffectiveVideoSize(aSize, aRotation)) {
     QueueEvent(u"resize"_ns);
   }
 
   mMediaInfo.mVideo.mDisplay = aSize;
+  mMediaInfo.mVideo.mRotation = aRotation;
   mWatchManager.ManualNotify(&HTMLMediaElement::UpdateReadyStateInternal);
 }
 

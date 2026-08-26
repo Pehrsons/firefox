@@ -1,0 +1,158 @@
+<!DOCTYPE HTML>
+<html>
+<head>
+  <script type="application/javascript" src="pc.js"></script>
+  <script type="application/javascript" src="parser_rtp.js"></script>
+  <script type="application/javascript" src="sdpUtils.js"></script>
+</head>
+<body>
+<pre id="test">
+<script type="application/javascript">
+  createHTML({
+    bug: "1340372",
+    title: "Video Orientation RTP header extension and rendered pixels " +
+      "through a real negotiated connection"
+  });
+
+  const VIDEO_ORIENTATION_URI = "urn:3gpp:video-orientation";
+
+  // The fake test-pattern frame (320x240 landscape): red background with a
+  // 40x40 blue square at the bottom-right. After 90 CW rotation the frame
+  // displays as 240x320 with the blue square at the bottom-left.
+  const FRAME_W = 320;
+  const FRAME_H = 240;
+  const SAMPLE_INSET = 10;
+  const RED_MIN_R = 180;
+  const RED_MAX_B = 60;
+  const BLUE_MIN_B = 180;
+  const BLUE_MAX_R = 60;
+
+  var test;
+  runNetworkTest(async function (options) {
+    await SpecialPowers.pushPrefEnv({
+      set: [
+        ["media.getusermedia.camera.fake.rotation", 90],
+        ["media.getusermedia.camera.fake.test-pattern", true],
+      ]
+    });
+
+    test = new PeerConnectionTest(options);
+    // fake: true forces MediaEngineFake on the sending side even when a
+    // loopback device is present, which is required for the rotation pref
+    // to take effect (matches test_getUserMedia_videoOrientation.html).
+    // Width/height are pinned via constraints since MediaEngineFake's
+    // unconstrained default resolution differs between debug and opt builds.
+    test.setMediaConstraints(
+      [{video: {width: FRAME_W, height: FRAME_H}, fake: true}],
+      [{video: true}]);
+
+    let havePacketWithVO;
+    let sdpExtmaps;
+
+    test.chain.insertBefore('PC_LOCAL_SET_REMOTE_DESCRIPTION', [
+      function PC_REMOTE_START_VIDEO_ORIENTATION_PACKET_SNIFF() {
+        sdpExtmaps = sdputils.findExtmapIdsUrnsDirections(
+          test.originalAnswer.sdp);
+        const voEntry = sdpExtmaps.find(([, urn]) => urn == VIDEO_ORIENTATION_URI);
+        ok(voEntry, "Video Orientation extension is in negotiated SDP");
+        const voExtId = parseInt(voEntry[0]);
+        const pc = SpecialPowers.wrap(test.pcRemote._pc);
+        pc.mozEnablePacketDump(0, "rtp", false);
+
+        async function nextPacket() {
+          return new Promise(res => pc.mozSetPacketCallback((...args) => {
+            pc.mozSetPacketCallback(() => {});
+            res(ParseRtpPacket(args[3]));
+          }));
+        }
+
+        havePacketWithVO = (async () => {
+          while (true) {
+            const packet = await nextPacket();
+            if (packet.header.marker === 1 &&
+                packet.header.extensions.find(e => e.id == voExtId)) {
+              pc.mozDisablePacketDump(0, "rtp", false);
+              return { packet, voExtId };
+            }
+          }
+        })();
+      }
+    ]);
+
+    test.chain.insertBefore('PC_REMOTE_WAIT_FOR_MEDIA_FLOW', [
+      async function PC_REMOTE_CHECK_VIDEO_ORIENTATION_VALUE() {
+        const { packet, voExtId } = await havePacketWithVO;
+        const ext = packet.header.extensions.find(e => e.id == voExtId);
+        is(ext.data.byteLength, 1, "Video Orientation extension is 1 byte");
+        const rotation = ext.data.getUint8(0) & 0x03;
+        is(rotation, 1,
+          "Video Orientation rotation bits are 1 (90°) reflecting the " +
+          "fake camera rotation pref");
+      }
+    ]);
+
+    test.chain.insertAfter('PC_REMOTE_WAIT_FOR_MEDIA_FLOW', [
+      async function PC_REMOTE_CHECK_RENDERED_PIXELS() {
+        const video = test.pcRemote.remoteMediaElements[0];
+        ok(video, "Remote video element exists");
+
+        // The 90° rotation may have already propagated by the time media
+        // flow is confirmed; only wait for a further resize if it hasn't.
+        if (!(video.videoWidth > 0 && video.videoWidth < video.videoHeight)) {
+          await haveEvent(video, "resize",
+            wait(10000, new Error("Timeout waiting for rotated resize")));
+        }
+        is(video.videoWidth, FRAME_H,
+          "Remote videoWidth is 240 after 90° rotation");
+        is(video.videoHeight, FRAME_W,
+          "Remote videoHeight is 320 after 90° rotation");
+
+        if (navigator.userAgent.includes("Android")) {
+          // Android hardware is unable to draw the captured frame to the
+          // video surface here, so rendered pixels come back solid black.
+          // The dimension checks above (and the wire-level checks elsewhere
+          // in this test) are unaffected and still run.
+          return;
+        }
+
+        await new Promise(resolve => video.requestVideoFrameCallback(resolve));
+
+        const cap = document.createElement("canvas");
+        cap.width = video.videoWidth;
+        cap.height = video.videoHeight;
+        const ctx = cap.getContext("2d", {willReadFrequently: true});
+        ctx.drawImage(video, 0, 0);
+
+        const sample = (x, y) => {
+          const d = ctx.getImageData(x, y, 1, 1).data;
+          return {r: d[0], g: d[1], b: d[2]};
+        };
+
+        const w = cap.width;
+        const h = cap.height;
+
+        const blue = sample(SAMPLE_INSET, h - SAMPLE_INSET);
+        info(`blue-expected bottom-left: RGB(${blue.r},${blue.g},${blue.b})`);
+        ok(blue.b >= BLUE_MIN_B && blue.r <= BLUE_MAX_R,
+          `blue square at bottom-left (b=${blue.b} r=${blue.r})`);
+
+        const redChecks = [
+          {x: SAMPLE_INSET,     y: SAMPLE_INSET,     label: "top-left"},
+          {x: w - SAMPLE_INSET, y: SAMPLE_INSET,     label: "top-right"},
+          {x: w - SAMPLE_INSET, y: h - SAMPLE_INSET, label: "bottom-right"},
+        ];
+        for (const rc of redChecks) {
+          const px = sample(rc.x, rc.y);
+          info(`red-expected ${rc.label}: RGB(${px.r},${px.g},${px.b})`);
+          ok(px.r >= RED_MIN_R && px.b <= RED_MAX_B,
+            `background red at ${rc.label} (r=${px.r} b=${px.b})`);
+        }
+      }
+    ]);
+
+    return test.run();
+  });
+</script>
+</pre>
+</body>
+</html>

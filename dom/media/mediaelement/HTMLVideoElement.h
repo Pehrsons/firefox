@@ -46,7 +46,8 @@ class HTMLVideoElement final : public HTMLMediaElement {
 
   void Invalidate(ImageSizeChanged aImageSizeChanged,
                   const Maybe<nsIntSize>& aNewIntrinsicSize,
-                  ForceInvalidate aForceInvalidate) override;
+                  ForceInvalidate aForceInvalidate,
+                  VideoRotation aRotation) override;
 
   bool IsVideo() const override { return true; }
 
@@ -71,7 +72,7 @@ class HTMLVideoElement final : public HTMLMediaElement {
 
   mozilla::Maybe<mozilla::CSSIntSize> GetVideoSize() const;
 
-  void UpdateMediaSize(const nsIntSize& aSize) override;
+  void UpdateMediaSize(const nsIntSize& aSize, VideoRotation aRotation) override;
 
   nsresult SetAcceptHeader(nsIHttpChannel* aChannel) override;
 

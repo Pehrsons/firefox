@@ -408,13 +408,14 @@ class HTMLMediaElement : public nsGenericHTMLElement,
 
   void GetEMEInfo(dom::EMEDebugInfo& aInfo);
 
-  // Update the visual size of the media. Called from the decoder on the
-  // main thread when/if the size changes.
-  virtual void UpdateMediaSize(const nsIntSize& aSize);
+  // Update the visual size and rotation of the media. Called from the
+  // decoder on the main thread when/if either changes.
+  virtual void UpdateMediaSize(const nsIntSize& aSize, VideoRotation aRotation);
 
   void Invalidate(ImageSizeChanged aImageSizeChanged,
                   const Maybe<nsIntSize>& aNewIntrinsicSize,
-                  ForceInvalidate aForceInvalidate) override;
+                  ForceInvalidate aForceInvalidate,
+                  VideoRotation aRotation) override;
 
   // Returns the CanPlayStatus indicating if we can handle the
   // full MIME type including the optional codecs parameter.
