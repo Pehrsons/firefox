@@ -58,6 +58,16 @@ if CONFIG["MOZ_WEBRTC"]:
             "mf_video_capture/video_capture_mf.cc",
         ]
 
+    if CONFIG["OS_TARGET"] == "WINNT":
+        # Not unified: pulls in windows.h and the WinRT headers.
+        SOURCES += [
+            "CameraDeviceChangeWin.cpp",
+        ]
+    else:
+        UNIFIED_SOURCES += [
+            "CameraDeviceChangeNone.cpp",
+        ]
+
     if CONFIG["OS_TARGET"] == "Android":
         UNIFIED_SOURCES += [
             "EmptyDesktopCapturer.cpp",

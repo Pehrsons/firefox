@@ -19,9 +19,8 @@ namespace webrtc::videocapturemodule {
 /**
  * DeviceInfo implementation for the Media Foundation camera backend.
  *
- * Single threaded except for DeviceChange(), which happens on the thread that
- * pumps messages for the notification window -- in practice the same thread,
- * since CamerasParent's VideoCapture thread is a UI thread on Windows.
+ * Single threaded. DeviceChange() is called by the platform device-change
+ * monitor, on the same video capture thread.
  *
  * Unlike the AVFoundation backend, capabilities are enumerated lazily per
  * device rather than for all devices up front: enumerating a device's
@@ -88,10 +87,6 @@ class DeviceInfoMF : public DeviceInfoImpl {
   // Foundation does not report.
   std::unique_ptr<VideoCaptureModule::DeviceInfo> mDirectShowInfo
       RTC_GUARDED_BY(mChecker);
-  // Hidden window used to receive WM_DEVICECHANGE, as in DeviceInfoDS.
-  HWND mWindow RTC_GUARDED_BY(mChecker);
-  HDEVNOTIFY mDeviceNotify RTC_GUARDED_BY(mChecker);
-  bool mWindowClassRegistered RTC_GUARDED_BY(mChecker);
 };
 
 }  // namespace webrtc::videocapturemodule

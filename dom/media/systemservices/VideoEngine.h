@@ -69,6 +69,13 @@ class VideoEngine : public webrtc::VideoInputFeedBack {
 
   void OnDeviceChange() override;
 
+  /**
+   * Tells the DeviceInfo, if one exists, that the set of devices may have
+   * changed, so that it drops any cache of its own and notifies listeners.
+   * Used where the platform reports device changes rather than the backend.
+   */
+  void NotifyDeviceChange();
+
   MediaEventSource<void>& DeviceChangeEvent() { return mDeviceChangeEvent; }
 
  private:

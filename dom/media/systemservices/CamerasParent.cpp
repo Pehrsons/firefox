@@ -6,6 +6,7 @@
 
 #include <algorithm>
 
+#include "CameraDeviceChange.h"
 #include "CamerasTypes.h"
 #include "MediaEngineSource.h"
 #include "PerformanceRecorder.h"
@@ -113,9 +114,9 @@ static StaticRefPtr<VideoCaptureFactory> sVideoCaptureFactory;
 // All live aggregators across all CamerasParent instances. The array and its
 // members are only modified on the video capture thread. The outermost refcount
 // is IPC background thread only.
-static StaticRefPtr<
-    media::Refcountable<nsTArray<std::unique_ptr<AggregateCapturer>>>>
-    sAggregators;
+using AggregatorArray =
+    media::Refcountable<nsTArray<std::unique_ptr<AggregateCapturer>>>;
+static StaticRefPtr<AggregatorArray> sAggregators;
 
 static void ClearCameraDeviceInfo() {
   ipc::AssertIsOnBackgroundThread();
@@ -194,8 +195,16 @@ MakeAndAddRefVideoCaptureThreadAndSingletons() {
     sEngines = MakeRefPtr<VideoEngineArray>();
     sEngines->AppendElements(CaptureEngine::MaxEngine);
 
-    sAggregators = MakeRefPtr<
-        media::Refcountable<nsTArray<std::unique_ptr<AggregateCapturer>>>>();
+    sAggregators = MakeRefPtr<AggregatorArray>();
+
+    MOZ_ALWAYS_SUCCEEDS(sVideoCaptureThread->Dispatch(NS_NewRunnableFunction(
+        "StartCameraDeviceChangeMonitor", [engines = RefPtr(sEngines.get())] {
+          StartCameraDeviceChangeMonitor([engines] {
+            if (VideoEngine* engine = engines->ElementAt(CameraEngine)) {
+              engine->NotifyDeviceChange();
+            }
+          });
+        })));
   }
 
   ++sNumCamerasParents;
@@ -214,6 +223,9 @@ static void ReleaseVideoCaptureThreadAndSingletons() {
 
   // No other CamerasParent instances alive. Clean up.
   LOG("Shutting down VideoEngines and the VideoCapture thread");
+  MOZ_ALWAYS_SUCCEEDS(sVideoCaptureThread->Dispatch(
+      NS_NewRunnableFunction("StopCameraDeviceChangeMonitor",
+                             [] { StopCameraDeviceChangeMonitor(); })));
   MOZ_ALWAYS_SUCCEEDS(sVideoCaptureThread->Dispatch(NS_NewRunnableFunction(
       __func__, [engines = RefPtr(sEngines.forget()),
                  aggregators = RefPtr(sAggregators.forget())] {

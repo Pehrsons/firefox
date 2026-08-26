@@ -141,6 +141,12 @@ int32_t VideoEngine::GenerateId() {
 
 void VideoEngine::OnDeviceChange() { mDeviceChangeEvent.Notify(); }
 
+void VideoEngine::NotifyDeviceChange() {
+  if (mDeviceInfo) {
+    mDeviceInfo->DeviceChange();
+  }
+}
+
 VideoEngine::VideoEngine(const CaptureDeviceType& aCaptureDeviceType,
                          RefPtr<VideoCaptureFactory> aVideoCaptureFactory)
     : mCaptureDevType(aCaptureDeviceType),

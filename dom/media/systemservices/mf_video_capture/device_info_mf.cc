@@ -4,9 +4,6 @@
 
 #include "device_info_mf.h"
 
-#include <dbt.h>
-#include <ksmedia.h>
-
 #include <algorithm>
 #include <cstdlib>
 #include <cstring>
@@ -17,96 +14,15 @@
 
 namespace webrtc::videocapturemodule {
 
-namespace {
+namespace {}  // namespace
 
-constexpr wchar_t kWindowClassName[] = L"DeviceInfoMF";
-
-bool IsVideoDevice(DEV_BROADCAST_HDR* aHeader) {
-  if (!aHeader || aHeader->dbch_devicetype != DBT_DEVTYP_DEVICEINTERFACE) {
-    return false;
-  }
-  auto* deviceInterface =
-      reinterpret_cast<DEV_BROADCAST_DEVICEINTERFACE_W*>(aHeader);
-  return deviceInterface->dbcc_classguid == KSCATEGORY_VIDEO_CAMERA;
-}
-
-LRESULT CALLBACK WndProc(HWND aWnd, UINT aMsg, WPARAM aWParam, LPARAM aLParam) {
-  if (aMsg == WM_CREATE) {
-    SetWindowLongPtr(
-        aWnd, GWLP_USERDATA,
-        reinterpret_cast<LONG_PTR>(
-            reinterpret_cast<LPCREATESTRUCT>(aLParam)->lpCreateParams));
-  } else if (aMsg == WM_DESTROY) {
-    SetWindowLongPtr(aWnd, GWLP_USERDATA, 0);
-  } else if (aMsg == WM_DEVICECHANGE) {
-    auto* self =
-        reinterpret_cast<DeviceInfoMF*>(GetWindowLongPtr(aWnd, GWLP_USERDATA));
-    if (self && IsVideoDevice(reinterpret_cast<DEV_BROADCAST_HDR*>(aLParam))) {
-      self->DeviceChange();
-    }
-  }
-  return DefWindowProcW(aWnd, aMsg, aWParam, aLParam);
-}
-
-HINSTANCE CurrentInstance() {
-  return reinterpret_cast<HINSTANCE>(GetModuleHandleW(nullptr));
-}
-
-}  // namespace
-
-DeviceInfoMF::DeviceInfoMF()
-    : mInvalidateDevices(false),
-      mWindow(nullptr),
-      mDeviceNotify(nullptr),
-      mWindowClassRegistered(false) {
+DeviceInfoMF::DeviceInfoMF() : mInvalidateDevices(false) {
   RTC_DCHECK_RUN_ON(&mChecker);
-
-  WNDCLASSW windowClass = {};
-  windowClass.lpfnWndProc = &WndProc;
-  windowClass.lpszClassName = kWindowClassName;
-  windowClass.hInstance = CurrentInstance();
-  mWindowClassRegistered = RegisterClassW(&windowClass) != 0;
-  if (!mWindowClassRegistered) {
-    RTC_LOG(LS_WARNING) << "Failed to register the device notification window "
-                           "class, error "
-                        << GetLastError();
-    return;
-  }
-
-  mWindow = CreateWindowW(kWindowClassName, nullptr, 0, CW_USEDEFAULT,
-                          CW_USEDEFAULT, CW_USEDEFAULT, CW_USEDEFAULT, nullptr,
-                          nullptr, CurrentInstance(), this);
-  if (!mWindow) {
-    RTC_LOG(LS_WARNING) << "Failed to create the device notification window, "
-                           "error "
-                        << GetLastError();
-    return;
-  }
-
-  DEV_BROADCAST_DEVICEINTERFACE_W filter = {};
-  filter.dbcc_size = sizeof(filter);
-  filter.dbcc_devicetype = DBT_DEVTYP_DEVICEINTERFACE;
-  filter.dbcc_classguid = KSCATEGORY_VIDEO_CAMERA;
-  mDeviceNotify = RegisterDeviceNotificationW(mWindow, &filter,
-                                              DEVICE_NOTIFY_WINDOW_HANDLE);
-  if (!mDeviceNotify) {
-    RTC_LOG(LS_WARNING) << "Failed to register for device notifications, error "
-                        << GetLastError();
-  }
 }
 
 DeviceInfoMF::~DeviceInfoMF() {
   RTC_DCHECK_RUN_ON(&mChecker);
   ReleaseDevices();
-  if (mDeviceNotify) {
-    UnregisterDeviceNotification(mDeviceNotify);
-  }
-  if (mWindow) {
-    DestroyWindow(mWindow);
-  }
-  if (mWindowClassRegistered) {
-    UnregisterClassW(kWindowClassName, CurrentInstance());
-  }
 }
 
 void DeviceInfoMF::DeviceChange() {
