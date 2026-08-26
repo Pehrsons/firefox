@@ -1,0 +1,48 @@
+<!DOCTYPE HTML>
+<html>
+<head>
+  <script type="application/javascript" src="mediaStreamPlayback.js"></script>
+</head>
+<body>
+<pre id="test">
+<video id="v" autoplay muted></video>
+<script type="application/javascript">
+"use strict";
+
+createHTML({
+  bug: "1340372",
+  title: "Camera rotation is reflected in local getUserMedia preview dimensions"
+});
+
+runTest(async () => {
+  // Pin dimensions via constraints so the initial size is deterministic
+  // (VIDEO_WIDTH_DEFAULT/VIDEO_HEIGHT_DEFAULT can differ between debug and
+  // opt builds). fake: true forces MediaEngineFake even when a loopback
+  // device is present, which is required for the rotation pref to take
+  // effect.
+  const stream =
+    await getUserMedia({video: {width: 640, height: 480}, fake: true});
+  const video = document.getElementById("v");
+  video.srcObject = stream;
+
+  await haveEvent(video, "resize",
+    wait(10000, new Error("Timeout waiting for initial resize")));
+  is(video.videoWidth, 640, "videoWidth is 640 before rotation");
+  is(video.videoHeight, 480, "videoHeight is 480 before rotation");
+
+  await SpecialPowers.pushPrefEnv({
+    set: [["media.getusermedia.camera.fake.rotation", 90]]
+  });
+
+  await haveEvent(video, "resize",
+    wait(10000, new Error("Timeout waiting for rotated resize")));
+  is(video.videoWidth, 480, "videoWidth is 480 after 90° rotation");
+  is(video.videoHeight, 640, "videoHeight is 640 after 90° rotation");
+
+  stream.getTracks().forEach(t => t.stop());
+  await SpecialPowers.popPrefEnv();
+});
+</script>
+</pre>
+</body>
+</html>

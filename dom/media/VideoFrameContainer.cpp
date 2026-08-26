@@ -262,6 +262,24 @@ void VideoFrameContainer::InvalidateWithFlags(uint32_t aFlags) {
       (aFlags & INVALIDATE_FORCE) != 0};
   VideoRotation rotation =
       mMainThreadState.mRotation.valueOr(VideoRotation::kDegree_0);
+  if (rotation != mImageContainer->GetRotation()) {
+    // Tell the compositor to physically rotate the video layer when
+    // rendering. WebRenderCommandBuilder reads ImageContainer::GetRotation()
+    // when building the display list on the main thread and applies it as a
+    // layer transform. The size may not have otherwise changed, so force a
+    // re-render.
+    mImageContainer->SetRotation(rotation);
+    forceInvalidate = MediaDecoderOwner::ForceInvalidate::Yes;
+    if (!newIntrinsicSize) {
+      newIntrinsicSize = CurrentIntrinsicSize();
+    }
+  }
+
+  // aNewIntrinsicSize stays in raw (unrotated) pixel dimensions here, matching
+  // how MediaInfo::mDisplay is used for regular (non-WebRTC) playback.
+  // MediaDecoderOwner applies aRotation to it atomically wherever it swaps
+  // width/height for display, so a reader can never observe one updated
+  // without the other.
   mOwner->Invalidate(imageSizeChanged, newIntrinsicSize, forceInvalidate,
                      rotation);
 }

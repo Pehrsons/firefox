@@ -72,7 +72,8 @@ class HTMLVideoElement final : public HTMLMediaElement {
 
   mozilla::Maybe<mozilla::CSSIntSize> GetVideoSize() const;
 
-  void UpdateMediaSize(const nsIntSize& aSize, VideoRotation aRotation) override;
+  void UpdateMediaSize(const nsIntSize& aSize,
+                       VideoRotation aRotation) override;
 
   nsresult SetAcceptHeader(nsIHttpChannel* aChannel) override;
 

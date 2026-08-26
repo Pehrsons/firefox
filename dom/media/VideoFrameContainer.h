@@ -96,13 +96,6 @@ class VideoFrameContainer {
 
   bool SupportsOnly8BitImage() const { return mSupportsOnly8BitImage; }
 
-  // The rotation carried by the most recent frame handed to
-  // SetCurrentFrame(s)(). Call only on the main thread.
-  Maybe<VideoRotation> GetRotation() const {
-    NS_ASSERTION(NS_IsMainThread(), "Must call on main thread");
-    return mMainThreadState.mRotation;
-  }
-
  protected:
   void SetCurrentFramesLocked(
       const gfx::IntSize& aIntrinsicSize,
@@ -129,6 +122,10 @@ class VideoFrameContainer {
     // Nothing.
     Maybe<gfx::IntSize> mNewIntrinsicSize;
     // The main thread mirror of mRotation below, in case it has changed.
+    // Consumed only by InvalidateWithFlags(), which compares it against
+    // mImageContainer->GetRotation() to decide whether the compositor layer
+    // rotation needs updating, and forwards it to MediaDecoderOwner::
+    // Invalidate() so it lands in MediaInfo alongside the intrinsic size.
     Maybe<VideoRotation> mRotation;
   } mMainThreadState;
 

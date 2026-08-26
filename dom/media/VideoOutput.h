@@ -135,19 +135,9 @@ class VideoOutput : public DirectMediaTrackListener {
     mVideoFrameContainer->SetCurrentFrames(
         mFrames[0].second.mFrame.GetIntrinsicSize(), images);
 
-    VideoRotation newRotation =
-        mVideoFrameContainer->GetRotation().valueOr(VideoRotation::kDegree_0);
-    if (newRotation != mLastRotation) {
-      mLastRotation = newRotation;
-      mMainThread->Dispatch(NewRunnableMethod<uint32_t>(
-          "VideoFrameContainer::InvalidateWithFlags", mVideoFrameContainer,
-          &VideoFrameContainer::InvalidateWithFlags,
-          VideoFrameContainer::INVALIDATE_FORCE));
-    } else {
-      mMainThread->Dispatch(NewRunnableMethod(
-          "VideoFrameContainer::Invalidate", mVideoFrameContainer,
-          &VideoFrameContainer::Invalidate));
-    }
+    mMainThread->Dispatch(NewRunnableMethod("VideoFrameContainer::Invalidate",
+                                            mVideoFrameContainer,
+                                            &VideoFrameContainer::Invalidate));
   }
 
   FrameID NewFrameID() {
@@ -250,7 +240,6 @@ class VideoOutput : public DirectMediaTrackListener {
 
   Mutex mMutex MOZ_UNANNOTATED;
   TimeStamp mLastFrameTime;
-  VideoRotation mLastRotation = VideoRotation::kDegree_0;
   // Once the frame is forced to black, we initialize mBlackImage for use in any
   // following forced-black frames.
   RefPtr<Image> mBlackImage;

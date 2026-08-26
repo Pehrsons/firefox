@@ -331,8 +331,9 @@ uint32_t HTMLVideoElement::VideoWidth() const {
     return 0;
   }
   gfx::IntSize size = GetVideoIntrinsicDimensions();
-  if (mMediaInfo.mVideo.mRotation == VideoRotation::kDegree_90 ||
-      mMediaInfo.mVideo.mRotation == VideoRotation::kDegree_270) {
+  VideoRotation rotation = RotationDegrees();
+  if (rotation == VideoRotation::kDegree_90 ||
+      rotation == VideoRotation::kDegree_270) {
     return size.height;
   }
   return size.width;
@@ -343,8 +344,9 @@ uint32_t HTMLVideoElement::VideoHeight() const {
     return 0;
   }
   gfx::IntSize size = GetVideoIntrinsicDimensions();
-  if (mMediaInfo.mVideo.mRotation == VideoRotation::kDegree_90 ||
-      mMediaInfo.mVideo.mRotation == VideoRotation::kDegree_270) {
+  VideoRotation rotation = RotationDegrees();
+  if (rotation == VideoRotation::kDegree_90 ||
+      rotation == VideoRotation::kDegree_270) {
     return size.width;
   }
   return size.height;

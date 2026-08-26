@@ -152,3 +152,5 @@ skip-if = [
 ["test_getUserMedia_trackCloneCleanup.html"]
 
 ["test_getUserMedia_trackEnded.html"]
+
+["test_getUserMedia_videoOrientation.html"]
