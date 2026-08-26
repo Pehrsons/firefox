@@ -1,0 +1,9 @@
+defaults pref(media.navigator.permission.disabled,true) pref(media.devices.insecure.enabled,true) pref(media.getusermedia.insecure.enabled,true) pref(media.navigator.streams.fake,true) pref(media.getusermedia.camera.fake.test-pattern,true)
+
+# The fuzz tolerance covers 4:2:0 chroma-subsampling blend along the
+# red/blue quadrant boundary (an L-shaped edge, not the whole frame), not a
+# systematic YUV->sRGB conversion error.
+fuzzy(0-150,0-2200) pref(media.getusermedia.camera.fake.rotation,0)   == videoOrientation.html videoOrientation-ref.html?angle=0
+fuzzy(0-150,0-2200) pref(media.getusermedia.camera.fake.rotation,90)  == videoOrientation.html videoOrientation-ref.html?angle=90
+fuzzy(0-150,0-2200) pref(media.getusermedia.camera.fake.rotation,180) == videoOrientation.html videoOrientation-ref.html?angle=180
+fuzzy(0-150,0-2200) pref(media.getusermedia.camera.fake.rotation,270) == videoOrientation.html videoOrientation-ref.html?angle=270
