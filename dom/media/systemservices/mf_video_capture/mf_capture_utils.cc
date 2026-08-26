@@ -14,7 +14,6 @@
 #include "modules/video_capture/video_capture_defines.h"
 #include "mozilla/ScopeExit.h"
 #include "mozilla/StaticPrefs_media.h"
-#include "mozilla/mscom/EnsureMTA.h"
 #include "nsWindowsHelpers.h"
 #include "rtc_base/logging.h"
 #include "rtc_base/string_utils.h"
@@ -311,7 +310,7 @@ bool IsSameDeviceInstance(const nsACString& aIdA, const nsACString& aIdB) {
 
 HRESULT EnumerateCaptureDevices(nsTArray<MFCaptureDevice>& aDevices) {
   HRESULT hr = E_FAIL;
-  mozilla::mscom::EnsureMTA([&] { hr = EnumerateCaptureDevicesMTA(aDevices); });
+  RunInMTA([&] { hr = EnumerateCaptureDevicesMTA(aDevices); });
   return hr;
 }
 
@@ -319,21 +318,20 @@ void ReleaseCaptureDevice(MFCaptureDevice& aDevice) {
   if (!aDevice.mActivate) {
     return;
   }
-  mozilla::mscom::EnsureMTA([&] { aDevice.mActivate = nullptr; });
+  RunInMTA([&] { aDevice.mActivate = nullptr; });
 }
 
 void ReleaseCaptureDevices(nsTArray<MFCaptureDevice>& aDevices) {
   if (aDevices.IsEmpty()) {
     return;
   }
-  mozilla::mscom::EnsureMTA([&] { aDevices.Clear(); });
+  RunInMTA([&] { aDevices.Clear(); });
 }
 
 HRESULT GetDeviceCapabilities(IMFActivate* aActivate,
                               nsTArray<VideoCaptureCapability>& aCapabilities) {
   HRESULT hr = E_FAIL;
-  mozilla::mscom::EnsureMTA(
-      [&] { hr = GetDeviceCapabilitiesMTA(aActivate, aCapabilities); });
+  RunInMTA([&] { hr = GetDeviceCapabilitiesMTA(aActivate, aCapabilities); });
   return hr;
 }
 

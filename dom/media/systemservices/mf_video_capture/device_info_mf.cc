@@ -13,7 +13,6 @@
 #include <utility>
 
 #include "modules/video_capture/video_capture_factory.h"
-#include "mozilla/mscom/EnsureMTA.h"
 #include "rtc_base/logging.h"
 
 namespace webrtc::videocapturemodule {
@@ -281,10 +280,15 @@ void DeviceInfoMF::ReleaseDevices() {
   if (mDevices.IsEmpty()) {
     return;
   }
-  // Moved out so that the lambda touches a local rather than a member the
-  // SequenceChecker guards; a reference to the member would still be tracked.
+  // RunInMTA() is synchronous, so mDevices would still only be touched under
+  // mChecker, but the analyser treats the lambda body as a context of its own
+  // and does not accept that. Annotating the lambda does not help: EnsureMTA
+  // also compiles a path that stores it in a runnable, so the requirement
+  // surfaces in nsThreadUtils.h instead. Moving the devices out sidesteps it; a
+  // reference to the member would still be tracked. nsTArray leaves the
+  // moved-from array empty, which std::vector does not promise.
   nsTArray<Device> devices = std::move(mDevices);
-  mozilla::mscom::EnsureMTA([&] { devices.Clear(); });
+  RunInMTA([&] { devices.Clear(); });
 }
 
 DeviceInfoMF::Device* DeviceInfoMF::FindDevice(

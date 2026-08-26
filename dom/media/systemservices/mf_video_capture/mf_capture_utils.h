@@ -7,6 +7,7 @@
 
 #include <wrl.h>
 
+#include <utility>
 #include <vector>
 
 #include "WMF.h"
@@ -18,6 +19,9 @@
 
 #include "common_video/libyuv/include/webrtc_libyuv.h"
 #include "modules/video_capture/video_capture_defines.h"
+#include "mozilla/Assertions.h"
+#include "mozilla/mscom/EnsureMTA.h"
+#include "mozilla/mscom/Utils.h"
 #include "nsString.h"
 #include "nsTArray.h"
 
@@ -40,6 +44,26 @@ HRESULT MFCreateSourceReaderFromMediaSourceShim(IMFMediaSource* aSource,
  * Foundation could be started in this process.
  */
 bool MediaFoundationCaptureEnabled();
+
+/**
+ * Runs aClosure in the multithreaded apartment.
+ *
+ * Callers are expected to be in the MTA already, so that the closure runs
+ * inline. MediaFoundationCaptureEnabled() is checked before any of this
+ * backend is constructed, and starting Media Foundation leaves the process
+ * with an MTA that this thread is then a member of.
+ *
+ * That expectation matters rather than being incidental: some of these
+ * closures open or close a camera, and mozilla::mscom::EnsureMTA would
+ * otherwise run them on the single MTA thread it keeps for the whole process,
+ * blocking every other user of it for as long as the device takes.
+ */
+template <typename F>
+void RunInMTA(F&& aClosure) {
+  MOZ_ASSERT(mozilla::mscom::IsCurrentThreadMTA(),
+             "Would block the process-wide MTA thread");
+  mozilla::mscom::EnsureMTA(std::forward<F>(aClosure));
+}
 
 /**
  * Maps a Media Foundation video subtype to the VideoType that

@@ -13,7 +13,6 @@
 #include "modules/video_capture/video_capture_defines.h"
 #include "mozilla/ScopeExit.h"
 #include "mozilla/TimeStamp.h"
-#include "mozilla/mscom/EnsureMTA.h"
 #include "rtc_base/logging.h"
 #include "rtc_base/string_utils.h"
 
@@ -403,7 +402,7 @@ int32_t VideoCaptureMF::StopCapture() {
 
   IMFSourceReader* reader = mReader.Get();
   HRESULT hr = E_FAIL;
-  mozilla::mscom::EnsureMTA([&] { hr = reader->Flush(kVideoStream); });
+  RunInMTA([&] { hr = reader->Flush(kVideoStream); });
 
   if (SUCCEEDED(hr)) {
     mozilla::MonitorAutoLock lock(mFlushMonitor);
@@ -474,7 +473,7 @@ HRESULT VideoCaptureMF::OpenSourceReader() {
   IMFActivate* activate = mDevice.mActivate.Get();
   ComPtr<IMFMediaSource> source;
   ComPtr<IMFSourceReader> reader;
-  mozilla::mscom::EnsureMTA([&] {
+  RunInMTA([&] {
     hr = OpenSourceReaderMTA(activate, callback.Get(), source, reader);
   });
   if (FAILED(hr)) {
@@ -495,8 +494,7 @@ HRESULT VideoCaptureMF::SelectMediaType(
 
   IMFSourceReader* reader = mReader.Get();
   HRESULT hr = E_FAIL;
-  mozilla::mscom::EnsureMTA(
-      [&] { hr = SelectMediaTypeMTA(reader, aCapability, aResult); });
+  RunInMTA([&] { hr = SelectMediaTypeMTA(reader, aCapability, aResult); });
   return hr;
 }
 
@@ -505,7 +503,7 @@ HRESULT VideoCaptureMF::RequestFirstSample() {
 
   IMFSourceReader* reader = mReader.Get();
   HRESULT hr = E_FAIL;
-  mozilla::mscom::EnsureMTA([&] {
+  RunInMTA([&] {
     hr =
         reader->ReadSample(kVideoStream, 0, nullptr, nullptr, nullptr, nullptr);
   });
@@ -526,7 +524,7 @@ void VideoCaptureMF::Teardown() {
     callback->Detach();
   }
 
-  mozilla::mscom::EnsureMTA([&] {
+  RunInMTA([&] {
     reader = nullptr;
     if (source) {
       source = nullptr;
