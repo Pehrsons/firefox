@@ -88,7 +88,6 @@ struct DesiredSizeInput {
   camera::CaptureEngine mCapEngine;
   int32_t mInputWidth;
   int32_t mInputHeight;
-  int32_t mRotation;
 };
 
 static gfx::IntSize CalculateDesiredSize(DesiredSizeInput aInput) {
@@ -99,13 +98,6 @@ static gfx::IntSize CalculateDesiredSize(DesiredSizeInput aInput) {
     // screen capture but not for cameras.
     aInput.mConstraints.mWidth.mIdeal = Nothing();
     aInput.mConstraints.mHeight.mIdeal = Nothing();
-  }
-
-  if (aInput.mRotation == 90 || aInput.mRotation == 270) {
-    // This frame is rotated, so what was negotiated as width is now height,
-    // and vice versa.
-    std::swap(aInput.mConstraints.mWidth, aInput.mConstraints.mHeight);
-    std::swap(aInput.mCapabilityWidth, aInput.mCapabilityWidth);
   }
 
   // Account for a shared camera giving us higher resolution than we asked for.
@@ -305,7 +297,6 @@ nsresult MediaEngineRemoteVideoSource::Allocate(
         .mCapEngine = mCapEngine,
         .mInputWidth = cw ? cw : mIncomingImageSize.width,
         .mInputHeight = ch ? ch : mIncomingImageSize.height,
-        .mRotation = 0,
     };
     framerate = input.mCanCropAndScale.valueOr(false)
                     ? std::min(mConstraints->mFrameRate.Get(maxFPS), maxFPS)
@@ -558,7 +549,6 @@ nsresult MediaEngineRemoteVideoSource::Reconfigure(
         .mCapEngine = mCapEngine,
         .mInputWidth = cw ? cw : mIncomingImageSize.width,
         .mInputHeight = ch ? ch : mIncomingImageSize.height,
-        .mRotation = 0,
     };
     framerate = distanceMode == kFeasibility
                     ? std::min(mConstraints->mFrameRate.Get(mCapability.maxFPS),
@@ -665,7 +655,6 @@ int MediaEngineRemoteVideoSource::DeliverFrame(
         .mCapEngine = mCapEngine,
         .mInputWidth = aProps.width(),
         .mInputHeight = aProps.height(),
-        .mRotation = aProps.rotation(),
     };
     if (!mFrameDeliveringTrackingId) {
       mFrameDeliveringTrackingId = Some(mTrackingId);

@@ -41,6 +41,60 @@ runTest(async () => {
 
   stream.getTracks().forEach(t => t.stop());
   await SpecialPowers.popPrefEnv();
+
+  // Again through the camera capture backend, which is a separate code path.
+  // fake: true above uses MediaEngineFake directly, while
+  // media.getusermedia.camera.fake.force routes the same fake source through
+  // CamerasParent into MediaEngineRemoteVideoSource, which sizes frames against
+  // the capability it negotiated.
+  await SpecialPowers.pushPrefEnv({
+    set: [["media.getusermedia.camera.fake.force", true]]
+  });
+
+  const remoteStream =
+    await getUserMedia({video: {width: 640, height: 480}});
+  video.srcObject = remoteStream;
+
+  await haveEvent(video, "resize",
+    wait(10000, new Error("Timeout waiting for initial resize (capture)")));
+  is(video.videoWidth, 640, "videoWidth is 640 before rotation (capture)");
+  is(video.videoHeight, 480, "videoHeight is 480 before rotation (capture)");
+
+  await SpecialPowers.pushPrefEnv({
+    set: [["media.getusermedia.camera.fake.rotation", 90]]
+  });
+
+  await haveEvent(video, "resize",
+    wait(10000, new Error("Timeout waiting for rotated resize (capture)")));
+  // Rotation must not change which frame size was negotiated, so a request for
+  // 640x480 stays 640x480 and only appears transposed.
+  is(video.videoWidth, 480, "videoWidth is 480 after 90° rotation (capture)");
+  is(video.videoHeight, 640, "videoHeight is 640 after 90° rotation (capture)");
+  const settings = remoteStream.getVideoTracks()[0].getSettings();
+  is(settings.width, 640, "settings width is unchanged by rotation");
+  is(settings.height, 480, "settings height is unchanged by rotation");
+
+  remoteStream.getTracks().forEach(t => t.stop());
+  await SpecialPowers.popPrefEnv();
+
+  // A rotation that is already in effect when capture starts must be reflected
+  // on the first frame, not only when it changes while capturing.
+  await SpecialPowers.pushPrefEnv({
+    set: [["media.getusermedia.camera.fake.rotation", 90]]
+  });
+
+  const preRotatedStream =
+    await getUserMedia({video: {width: 640, height: 480}});
+  video.srcObject = preRotatedStream;
+
+  await haveEvent(video, "resize",
+    wait(10000, new Error("Timeout waiting for resize (pre-rotated)")));
+  is(video.videoWidth, 480, "videoWidth is 480 when rotated before capture");
+  is(video.videoHeight, 640, "videoHeight is 640 when rotated before capture");
+
+  preRotatedStream.getTracks().forEach(t => t.stop());
+  await SpecialPowers.popPrefEnv();
+  await SpecialPowers.popPrefEnv();
 });
 </script>
 </pre>
