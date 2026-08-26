@@ -77,6 +77,12 @@ class AggregateCapturer final
   void OnCaptureEnded();
   void OnFrame(const webrtc::VideoFrame& aVideoFrame) override;
 
+  // Tells the capturer how much to rotate frames so that they are upright for
+  // the current device orientation. Called when capture starts and whenever the
+  // screen orientation changes. A no-op where the platform does not report
+  // camera orientation.
+  void UpdateCaptureRotation();
+
   struct Configuration {
     webrtc::VideoCaptureCapability mCapability;
     NormalizedConstraints mConstraints;

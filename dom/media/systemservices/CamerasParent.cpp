@@ -7,6 +7,7 @@
 #include <algorithm>
 
 #include "CameraDeviceChange.h"
+#include "CameraRotation.h"
 #include "CamerasTypes.h"
 #include "MediaEngineSource.h"
 #include "PerformanceRecorder.h"
@@ -197,6 +198,17 @@ MakeAndAddRefVideoCaptureThreadAndSingletons() {
 
     sAggregators = MakeRefPtr<AggregatorArray>();
 
+    NS_DispatchToMainThread(NS_NewRunnableFunction(
+        "StartCameraRotationMonitor",
+        [thread = nsCOMPtr<nsISerialEventTarget>(sVideoCaptureThread),
+         aggregators = RefPtr(sAggregators.get())] {
+          StartCameraRotationMonitor(thread, [aggregators] {
+            for (const auto& aggregator : *aggregators) {
+              aggregator->UpdateCaptureRotation();
+            }
+          });
+        }));
+
     MOZ_ALWAYS_SUCCEEDS(sVideoCaptureThread->Dispatch(NS_NewRunnableFunction(
         "StartCameraDeviceChangeMonitor", [engines = RefPtr(sEngines.get())] {
           StartCameraDeviceChangeMonitor([engines] {
@@ -223,6 +235,8 @@ static void ReleaseVideoCaptureThreadAndSingletons() {
 
   // No other CamerasParent instances alive. Clean up.
   LOG("Shutting down VideoEngines and the VideoCapture thread");
+  NS_DispatchToMainThread(NS_NewRunnableFunction(
+      "StopCameraRotationMonitor", [] { StopCameraRotationMonitor(); }));
   MOZ_ALWAYS_SUCCEEDS(sVideoCaptureThread->Dispatch(
       NS_NewRunnableFunction("StopCameraDeviceChangeMonitor",
                              [] { StopCameraDeviceChangeMonitor(); })));
@@ -685,12 +699,31 @@ Maybe<webrtc::VideoCaptureCapability> AggregateCapturer::CombinedCapability(
   return combinedCap;
 }
 
+void AggregateCapturer::UpdateCaptureRotation() {
+  MOZ_ASSERT(mVideoCaptureThread->IsOnCurrentThread());
+  if (mCapEngine != CameraEngine) {
+    return;
+  }
+  const webrtc::VideoRotation rotation = GetCameraRotation(mUniqueId);
+  // Reported rather than applied, so the frame stays in camera orientation and
+  // consumers rotate it for display, as the fake and Android backends do.
+  mCapturer->SetApplyRotation(false);
+  if (mCapturer->SetCaptureRotation(rotation) != 0) {
+    LOG("AggregateCapturer::{} id={}, failed to set rotation {}", __func__,
+        mCaptureId, static_cast<int>(rotation));
+    return;
+  }
+  LOG("AggregateCapturer::{} id={}, rotation set to {}", __func__, mCaptureId,
+      static_cast<int>(rotation));
+}
+
 int32_t AggregateCapturer::UpdateDevice(
     const Maybe<webrtc::VideoCaptureCapability>& aState) {
   MOZ_ASSERT(mVideoCaptureThread->IsOnCurrentThread());
   // Start-/StopCapture will start or reconfigure as appropriate.
   int32_t err = 0;
   if (aState) {
+    UpdateCaptureRotation();
     err = mCapturer->StartCapture(*aState);
     LOG("AggregateCapturer::{} id={}, {} device with new combined capability "
         "({}x{}@{}) (err={})",
