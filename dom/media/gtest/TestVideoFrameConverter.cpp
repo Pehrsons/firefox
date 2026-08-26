@@ -586,7 +586,7 @@ TEST_F(VideoFrameConverterTest, IgnoreOldFrames) {
     // to get ignored.
     mConverter->QueueForProcessing(
         GenerateChunk(800, 600, now + d3).mFrame.GetImage(), now + d3,
-        gfx::IntSize(800, 600), false);
+        gfx::IntSize(800, 600), false, VideoRotation::kDegree_0);
     return GenericPromise::CreateAndResolve(true, __func__);
   }));
 
