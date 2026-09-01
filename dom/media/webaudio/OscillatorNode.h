@@ -8,6 +8,8 @@
 #include "AudioParam.h"
 #include "AudioScheduledSourceNode.h"
 #include "PeriodicWave.h"
+#include "mozilla/StateMirroring.h"
+#include "mozilla/StateWatching.h"
 #include "mozilla/dom/OscillatorNodeBinding.h"
 
 namespace mozilla::dom {
@@ -15,8 +17,7 @@ namespace mozilla::dom {
 class AudioContext;
 struct OscillatorOptions;
 
-class OscillatorNode final : public AudioScheduledSourceNode,
-                             public MainThreadMediaTrackListener {
+class OscillatorNode final : public AudioScheduledSourceNode {
  public:
   static already_AddRefed<OscillatorNode> Create(
       AudioContext& aAudioContext, const OscillatorOptions& aOptions,
@@ -64,7 +65,7 @@ class OscillatorNode final : public AudioScheduledSourceNode,
     SendTypeToTrack();
   }
 
-  void NotifyMainThreadTrackEnded() override;
+  void OnTrackEnded();
 
   const char* NodeType() const override { return "OscillatorNode"; }
 
@@ -83,6 +84,8 @@ class OscillatorNode final : public AudioScheduledSourceNode,
   RefPtr<AudioParam> mFrequency;
   RefPtr<AudioParam> mDetune;
   bool mStartCalled;
+  WatchManager<OscillatorNode> mWatchManager;
+  Mirror<bool> mTrackEnded;
 };
 
 }  // namespace mozilla::dom
