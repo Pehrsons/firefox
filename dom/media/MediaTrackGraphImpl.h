@@ -61,16 +61,6 @@ class DeviceInputTrackManager {
 };
 
 /**
- * A per-track update message passed from the media graph thread to the
- * main thread.
- */
-struct TrackUpdate {
-  RefPtr<MediaTrack> mTrack;
-  TrackTime mNextMainThreadCurrentTime;
-  bool mNextMainThreadEnded;
-};
-
-/**
  * This represents a message run on the graph thread to modify track or graph
  * state.  These are passed from main thread to graph thread through
  * AppendMessage().  A ControlMessage often has a weak reference to a
@@ -182,10 +172,6 @@ class MediaTrackGraphImpl : public MediaTrackGraph,
    * See EnsureStableStateEventPosted.
    */
   void EnsureRunInStableState();
-  /**
-   * Called to apply a TrackUpdate to its track.
-   */
-  void ApplyTrackUpdate(TrackUpdate* aUpdate) MOZ_REQUIRES(mMonitor);
   /**
    * Append a control message to the message queue. This queue is drained
    * during RunInStableState; the messages will run on the graph thread.
@@ -897,10 +883,6 @@ class MediaTrackGraphImpl : public MediaTrackGraph,
   // Data guarded by mMonitor (must always be accessed with mMonitor held,
   // regardless of the value of mLifecycleState).
 
-  /**
-   * State to copy to main thread
-   */
-  nsTArray<TrackUpdate> mTrackUpdates MOZ_GUARDED_BY(mMonitor);
   /**
    * Runnables to run after the next update to main thread state.
    */
