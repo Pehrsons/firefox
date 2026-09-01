@@ -7,14 +7,15 @@
 
 #include "AudioParam.h"
 #include "AudioScheduledSourceNode.h"
+#include "mozilla/StateMirroring.h"
+#include "mozilla/StateWatching.h"
 #include "mozilla/dom/ConstantSourceNodeBinding.h"
 
 namespace mozilla::dom {
 
 class AudioContext;
 
-class ConstantSourceNode final : public AudioScheduledSourceNode,
-                                 public MainThreadMediaTrackListener {
+class ConstantSourceNode final : public AudioScheduledSourceNode {
  public:
   explicit ConstantSourceNode(AudioContext* aContext);
 
@@ -38,7 +39,7 @@ class ConstantSourceNode final : public AudioScheduledSourceNode,
   void Start(double aWhen, ErrorResult& rv) override;
   void Stop(double aWhen, ErrorResult& rv) override;
 
-  void NotifyMainThreadTrackEnded() override;
+  void OnTrackEnded();
 
   const char* NodeType() const override { return "ConstantSourceNode"; }
 
@@ -51,6 +52,8 @@ class ConstantSourceNode final : public AudioScheduledSourceNode,
  private:
   RefPtr<AudioParam> mOffset;
   bool mStartCalled;
+  WatchManager<ConstantSourceNode> mWatchManager;
+  Mirror<bool> mTrackEnded;
 };
 
 }  // namespace mozilla::dom
