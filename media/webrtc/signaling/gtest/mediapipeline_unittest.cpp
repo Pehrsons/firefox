@@ -105,8 +105,8 @@ class FakeAudioTrack : public ProcessedMediaTrack {
 
   void Destroy() override {
     MutexAutoLock lock(mMutex);
-    MOZ_RELEASE_ASSERT(!mMainThreadDestroyed);
-    mMainThreadDestroyed = true;
+    MOZ_RELEASE_ASSERT(!mDestroyed);
+    mDestroyed = true;
     mTimer->Cancel();
     mTimer = nullptr;
   }
@@ -142,7 +142,7 @@ class FakeAudioTrack : public ProcessedMediaTrack {
   static void FakeAudioTrackGenerateData(nsITimer* timer, void* closure) {
     auto t = static_cast<FakeAudioTrack*>(closure);
     MutexAutoLock lock(t->mMutex);
-    if (t->mMainThreadDestroyed) {
+    if (t->mDestroyed) {
       return;
     }
     CheckedInt<size_t> bufferSize(sizeof(int16_t));

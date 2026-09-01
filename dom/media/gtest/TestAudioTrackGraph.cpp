@@ -393,7 +393,7 @@ TEST_WithTailDispatch(TestAudioTrackGraph, OfflineDestruction) {
   DispatchFunction([&] {
     // Add and remove a dummy track to trigger graph shutdown.
     RefPtr dummyTrack = new MockProcessedMediaTrack(graph->GraphRate());
-    graph->AddTrack(dummyTrack);
+    graph->AddTrack(dummyTrack, MediaTrack::Flag::None);
     dummyTrack->Destroy();
   });
   // Wait until `graph` has the only reference to the graph.
@@ -450,7 +450,7 @@ TEST_WithTailDispatch(TestAudioTrackGraph, NonNativeInputTrackStartAndStop) {
   DispatchFunction([&] {
     track = new NonNativeInputTrack(graph->GraphRate(), deviceId,
                                     PRINCIPAL_HANDLE_NONE);
-    graph->AddTrack(track);
+    graph->AddTrack(track, MediaTrack::Flag::None);
   });
 
   RefPtr<SmartMockCubebStream> driverStream = WaitFor(cubeb->StreamInitEvent());
@@ -619,7 +619,7 @@ TEST_WithTailDispatch(TestAudioTrackGraph, NonNativeInputTrackErrorCallback) {
   DispatchFunction([&] {
     track = new NonNativeInputTrack(graph->GraphRate(), deviceId,
                                     PRINCIPAL_HANDLE_NONE);
-    graph->AddTrack(track);
+    graph->AddTrack(track, MediaTrack::Flag::None);
   });
 
   RefPtr<SmartMockCubebStream> driverStream = WaitFor(cubeb->StreamInitEvent());
@@ -679,7 +679,7 @@ class TestDeviceInputConsumerTrack : public DeviceInputConsumerTrack {
     MOZ_RELEASE_ASSERT(NS_IsMainThread());
     TestDeviceInputConsumerTrack* track =
         new TestDeviceInputConsumerTrack(aGraph->GraphRate());
-    aGraph->AddTrack(track);
+    aGraph->AddTrack(track, MediaTrack::Flag::None);
     return track;
   }
 
@@ -3403,7 +3403,7 @@ TEST_WithTailDispatch(TestAudioTrackGraph, EmptyProcessingInterval) {
     EXPECT_CALL(checkpoint, Call(StrEq("after empty iteration")));
   }
   DispatchFunction([&] {
-    graph->AddTrack(processedTrack);
+    graph->AddTrack(processedTrack, MediaTrack::Flag::None);
     processedTrack->AddAudioOutput(reinterpret_cast<void*>(1), nullptr);
     processedTrack->AddListener(fallbackListener);
   });
@@ -3493,7 +3493,7 @@ TEST_WithTailDispatch(TestAudioTrackGraph, DefaultOutputDeviceIDTracking) {
   // Add a track to maintain an output-only audio driver.
   RefPtr fallbackListener = new OnFallbackListener(processedTrack);
   DispatchFunction([&] {
-    graph->AddTrack(processedTrack);
+    graph->AddTrack(processedTrack, MediaTrack::Flag::None);
     processedTrack->AddAudioOutput(reinterpret_cast<void*>(1), nullptr);
     processedTrack->AddListener(fallbackListener);
   });
@@ -3726,7 +3726,7 @@ TEST(TestAudioTrackGraph, MessageOrdering)
   RefPtr<OnFallbackListener> fallbackListener;
   DispatchFunction([&] {
     // Add a track to maintain an output-only audio driver.
-    graph->AddTrack(processedTrack);
+    graph->AddTrack(processedTrack, MediaTrack::Flag::None);
     processedTrack->AddAudioOutput(reinterpret_cast<void*>(1), nullptr);
     fallbackListener = new OnFallbackListener(processedTrack);
     processedTrack->AddListener(fallbackListener);
@@ -4001,7 +4001,7 @@ TEST(TestAudioTrackGraph, ShutdownMessages)
   RefPtr<OnFallbackListener> fallbackListener;
   DispatchFunction([&] {
     // Add a track to maintain an output-only audio driver.
-    graph->AddTrack(processedTrack);
+    graph->AddTrack(processedTrack, MediaTrack::Flag::None);
     processedTrack->AddAudioOutput(reinterpret_cast<void*>(1), nullptr);
     fallbackListener = new OnFallbackListener(processedTrack);
     processedTrack->AddListener(fallbackListener);
@@ -4216,7 +4216,7 @@ TEST(TestAudioTrackGraph, TailDispatchFromMicroTaskDuringShutdown)
 
   RefPtr<OnFallbackListener> fallbackListener;
   DispatchFunction([&] {
-    graph->AddTrack(processedTrack);
+    graph->AddTrack(processedTrack, MediaTrack::Flag::None);
     processedTrack->AddAudioOutput(reinterpret_cast<void*>(1), nullptr);
     fallbackListener = new OnFallbackListener(processedTrack);
     processedTrack->AddListener(fallbackListener);
@@ -4339,7 +4339,7 @@ TEST(TestAudioTrackGraph, TargetShutdownTaskOnMainThread)
   RefPtr<OnFallbackListener> fallbackListener;
   DispatchFunction([&] {
     // Add a track to maintain an output-only audio driver.
-    graph->AddTrack(processedTrack);
+    graph->AddTrack(processedTrack, MediaTrack::Flag::None);
     processedTrack->AddAudioOutput(reinterpret_cast<void*>(1), nullptr);
     fallbackListener = new OnFallbackListener(processedTrack);
     processedTrack->AddListener(fallbackListener);
@@ -4461,7 +4461,7 @@ TEST(TestAudioTrackGraph, IOThreadDispatchDuringShutdown)
   RefPtr<OnFallbackListener> fallbackListener;
   DispatchFunction([&] {
     // Add a track to maintain an output-only audio driver.
-    graph->AddTrack(processedTrack);
+    graph->AddTrack(processedTrack, MediaTrack::Flag::None);
     processedTrack->AddAudioOutput(reinterpret_cast<void*>(1), nullptr);
     fallbackListener = new OnFallbackListener(processedTrack);
     processedTrack->AddListener(fallbackListener);
@@ -4551,7 +4551,7 @@ TEST(TestAudioTrackGraph, MessageAtomicity)
   // Add a track to maintain an output-only audio driver.
   RefPtr<OnFallbackListener> fallbackListener;
   DispatchFunction([&] {
-    graph->AddTrack(processedTrack);
+    graph->AddTrack(processedTrack, MediaTrack::Flag::None);
     processedTrack->AddAudioOutput(reinterpret_cast<void*>(1), nullptr);
     fallbackListener = new OnFallbackListener(processedTrack);
     processedTrack->AddListener(fallbackListener);
