@@ -387,7 +387,10 @@ OscillatorNode::OscillatorNode(AudioContext* aContext)
     : AudioScheduledSourceNode(aContext, 2, ChannelCountMode::Max,
                                ChannelInterpretation::Speakers),
       mType(OscillatorType::Sine),
-      mStartCalled(false) {
+      mStartCalled(false),
+      mWatchManager(this, AbstractThread::MainThread()),
+      mTrackEnded(AbstractThread::MainThread(), false,
+                  "OscillatorNode::mTrackEnded") {
   mFrequency = CreateAudioParam(
       OscillatorNodeEngine::FREQUENCY, u"frequency"_ns, 440.0f,
       -(aContext->SampleRate() / 2), aContext->SampleRate() / 2);
@@ -398,7 +401,8 @@ OscillatorNode::OscillatorNode(AudioContext* aContext)
                                   AudioNodeTrack::NEED_MAIN_THREAD_ENDED,
                                   aContext->Graph());
   engine->SetSourceTrack(mTrack);
-  mTrack->AddMainThreadListener(this);
+  mTrackEnded.Connect(&mTrack->CanonicalEnded());
+  mWatchManager.Watch(mTrackEnded, &OscillatorNode::OnTrackEnded);
 }
 
 /* static */
@@ -449,9 +453,8 @@ JSObject* OscillatorNode::WrapObject(JSContext* aCx,
 }
 
 void OscillatorNode::DestroyMediaTrack() {
-  if (mTrack) {
-    mTrack->RemoveMainThreadListener(this);
-  }
+  mWatchManager.Shutdown();
+  mTrackEnded.DisconnectIfConnected();
   AudioNode::DestroyMediaTrack();
 }
 
@@ -529,8 +532,11 @@ void OscillatorNode::Stop(double aWhen, ErrorResult& aRv) {
                                 std::max(0.0, aWhen));
 }
 
-void OscillatorNode::NotifyMainThreadTrackEnded() {
-  MOZ_ASSERT(mTrack->IsEnded());
+void OscillatorNode::OnTrackEnded() {
+  if (!mTrackEnded) {
+    // The mirror was seeded with the track's initial state.
+    return;
+  }
 
   class EndedEventDispatcher final : public Runnable {
    public:
