@@ -276,6 +276,9 @@ class MediaTrack : public mozilla::LinkedListElement<MediaTrack> {
   const TrackRate mSampleRate;
   const MediaSegment::Type mType;
 
+  enum class Flag { None, EnableCanonicals };
+  using Flags = EnumSet<Flag>;
+
  protected:
   // Protected destructor, to discourage deletion outside of Release():
   virtual ~MediaTrack();
@@ -291,8 +294,8 @@ class MediaTrack : public mozilla::LinkedListElement<MediaTrack> {
   /**
    * Sets the graph that owns this track.  Should only be called once.
    */
-  void SetGraphImpl(MediaTrackGraphImpl* aGraph);
-  void SetGraphImpl(MediaTrackGraph* aGraph);
+  void SetGraphImpl(MediaTrackGraphImpl* aGraph, Flags aFlags);
+  void SetGraphImpl(MediaTrackGraph* aGraph, Flags);
 
   // Control API.
   void AddAudioOutput(void* aKey, const AudioDeviceInfo* aSink);
@@ -400,9 +403,17 @@ class MediaTrack : public mozilla::LinkedListElement<MediaTrack> {
     return mMainThreadEnded;
   }
 
+  /**
+   * Canonicals for state that can be mirrored to other threads. Canonicals are
+   * guaranteed available until Destroy(). The caller is responsible for
+   * upholding this guarantee.
+   */
+  AbstractCanonical<TrackTime>& CanonicalCurrentTime();
+  AbstractCanonical<bool>& CanonicalEnded();
+
   bool IsDestroyed() const {
     NS_ASSERTION(NS_IsMainThread(), "Call only on main thread");
-    return mMainThreadDestroyed;
+    return mDestroyed;
   }
 
   uint64_t GetWindowId() const;
@@ -571,6 +582,10 @@ class MediaTrack : public mozilla::LinkedListElement<MediaTrack> {
   virtual void AdvanceTimeVaryingValuesToCurrentTime(GraphTime aCurrentTime,
                                                      GraphTime aBlockedTime);
 
+  // Destroy the canonicals, breaking the strong reference they hold to their
+  // owner thread, which is this track's graph. Graph thread.
+  void DisconnectCanonicals();
+
  private:
   template <typename Function>
   class ControlMessageWithNoShutdown;
@@ -653,13 +668,34 @@ class MediaTrack : public mozilla::LinkedListElement<MediaTrack> {
    */
   int32_t mSuspendedCount;
 
+  /**
+   * State this track publishes for mirroring, as MediaTrackGraphImpl does.
+   * Created when the track joins a graph and destroyed with its graph thread
+   * state, since a canonical holds a strong reference to its owner thread --
+   * here the graph. Set on the graph thread; the monitor is held only to
+   * create, destroy and connect to them.
+   */
+  struct Canonicals {
+    Canonicals(AbstractThread* aGraphThread, TrackTime aCurrentTime)
+        : mCurrentTime(aGraphThread, aCurrentTime,
+                       "MediaTrack::Canonicals::mCurrentTime"),
+          mEnded(aGraphThread, false, "MediaTrack::Canonicals::mEnded") {}
+
+    Canonical<TrackTime> mCurrentTime;
+    Canonical<bool> mEnded;
+  };
+  // Canonical state for mirroring to other threads. Valid for use on any thread
+  // until Destroy().
+  Maybe<Canonicals> mCanonicals;
+
   // Main-thread views of state
   TrackTime mMainThreadCurrentTime;
   bool mMainThreadEnded;
   bool mEndedNotificationSent;
-  bool mMainThreadDestroyed;
 
-  // Our media track graph.  null if destroyed on the graph thread.
+  Atomic<bool> mDestroyed;
+
+  // Our media track graph. Valid for use on any thread until Destroy().
   MediaTrackGraph* mGraph;
 };
 
@@ -1149,7 +1185,7 @@ class MediaTrackGraph {
   /**
    * Add a new track to the graph.  Main thread.
    */
-  void AddTrack(MediaTrack* aTrack);
+  void AddTrack(MediaTrack* aTrack, MediaTrack::Flags aFlags);
 
   /* From the main thread, ask the MTG to resolve the returned promise when
    * the device specified has started.

@@ -287,6 +287,9 @@ void MediaTrackGraphImpl::UpdateCurrentTimeForTracks(
       if (!track->mNotifiedEnded) {
         // Playout of this track ended and listeners have not been notified.
         track->mNotifiedEnded = true;
+        if (track->mCanonicals) {
+          track->mCanonicals->mEnded.Set(true);
+        }
         SetTrackOrderDirty();
         for (const auto& listener : track->mTrackListeners) {
           listener->NotifyOutput(this, track->GetEnd());
@@ -1682,6 +1685,13 @@ auto MediaTrackGraphImpl::OneIterationImpl(
   const bool updateMainThread = ShouldUpdateMainThread();
   if (updateMainThread) {
     mCanonicals->mCurrentTime.Set(mProcessedTime);
+    for (MediaTrack* track : AllTracks()) {
+      if (!track->mCanonicals || !track->MainThreadNeedsUpdates()) {
+        continue;
+      }
+      track->mCanonicals->mCurrentTime.Set(
+          track->GraphTimeToTrackTime(mProcessedTime));
+    }
   }
 
   // Note that after draining, no more direct tasks may be added, as asserted by
@@ -2224,7 +2234,7 @@ MediaTrack::MediaTrack(TrackRate aSampleRate, MediaSegment::Type aType,
       mMainThreadCurrentTime(0),
       mMainThreadEnded(false),
       mEndedNotificationSent(false),
-      mMainThreadDestroyed(false),
+      mDestroyed(false),
       mGraph(nullptr) {
   MOZ_COUNT_CTOR(MediaTrack);
   MOZ_ASSERT_IF(mSegment, mSegment->GetType() == aType);
@@ -2232,7 +2242,7 @@ MediaTrack::MediaTrack(TrackRate aSampleRate, MediaSegment::Type aType,
 
 MediaTrack::~MediaTrack() {
   MOZ_COUNT_DTOR(MediaTrack);
-  NS_ASSERTION(mMainThreadDestroyed, "Should have been destroyed already");
+  NS_ASSERTION(mDestroyed, "Should have been destroyed already");
   NS_ASSERTION(mMainThreadListeners.IsEmpty(),
                "All main thread listeners should have been removed");
 }
@@ -2311,15 +2321,20 @@ const MediaTrackGraphImpl* MediaTrack::GraphImpl() const {
   return static_cast<MediaTrackGraphImpl*>(mGraph);
 }
 
-void MediaTrack::SetGraphImpl(MediaTrackGraphImpl* aGraph) {
+void MediaTrack::SetGraphImpl(MediaTrackGraphImpl* aGraph,
+                              MediaTrack::Flags aFlags) {
   MOZ_ASSERT(!mGraph, "Should only be called once");
   MOZ_ASSERT(mSampleRate == aGraph->GraphRate());
   mGraph = aGraph;
+  if (aFlags.contains(MediaTrack::Flag::EnableCanonicals)) {
+    mCanonicals.emplace(aGraph, mStartTime);
+  }
 }
 
-void MediaTrack::SetGraphImpl(MediaTrackGraph* aGraph) {
+void MediaTrack::SetGraphImpl(MediaTrackGraph* aGraph,
+                              MediaTrack::Flags aFlags) {
   MediaTrackGraphImpl* graph = static_cast<MediaTrackGraphImpl*>(aGraph);
-  SetGraphImpl(graph);
+  SetGraphImpl(graph, aFlags);
 }
 
 TrackTime MediaTrack::GraphTimeToTrackTime(GraphTime aTime) const {
@@ -2362,7 +2377,29 @@ void MediaTrack::DestroyImpl() {
   if (mSegment) {
     mSegment->Clear();
   }
+  DisconnectCanonicals();
   mGraph = nullptr;
+}
+
+void MediaTrack::DisconnectCanonicals() {
+  if (!mCanonicals) {
+    return;
+  }
+  mCanonicals->mCurrentTime.DisconnectAll();
+  mCanonicals->mEnded.DisconnectAll();
+  mCanonicals.reset();
+}
+
+AbstractCanonical<TrackTime>& MediaTrack::CanonicalCurrentTime() {
+  MOZ_ASSERT(!mDestroyed);
+  MOZ_ASSERT(mCanonicals, "Track was not created with EnableCanonicals");
+  return mCanonicals->mCurrentTime;
+}
+
+AbstractCanonical<bool>& MediaTrack::CanonicalEnded() {
+  MOZ_ASSERT(!mDestroyed);
+  MOZ_ASSERT(mCanonicals, "Track was not created with EnableCanonicals");
+  return mCanonicals->mEnded;
 }
 
 void MediaTrack::Destroy() {
@@ -2387,7 +2424,7 @@ void MediaTrack::Destroy() {
   // Message::RunDuringShutdown may have removed this track from the graph,
   // but our kungFuDeathGrip above will have kept this track alive if
   // necessary.
-  mMainThreadDestroyed = true;
+  mDestroyed = true;
 }
 
 uint64_t MediaTrack::GetWindowId() const { return GraphImpl()->mWindowID; }
@@ -2410,7 +2447,7 @@ void MediaTrack::AddAudioOutput(void* aKey, const AudioDeviceInfo* aSink) {
 void MediaTrack::AddAudioOutput(void* aKey, CubebUtils::AudioDeviceID aDeviceID,
                                 TrackRate aPreferredSampleRate) {
   MOZ_ASSERT(NS_IsMainThread());
-  if (mMainThreadDestroyed) {
+  if (mDestroyed) {
     return;
   }
   LOG(LogLevel::Info, ("MediaTrack {} adding AudioOutput", fmt::ptr(this)));
@@ -2431,7 +2468,7 @@ void MediaTrackGraphImpl::SetAudioOutputVolume(MediaTrack* aTrack, void* aKey,
 }
 
 void MediaTrack::SetAudioOutputVolume(void* aKey, float aVolume) {
-  if (mMainThreadDestroyed) {
+  if (mDestroyed) {
     return;
   }
   GraphImpl()->SetAudioOutputVolume(this, aKey, aVolume);
@@ -2439,7 +2476,7 @@ void MediaTrack::SetAudioOutputVolume(void* aKey, float aVolume) {
 
 void MediaTrack::RemoveAudioOutput(void* aKey) {
   MOZ_ASSERT(NS_IsMainThread());
-  if (mMainThreadDestroyed) {
+  if (mDestroyed) {
     return;
   }
   LOG(LogLevel::Info, ("MediaTrack {} removing AudioOutput", fmt::ptr(this)));
@@ -2573,7 +2610,7 @@ void MediaTrackGraphImpl::DecrementOutputDeviceRefCnt(AudioDeviceID aDeviceID) {
 void MediaTrack::Suspend() {
   // This can happen if this method has been called asynchronously, and the
   // track has been destroyed since then.
-  if (mMainThreadDestroyed) {
+  if (mDestroyed) {
     return;
   }
   QueueControlMessageWithNoShutdown([self = RefPtr{this}, this] {
@@ -2585,7 +2622,7 @@ void MediaTrack::Suspend() {
 void MediaTrack::Resume() {
   // This can happen if this method has been called asynchronously, and the
   // track has been destroyed since then.
-  if (mMainThreadDestroyed) {
+  if (mDestroyed) {
     return;
   }
   QueueControlMessageWithNoShutdown([self = RefPtr{this}, this] {
@@ -2612,7 +2649,7 @@ void MediaTrack::AddListenerImpl(
 
 void MediaTrack::AddListener(MediaTrackListener* aListener) {
   MOZ_ASSERT(mSegment, "Segment-less tracks do not support listeners");
-  if (mMainThreadDestroyed) {
+  if (mDestroyed) {
     return;
   }
   QueueControlMessageWithNoShutdown(
@@ -2637,7 +2674,7 @@ RefPtr<GenericPromise> MediaTrack::RemoveListener(
   MozPromiseHolder<GenericPromise> promiseHolder;
   RefPtr<GenericPromise> p = promiseHolder.Ensure(__func__);
   promiseHolder.RequireTailDispatch(__func__);
-  if (mMainThreadDestroyed) {
+  if (mDestroyed) {
     promiseHolder.Reject(NS_ERROR_FAILURE, __func__);
     return p;
   }
@@ -2663,7 +2700,7 @@ void MediaTrack::AddDirectListenerImpl(
 }
 
 void MediaTrack::AddDirectListener(DirectMediaTrackListener* aListener) {
-  if (mMainThreadDestroyed) {
+  if (mDestroyed) {
     return;
   }
   QueueControlMessageWithNoShutdown(
@@ -2678,7 +2715,7 @@ void MediaTrack::RemoveDirectListenerImpl(DirectMediaTrackListener* aListener) {
 }
 
 void MediaTrack::RemoveDirectListener(DirectMediaTrackListener* aListener) {
-  if (mMainThreadDestroyed) {
+  if (mDestroyed) {
     return;
   }
   QueueControlOrShutdownMessage(
@@ -2694,7 +2731,7 @@ void MediaTrack::RemoveDirectListener(DirectMediaTrackListener* aListener) {
 void MediaTrack::RunAfterPendingUpdates(
     already_AddRefed<nsIRunnable> aRunnable) {
   MOZ_ASSERT(NS_IsMainThread());
-  if (mMainThreadDestroyed) {
+  if (mDestroyed) {
     return;
   }
   QueueControlOrShutdownMessage(
@@ -2725,7 +2762,7 @@ void MediaTrack::SetDisabledTrackModeImpl(DisabledTrackMode aMode) {
 }
 
 void MediaTrack::SetDisabledTrackMode(DisabledTrackMode aMode) {
-  if (mMainThreadDestroyed) {
+  if (mDestroyed) {
     return;
   }
   QueueControlMessageWithNoShutdown([self = RefPtr{this}, this, aMode]() {
@@ -3416,7 +3453,7 @@ void ProcessedMediaTrack::QueueSetAutoend(bool aAutoend) {
     }
     bool mAutoend;
   };
-  if (mMainThreadDestroyed) {
+  if (mDestroyed) {
     return;
   }
   GraphImpl()->AppendMessage(MakeUnique<Message>(this, aAutoend));
@@ -3809,20 +3846,20 @@ void MediaTrackGraphImpl::FinishCollectReports(
 
 SourceMediaTrack* MediaTrackGraph::CreateSourceTrack(MediaSegment::Type aType) {
   SourceMediaTrack* track = new SourceMediaTrack(aType, GraphRate());
-  AddTrack(track);
+  AddTrack(track, MediaTrack::Flag::None);
   return track;
 }
 
 ProcessedMediaTrack* MediaTrackGraph::CreateForwardedInputTrack(
     MediaSegment::Type aType) {
   ForwardedInputTrack* track = new ForwardedInputTrack(GraphRate(), aType);
-  AddTrack(track);
+  AddTrack(track, MediaTrack::Flag::None);
   return track;
 }
 
 AudioCaptureTrack* MediaTrackGraph::CreateAudioCaptureTrack() {
   AudioCaptureTrack* track = new AudioCaptureTrack(GraphRate());
-  AddTrack(track);
+  AddTrack(track, MediaTrack::Flag::None);
   return track;
 }
 
@@ -3830,7 +3867,7 @@ CrossGraphTransmitter* MediaTrackGraph::CreateCrossGraphTransmitter(
     CrossGraphReceiver* aReceiver) {
   CrossGraphTransmitter* track =
       new CrossGraphTransmitter(GraphRate(), aReceiver);
-  AddTrack(track);
+  AddTrack(track, MediaTrack::Flag::None);
   return track;
 }
 
@@ -3838,11 +3875,11 @@ CrossGraphReceiver* MediaTrackGraph::CreateCrossGraphReceiver(
     TrackRate aTransmitterRate) {
   CrossGraphReceiver* track =
       new CrossGraphReceiver(GraphRate(), aTransmitterRate);
-  AddTrack(track);
+  AddTrack(track, MediaTrack::Flag::None);
   return track;
 }
 
-void MediaTrackGraph::AddTrack(MediaTrack* aTrack) {
+void MediaTrackGraph::AddTrack(MediaTrack* aTrack, MediaTrack::Flags aFlags) {
   MediaTrackGraphImpl* graph = static_cast<MediaTrackGraphImpl*>(this);
   MOZ_ASSERT(NS_IsMainThread());
 #ifdef MOZ_DIAGNOSTIC_ASSERT_ENABLED
@@ -3863,7 +3900,7 @@ void MediaTrackGraph::AddTrack(MediaTrack* aTrack) {
   }
 
   NS_ADDREF(aTrack);
-  aTrack->SetGraphImpl(graph);
+  aTrack->SetGraphImpl(graph, aFlags);
   ++graph->mMainThreadTrackCount;
   graph->AppendMessage(MakeUnique<CreateMessage>(aTrack));
 }
