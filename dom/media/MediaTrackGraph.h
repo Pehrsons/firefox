@@ -165,23 +165,6 @@ class AudioDataListener : public AudioDataListenerInterface {
 };
 
 /**
- * This is a base class for main-thread listener callbacks.
- * This callback is invoked on the main thread when the main-thread-visible
- * state of a track has changed.
- *
- * These methods are called with the media graph monitor held, so
- * reentry into general media graph methods is not possible.
- * You should do something non-blocking and non-reentrant (e.g. dispatch an
- * event) and return. NS_DispatchToCurrentThread would be a good choice.
- * The listener is allowed to synchronously remove itself from the track, but
- * not add or remove any other listeners.
- */
-class MainThreadMediaTrackListener {
- public:
-  virtual void NotifyMainThreadTrackEnded() = 0;
-};
-
-/**
  * Helper struct used to keep track of memory usage by AudioNodes.
  */
 struct AudioNodeSizes {
@@ -336,17 +319,6 @@ class MediaTrack : public mozilla::LinkedListElement<MediaTrack> {
   // silence.
   void SetDisabledTrackMode(DisabledTrackMode aMode);
 
-  // End event will be notified by calling methods of aListener. It is the
-  // responsibility of the caller to remove aListener before it is destroyed.
-  void AddMainThreadListener(MainThreadMediaTrackListener* aListener);
-  // It's safe to call this even if aListener is not currently a listener;
-  // the call will be ignored.
-  void RemoveMainThreadListener(MainThreadMediaTrackListener* aListener) {
-    MOZ_ASSERT(NS_IsMainThread());
-    MOZ_ASSERT(aListener);
-    mMainThreadListeners.RemoveElement(aListener);
-  }
-
   /**
    * Append to the message queue a control message to execute a given lambda
    * function with no parameters.  The queue is drained during
@@ -390,18 +362,6 @@ class MediaTrack : public mozilla::LinkedListElement<MediaTrack> {
   // Signal that the client is done with this MediaTrack. It will be deleted
   // later.
   virtual void Destroy();
-
-  // Returns the main-thread's view of how much data has been processed by
-  // this track.
-  TrackTime GetCurrentTime() const {
-    NS_ASSERTION(NS_IsMainThread(), "Call only on main thread");
-    return mMainThreadCurrentTime;
-  }
-  // Return the main thread's view of whether this track has ended.
-  bool IsEnded() const {
-    NS_ASSERTION(NS_IsMainThread(), "Call only on main thread");
-    return mMainThreadEnded;
-  }
 
   /**
    * Canonicals for state that can be mirrored to other threads. Canonicals are
@@ -596,25 +556,6 @@ class MediaTrack : public mozilla::LinkedListElement<MediaTrack> {
   void QueueMessage(UniquePtr<ControlMessageInterface> aMessage);
   void RunMessageAfterProcessing(already_AddRefed<nsIRunnable> aMessage);
 
-  void NotifyMainThreadListeners() {
-    NS_ASSERTION(NS_IsMainThread(), "Call only on main thread");
-
-    for (int32_t i = mMainThreadListeners.Length() - 1; i >= 0; --i) {
-      mMainThreadListeners[i]->NotifyMainThreadTrackEnded();
-    }
-    mMainThreadListeners.Clear();
-  }
-
-  bool ShouldNotifyTrackEnded() {
-    NS_ASSERTION(NS_IsMainThread(), "Call only on main thread");
-    if (!mMainThreadEnded || mEndedNotificationSent) {
-      return false;
-    }
-
-    mEndedNotificationSent = true;
-    return true;
-  }
-
  protected:
   // Notifies listeners and consumers of the change in disabled mode when the
   // current combined mode is different from aMode.
@@ -648,7 +589,6 @@ class MediaTrack : public mozilla::LinkedListElement<MediaTrack> {
 
   // Client-set volume of this track
   nsTArray<RefPtr<MediaTrackListener>> mTrackListeners;
-  nsTArray<MainThreadMediaTrackListener*> mMainThreadListeners;
   // This track's associated disabled mode. It can either by disabled by frames
   // being replaced by black, or by retaining the previous frame.
   DisabledTrackMode mDisabledMode;
@@ -687,11 +627,6 @@ class MediaTrack : public mozilla::LinkedListElement<MediaTrack> {
   // Canonical state for mirroring to other threads. Valid for use on any thread
   // until Destroy().
   Maybe<Canonicals> mCanonicals;
-
-  // Main-thread views of state
-  TrackTime mMainThreadCurrentTime;
-  bool mMainThreadEnded;
-  bool mEndedNotificationSent;
 
   Atomic<bool> mDestroyed;
 
