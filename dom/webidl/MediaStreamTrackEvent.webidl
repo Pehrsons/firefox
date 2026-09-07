@@ -10,7 +10,11 @@ dictionary MediaStreamTrackEventInit : EventInit {
     required MediaStreamTrack track;
 };
 
-[Exposed=Window]
+// Exposure in DedicatedWorker is gated on the pref
+// media.mediastreamtrack.transferable.enabled through IsExposed, see
+// https://w3c.github.io/mediacapture-extensions/#mediastream-in-dedicated-workers
+[Exposed=(Window,DedicatedWorker),
+ Func="mozilla::dom::MediaStreamTrack::IsExposed"]
 interface MediaStreamTrackEvent : Event {
     constructor(DOMString type, MediaStreamTrackEventInit eventInitDict);
 

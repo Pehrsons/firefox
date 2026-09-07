@@ -4,8 +4,11 @@
 
 #include "GraphTrackHolder.h"
 
+#include "MediaStreamTrackSourceHandle.h"
 #include "MediaTrackGraph.h"
+#include "mozilla/AbstractThread.h"
 #include "mozilla/Logging.h"
+#include "nsThreadUtils.h"
 
 extern mozilla::LazyLogModule gMediaStreamTrackLog;
 #define LOG(type, ...) \
@@ -15,17 +18,27 @@ namespace mozilla::dom {
 
 /* static */
 already_AddRefed<GraphTrackHolder> GraphTrackHolder::Create(
-    mozilla::MediaTrack* aInputTrack, MediaTrackGraph* aGraph) {
+    mozilla::MediaTrack* aInputTrack, MediaTrackGraph* aGraph, bool aEnabled) {
   MOZ_ASSERT(NS_IsMainThread());
-  MOZ_ASSERT(aInputTrack);
-  MOZ_ASSERT(aGraph);
-  RefPtr<GraphTrackHolder> holder = new GraphTrackHolder(aInputTrack, aGraph);
+  MOZ_ASSERT_IF(aInputTrack, aGraph);
+  RefPtr<GraphTrackHolder> holder =
+      new GraphTrackHolder(aInputTrack, aGraph, aEnabled);
   return holder.forget();
 }
 
 GraphTrackHolder::GraphTrackHolder(mozilla::MediaTrack* aInputTrack,
-                                   MediaTrackGraph* aGraph)
-    : mInputTrack(aInputTrack) {
+                                   MediaTrackGraph* aGraph, bool aEnabled)
+    : mInputTrack(aInputTrack),
+      mWatchManager(this, AbstractThread::MainThread()),
+      mTrackEnded(AbstractThread::MainThread(), false,
+                  "GraphTrackHolder::mTrackEnded"),
+      mEnabled(aEnabled) {
+  if (!mInputTrack) {
+    LOG(LogLevel::Info, ("GraphTrackHolder {} created ended", fmt::ptr(this)));
+    mEnded = true;
+    return;
+  }
+
   // Even if the input track is destroyed we need a graph track so that methods
   // like MediaStreamTrack::AddListener still work. Keeping the number of paths
   // to a minimum also helps prevent bugs elsewhere. We'll be ended through the
@@ -33,17 +46,72 @@ GraphTrackHolder::GraphTrackHolder(mozilla::MediaTrack* aInputTrack,
   mTrack = aGraph->CreateForwardedInputTrack(
       mInputTrack->mType, mozilla::MediaTrack::Flag::EnableCanonicals);
   mPort = mTrack->AllocateInputPort(mInputTrack);
+  mTrackEnded.Connect(&mTrack->CanonicalEnded());
+  mWatchManager.Watch(mTrackEnded, &GraphTrackHolder::OnTrackEnded);
   LOG(LogLevel::Info, ("GraphTrackHolder {} created with graph track {}",
                        fmt::ptr(this), fmt::ptr(mTrack.get())));
 }
 
 GraphTrackHolder::~GraphTrackHolder() {
   MOZ_ASSERT(NS_IsMainThread());
-  MOZ_ASSERT(!mTrack, "The owner must Shutdown() the holder");
+  MOZ_ASSERT(mEnded && !mTrack, "The owner must Shutdown() the holder");
+}
+
+void GraphTrackHolder::Attach(MediaStreamTrackSourceHandle* aHandle,
+                              MediaStreamTrackSource* aSource) {
+  MOZ_ASSERT(NS_IsMainThread());
+  MOZ_ASSERT(aHandle);
+  MOZ_ASSERT(aSource);
+  MOZ_ASSERT(!mAttached);
+  mAttached = true;
+  mHandle = RefPtr(aHandle);
+  mSource = aSource;
+  LOG(LogLevel::Info,
+      ("GraphTrackHolder {} attached to handle {} for source {}",
+       fmt::ptr(this), fmt::ptr(aHandle), fmt::ptr(aSource)));
+  if (mEnded) {
+    return;
+  }
+  mSource->RegisterSink(this);
+  mSource->SinkEnabledStateChanged();
+}
+
+void GraphTrackHolder::SetEnabled(bool aEnabled) {
+  MOZ_ASSERT(NS_IsMainThread());
+  if (mEnabled == aEnabled) {
+    return;
+  }
+  mEnabled = aEnabled;
+  if (mEnded || !mAttached) {
+    return;
+  }
+  mSource->SinkEnabledStateChanged();
+}
+
+void GraphTrackHolder::MutedChanged(bool aNewState) {
+  MOZ_ASSERT(NS_IsMainThread());
+  if (RefPtr<MediaStreamTrackSourceHandle> handle(mHandle); handle) {
+    handle->HolderMutedChanged(aNewState);
+  }
+}
+
+void GraphTrackHolder::OverrideEnded() {
+  MOZ_ASSERT(NS_IsMainThread());
+  End();
+}
+
+void GraphTrackHolder::OnTrackEnded() {
+  MOZ_ASSERT(NS_IsMainThread());
+  if (!mTrackEnded) {
+    // The mirror was seeded with the track's initial state.
+    return;
+  }
+  End();
 }
 
 void GraphTrackHolder::Shutdown() {
   MOZ_ASSERT(NS_IsMainThread());
+  End();
   if (!mTrack) {
     return;
   }
@@ -53,6 +121,23 @@ void GraphTrackHolder::Shutdown() {
   mTrack->Destroy();
   mPort = nullptr;
   mTrack = nullptr;
+}
+
+void GraphTrackHolder::End() {
+  MOZ_ASSERT(NS_IsMainThread());
+  if (mEnded) {
+    return;
+  }
+  mEnded = true;
+  LOG(LogLevel::Info, ("GraphTrackHolder {} ended", fmt::ptr(this)));
+  if (mAttached) {
+    mSource->UnregisterSink(this);
+  }
+  mWatchManager.Shutdown();
+  mTrackEnded.DisconnectIfConnected();
+  if (RefPtr<MediaStreamTrackSourceHandle> handle(mHandle); handle) {
+    handle->HolderEnded();
+  }
 }
 
 }  // namespace mozilla::dom

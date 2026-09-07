@@ -1,0 +1,80 @@
+<!doctype html>
+<meta charset=utf-8>
+<title>Transferable MediaStreamTrack is not observable when the pref is disabled</title>
+<link rel="help" href="https://w3c.github.io/mediacapture-extensions/#transferable-mediastreamtrack">
+<link rel="help" href="https://w3c.github.io/mediacapture-extensions/#mediastream-in-dedicated-workers">
+<script src=/resources/testharness.js></script>
+<script src=/resources/testharnessreport.js></script>
+<script>
+"use strict";
+
+// Runs with media.mediastreamtrack.transferable.enabled set to false, see the
+// accompanying .ini file.
+
+const INTERFACES = ["MediaStreamTrack", "MediaStream", "MediaStreamTrackEvent"];
+
+function createTrack(t) {
+  const canvas = document.createElement("canvas");
+  canvas.width = canvas.height = 16;
+  const stream = canvas.captureStream();
+  t.add_cleanup(() => stream.getTracks().forEach(track => track.stop()));
+  return stream.getVideoTracks()[0];
+}
+
+function createWorker(t) {
+  const script = `
+    self.onmessage = () => {
+      self.postMessage(${JSON.stringify(INTERFACES)}.map(
+        name => [name, typeof self[name], name in self]));
+    };
+  `;
+  const blob = new Blob([script], {type: "text/javascript"});
+  const url = URL.createObjectURL(blob);
+  const worker = new Worker(url);
+  URL.revokeObjectURL(url);
+  t.add_cleanup(() => worker.terminate());
+  return worker;
+}
+
+test(() => {
+  for (const name of INTERFACES) {
+    assert_equals(typeof self[name], "function", name);
+  }
+}, "MediaStream interfaces are exposed in Window");
+
+promise_test(async t => {
+  const worker = createWorker(t);
+  const reply = new Promise(r => worker.onmessage = e => r(e.data));
+  worker.postMessage("probe");
+  for (const [name, type, present] of await reply) {
+    assert_equals(type, "undefined", `typeof ${name}`);
+    assert_false(present, `${name} in self`);
+  }
+}, "MediaStream interfaces are not exposed in a dedicated worker");
+
+promise_test(async t => {
+  const worker = createWorker(t);
+  const track = createTrack(t);
+  assert_throws_dom("DataCloneError", () => worker.postMessage(track, [track]),
+                    "transfer list");
+  assert_throws_dom("DataCloneError", () => worker.postMessage(track),
+                    "no transfer list");
+  assert_throws_dom("DataCloneError", () => worker.postMessage({track}, []),
+                    "nested");
+  assert_equals(track.readyState, "live", "track is left intact");
+}, "MediaStreamTrack cannot be transferred or cloned to a dedicated worker");
+
+promise_test(async t => {
+  const track = createTrack(t);
+  assert_throws_dom("DataCloneError",
+                    () => window.postMessage(track, "*", [track]),
+                    "transfer list");
+  assert_throws_dom("DataCloneError", () => window.postMessage(track, "*"),
+                    "no transfer list");
+  assert_throws_dom("DataCloneError", () => structuredClone(track, {transfer: [track]}),
+                    "structuredClone with transfer");
+  assert_throws_dom("DataCloneError", () => structuredClone(track),
+                    "structuredClone");
+  assert_equals(track.readyState, "live", "track is left intact");
+}, "MediaStreamTrack cannot be transferred or cloned within a window");
+</script>
