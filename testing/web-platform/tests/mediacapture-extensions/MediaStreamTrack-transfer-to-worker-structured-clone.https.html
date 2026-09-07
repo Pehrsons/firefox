@@ -1,0 +1,55 @@
+<!doctype html>
+<meta charset=utf-8>
+<title>MediaStreamTrack must be transferred, not cloned, to a dedicated worker</title>
+<link rel="help" href="https://w3c.github.io/mediacapture-extensions/#transferable-mediastreamtrack">
+<link rel="help" href="https://html.spec.whatwg.org/multipage/structured-data.html#structuredserializewithtransfer">
+<script src=/resources/testharness.js></script>
+<script src=/resources/testharnessreport.js></script>
+<script src=/resources/testdriver.js></script>
+<script src=/resources/testdriver-vendor.js></script>
+<script src=/mediacapture-streams/permission-helper.js></script>
+<script src=support/transfer-helper.js></script>
+<script>
+"use strict";
+
+promise_setup(() => setMediaPermission());
+
+promise_test(async t => {
+  const worker = await createWorker(t, TRACK_WORKER_SCRIPT);
+  const track = await getTrack(t, "video");
+  assert_throws_dom("DataCloneError", () => worker.postMessage(track),
+                    "bare track without transfer list");
+  assert_throws_dom("DataCloneError", () => worker.postMessage({track}, []),
+                    "nested track without transfer list");
+  assert_throws_dom("DataCloneError",
+                    () => worker.postMessage(track, [track, track]),
+                    "duplicate transfer list entry");
+  assert_equals(track.readyState, "live",
+                "a failed serialization leaves the track intact");
+  const after = await callWorker(worker, {type: "receive", track}, [track]);
+  assert_equals(after.readyState, "live");
+}, "Structured cloning a MediaStreamTrack without transferring it throws");
+
+promise_test(async t => {
+  const worker = await createWorker(t, TRACK_WORKER_SCRIPT);
+  const track = await getTrack(t, "video");
+  await callWorker(worker, {type: "receive", track}, [track]);
+  assert_equals(track.readyState, "ended");
+  assert_throws_dom("DataCloneError",
+                    () => worker.postMessage(track, [track]));
+  track.stop();
+  assert_throws_dom("DataCloneError",
+                    () => worker.postMessage(track, [track]),
+                    "after stop()");
+}, "Transferring a detached track throws");
+
+promise_test(async t => {
+  const worker = await createWorker(t, TRACK_WORKER_SCRIPT);
+  const track = await getTrack(t, "video");
+  const reply = callWorker(worker, {type: "noop"}, [track]);
+  assert_equals(track.readyState, "ended");
+  await reply;
+  assert_throws_dom("DataCloneError",
+                    () => worker.postMessage(track, [track]));
+}, "A track in the transfer list is detached even if the message does not reference it");
+</script>
