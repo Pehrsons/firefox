@@ -1,0 +1,54 @@
+<!doctype html>
+<meta charset=utf-8>
+<title>MediaStreamTrack transferred to a dedicated worker preserves its state</title>
+<link rel="help" href="https://w3c.github.io/mediacapture-extensions/#transferable-mediastreamtrack">
+<script src=/resources/testharness.js></script>
+<script src=/resources/testharnessreport.js></script>
+<script src=/resources/testdriver.js></script>
+<script src=/resources/testdriver-vendor.js></script>
+<script src=/mediacapture-streams/permission-helper.js></script>
+<script src=support/transfer-helper.js></script>
+<script>
+"use strict";
+
+promise_setup(() => setMediaPermission());
+
+const hints = {audio: "speech", video: "motion"};
+
+for (const kind of ["audio", "video"]) {
+  promise_test(async t => {
+    const worker = await createWorker(t, TRACK_WORKER_SCRIPT);
+    const track = await getTrack(t, kind);
+    track.enabled = false;
+    track.contentHint = hints[kind];
+    await track.applyConstraints({deviceId: track.getSettings().deviceId});
+    const before = describeTrack(track);
+    assert_equals(before.readyState, "live");
+    assert_equals(before.contentHint, hints[kind]);
+    let endedFired = false;
+    track.onended = () => endedFired = true;
+
+    const reply = callWorker(worker, {type: "receive", track}, [track]);
+    assert_equals(track.readyState, "ended",
+                  "transferred-from track is ended synchronously");
+    const after = await reply;
+
+    for (const key of ["id", "kind", "label", "readyState", "enabled",
+                       "muted", "contentHint"]) {
+      assert_equals(after[key], before[key], key);
+    }
+    assert_object_equals(after.settings, before.settings, "settings");
+    assert_object_equals(after.constraints, before.constraints, "constraints");
+    assert_false(endedFired, "no ended event on the transferred-from track");
+  }, `Transferring a ${kind} track to a worker preserves its state`);
+}
+
+promise_test(async t => {
+  const worker = await createWorker(t, TRACK_WORKER_SCRIPT);
+  const track = await getTrack(t, "video");
+  track.stop();
+  const after = await callWorker(worker, {type: "receive", track}, [track]);
+  assert_equals(after.id, track.id);
+  assert_equals(after.readyState, "ended");
+}, "Transferring an ended track to a worker yields an ended track");
+</script>
