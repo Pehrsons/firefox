@@ -4,18 +4,25 @@
 
 #include "MediaStreamTrack.h"
 
+#include "AudioStreamTrack.h"
 #include "DOMMediaStream.h"
 #include "GraphTrackHolder.h"
 #include "MediaSegment.h"
 #include "MediaStreamError.h"
+#include "MediaStreamTrackSourceHandle.h"
 #include "MediaTrackGraph.h"
 #include "MediaTrackGraphImpl.h"
 #include "MediaTrackListener.h"
+#include "TransferredTrackSource.h"
+#include "VideoStreamTrack.h"
 #include "mozilla/AbstractThread.h"
 #include "mozilla/BasePrincipal.h"
+#include "mozilla/StaticPrefs_media.h"
 #include "mozilla/dom/Promise.h"
+#include "mozilla/dom/WorkerCommon.h"
 #include "nsContentUtils.h"
 #include "nsGlobalWindowInner.h"
+#include "nsIGlobalObject.h"
 #include "nsIUUIDGenerator.h"
 #include "nsServiceManagerUtils.h"
 #include "systemservices/MediaUtils.h"
@@ -103,6 +110,15 @@ class MediaStreamTrack::TrackSink : public MediaStreamTrackSource::Sink {
   WeakPtr<MediaStreamTrack> mTrack;
 };
 
+static AbstractThread* OwningAbstractThread() {
+  if (NS_IsMainThread()) {
+    return AbstractThread::MainThread();
+  }
+  MOZ_RELEASE_ASSERT(IsCurrentThreadRunningWorker(),
+                     "MediaStreamTrack is exposed on windows and workers only");
+  return AbstractThread::GetCurrent();
+}
+
 MediaStreamTrack::MediaStreamTrack(nsIGlobalObject* aGlobal,
                                    mozilla::MediaTrack* aInputTrack,
                                    MediaStreamTrackSource* aSource,
@@ -117,27 +133,11 @@ MediaStreamTrack::MediaStreamTrack(nsIGlobalObject* aGlobal,
       mEnabled(true),
       mMuted(aMuted),
       mConstraints(aConstraints),
-      mWatchManager(this, AbstractThread::MainThread()),
-      mTrackEnded(AbstractThread::MainThread(), false,
-                  "MediaStreamTrack::mTrackEnded"),
-      mTrackPrincipalHandle(AbstractThread::MainThread(), PRINCIPAL_HANDLE_NONE,
+      mAbstractThread(OwningAbstractThread()),
+      mWatchManager(this, mAbstractThread),
+      mTrackEnded(mAbstractThread, false, "MediaStreamTrack::mTrackEnded"),
+      mTrackPrincipalHandle(mAbstractThread, PRINCIPAL_HANDLE_NONE,
                             "MediaStreamTrack::mTrackPrincipalHandle") {
-  if (!Ended()) {
-    GetSource().RegisterSink(mSink.get());
-
-    auto graph = aInputTrack->IsDestroyed()
-                     ? MediaTrackGraph::GetInstanceIfExists(
-                           GetOwnerWindow(), aInputTrack->mSampleRate,
-                           MediaTrackGraph::DEFAULT_OUTPUT_DEVICE)
-                     : aInputTrack->Graph();
-    MOZ_DIAGNOSTIC_ASSERT(graph,
-                          "A destroyed input track is only expected when "
-                          "cloning, but since we're live there must be another "
-                          "live track that is keeping the graph alive");
-    mHolder = GraphTrackHolder::Create(aInputTrack, graph);
-    SetGraphTrack(mHolder->GraphTrack());
-  }
-
   nsresult rv;
   nsCOMPtr<nsIUUIDGenerator> uuidgen =
       do_GetService("@mozilla.org/uuid-generator;1", &rv);
@@ -151,6 +151,31 @@ MediaStreamTrack::MediaStreamTrack(nsIGlobalObject* aGlobal,
   char chars[NSID_LENGTH];
   uuid.ToProvidedString(chars);
   mID = NS_ConvertASCIItoUTF16(chars);
+
+  if (Ended()) {
+    return;
+  }
+  GetSource().RegisterSink(mSink.get());
+
+  if (!NS_IsMainThread()) {
+    // TODO(Bug 1991619): Tracks transferred to a worker have no
+    // MediaTrackGraph representation yet.
+    MOZ_ASSERT(!aInputTrack);
+    return;
+  }
+
+  MOZ_ASSERT(aInputTrack);
+  auto graph = aInputTrack->IsDestroyed()
+                   ? MediaTrackGraph::GetInstanceIfExists(
+                         GetOwnerWindow(), aInputTrack->mSampleRate,
+                         MediaTrackGraph::DEFAULT_OUTPUT_DEVICE)
+                   : aInputTrack->Graph();
+  MOZ_DIAGNOSTIC_ASSERT(graph,
+                        "A destroyed input track is only expected when "
+                        "cloning, but since we're live there must be another "
+                        "live track that is keeping the graph alive");
+  mHolder = GraphTrackHolder::Create(aInputTrack, graph, mEnabled);
+  SetGraphTrack(mHolder->GraphTrack());
 }
 
 void MediaStreamTrack::SetGraphTrack(ProcessedMediaTrack* aTrack) {
@@ -165,6 +190,7 @@ void MediaStreamTrack::SetGraphTrack(ProcessedMediaTrack* aTrack) {
 }
 
 mozilla::MediaTrack* MediaStreamTrack::InputTrack() const {
+  NS_ASSERT_OWNINGTHREAD(MediaStreamTrack);
   return mHolder ? mHolder->InputTrack() : nullptr;
 }
 
@@ -216,6 +242,158 @@ JSObject* MediaStreamTrack::WrapObject(JSContext* aCx,
   return MediaStreamTrack_Binding::Wrap(aCx, this, aGivenProto);
 }
 
+/* static */
+bool MediaStreamTrack::IsExposed(JSContext* aCx, JSObject* aGlobal) {
+  // The exposure set restricts this to Window on the main thread.
+  return NS_IsMainThread() ||
+         StaticPrefs::media_mediastreamtrack_transferable_enabled();
+}
+
+MediaStreamTrack::TransferredData::TransferredData(
+    const nsAString& aId, MediaSegment::Type aKind, const nsAString& aLabel,
+    MediaStreamTrackState aReadyState, bool aEnabled, bool aMuted,
+    const MediaTrackConstraints& aConstraints,
+    const MediaStreamTrackSourceSettings& aSettings,
+    const MediaStreamTrackSourceCapabilities& aCapabilities,
+    const nsAString& aDeviceId, const nsAString& aGroupId,
+    MediaSourceEnum aMediaSource, bool aHasAlpha,
+    RefPtr<MediaStreamTrackSourceHandle> aSource)
+    : mId(aId),
+      mKind(aKind),
+      mLabel(aLabel),
+      mReadyState(aReadyState),
+      mEnabled(aEnabled),
+      mMuted(aMuted),
+      mConstraints(aConstraints),
+      mSettings(aSettings),
+      mCapabilities(aCapabilities),
+      mDeviceId(aDeviceId),
+      mGroupId(aGroupId),
+      mMediaSource(aMediaSource),
+      mHasAlpha(aHasAlpha),
+      mSource(std::move(aSource)) {}
+
+MediaStreamTrack::TransferredData::~TransferredData() = default;
+
+UniquePtr<MediaStreamTrack::TransferredData> MediaStreamTrack::Transfer() {
+  NS_ASSERT_OWNINGTHREAD(MediaStreamTrack);
+  // https://w3c.github.io/mediacapture-extensions/#transferable-mediastreamtrack
+  // The MediaStreamTrack transfer steps, given value and dataHolder, are:
+
+  // 1. If value.[[IsDetached]] is true, throw a "DataCloneError" DOMException.
+  if (mIsDetached) {
+    return nullptr;
+  }
+
+  // 2. Set dataHolder.[[agentCluster]] to the surrounding agent's agent
+  //    cluster.
+  // Implicit. StructuredCloneHolder only allows the transfer within the
+  // process and when the clone data policy allows intra-cluster sharing.
+
+  // 3. Set dataHolder.[[id]] to value.id.
+  // 4. Set dataHolder.[[kind]] to value.kind.
+  // 5. Set dataHolder.[[label]] to value.label.
+  // 6. Set dataHolder.[[readyState]] to value.readyState.
+  // 7. Set dataHolder.[[enabled]] to value.enabled.
+  // 8. Set dataHolder.[[muted]] to value.muted.
+  // 9. Set dataHolder.[[source]] to value underlying source.
+  // 10. Set dataHolder.[[constraints]] to value active constraints.
+  // 11. Set dataHolder.[[contentHint]] to value application-set content hint.
+  //     contentHint is not implemented.
+  nsString label;
+  GetSource().GetLabel(label);
+  // The transferred track stays tied to its source through a handle. A track
+  // proxying to a source already has one. A main-thread track creates one
+  // and hands over its holder, or an ended holder if it has already ended.
+  RefPtr<MediaStreamTrackSourceHandle> sourceHandle =
+      GetSource().TransferHandle();
+  if (!sourceHandle) {
+    MOZ_ASSERT(NS_IsMainThread());
+    RefPtr<GraphTrackHolder> holder = std::move(mHolder);
+    if (!holder) {
+      holder = GraphTrackHolder::Create(nullptr, nullptr, mEnabled);
+    }
+    sourceHandle = MediaStreamTrackSourceHandle::Create(
+        holder.forget(), mSource, mEnabled, mMuted);
+  }
+  auto data = MakeUnique<TransferredData>(
+      mID, AsAudioStreamTrack() ? MediaSegment::AUDIO : MediaSegment::VIDEO,
+      label, mReadyState, mEnabled, mMuted, mConstraints,
+      GetSource().Settings(), GetSource().Capabilities(), GetSource().mDeviceId,
+      GetSource().mGroupId, GetSource().GetMediaSource(),
+      GetSource().HasAlpha(), std::move(sourceHandle));
+
+  LOG(LogLevel::Info, ("MediaStreamTrack {} transferred", fmt::ptr(this)));
+
+  // 12. Set value.[[IsDetached]] to true.
+  mIsDetached = true;
+
+  // 13. Set value.[[ReadyState]] to "ended" (without stopping the underlying
+  //     source or firing an ended event).
+  // The TransferredData created above keeps the source alive when unregistering
+  // this track's sink here. Consumers are notified like for Stop() so that a
+  // containing MediaStream updates its active state.
+  SetReadyState(MediaStreamTrackState::Ended);
+  NotifyEnded();
+
+  return data;
+}
+
+/* static */
+already_AddRefed<MediaStreamTrack> MediaStreamTrack::FromTransferred(
+    nsIGlobalObject* aGlobal, const TransferredData& aData) {
+  MOZ_ASSERT(aGlobal);
+  // https://w3c.github.io/mediacapture-extensions/#transferable-mediastreamtrack
+  // The MediaStreamTrack transfer-receiving steps, given dataHolder and track,
+  // are:
+
+  // 1. If the surrounding agent's agent cluster is not
+  //    dataHolder.[[agentCluster]], then throw a "DataCloneError" DOMException.
+  // Implicit, see Transfer().
+
+  // 9. Initialize the underlying source of track to dataHolder.[[source]].
+  // Done up front since the track constructor needs the source.
+  RefPtr<MediaStreamTrackSource> source;
+  RefPtr<mozilla::MediaTrack> inputTrack;
+  if (NS_IsMainThread()) {
+    GraphTrackHolder* holder = aData.mSource->Holder();
+    source = &holder->Source();
+    inputTrack = holder->InputTrack();
+  } else {
+    source = TransferredTrackSource::Create(aData);
+    if (!source) {
+      return nullptr;
+    }
+  }
+
+  // 2. Initialize track.id to dataHolder.[[id]].
+  // 3. Initialize track.kind to dataHolder.[[kind]].
+  // 4. Initialize track.label to dataHolder.[[label]].
+  //    The label is that of the source, see MediaStreamTrack::GetLabel.
+  // 5. Initialize track.readyState to dataHolder.[[readyState]].
+  // 6. Initialize track.enabled to dataHolder.[[enabled]].
+  // 7. Initialize track.muted to dataHolder.[[muted]].
+  // 8. Set track application-set content hint to dataHolder.[[contentHint]].
+  //    contentHint is not implemented.
+  // 10. Set track's constraints to dataHolder.[[constraints]].
+  RefPtr<MediaStreamTrack> track;
+  if (aData.mKind == MediaSegment::AUDIO) {
+    track = new AudioStreamTrack(aGlobal, inputTrack, source, aData.mReadyState,
+                                 aData.mMuted, aData.mConstraints);
+  } else {
+    track = new VideoStreamTrack(aGlobal, inputTrack, source, aData.mReadyState,
+                                 aData.mMuted, aData.mConstraints);
+  }
+  track->AssignId(aData.mId);
+  track->SetEnabled(aData.mEnabled);
+
+  LOG(LogLevel::Info,
+      ("MediaStreamTrack {} created from transfer, {}", fmt::ptr(track.get()),
+       NS_IsMainThread() ? "on the main thread"
+                         : "proxying to the main thread"));
+  return track.forget();
+}
+
 void MediaStreamTrack::GetId(nsAString& aID) const { aID = mID; }
 
 void MediaStreamTrack::SetEnabled(bool aEnabled) {
@@ -232,8 +410,14 @@ void MediaStreamTrack::SetEnabled(bool aEnabled) {
     return;
   }
 
-  mTrack->SetDisabledTrackMode(mEnabled ? DisabledTrackMode::ENABLED
-                                        : DisabledTrackMode::SILENCE_BLACK);
+  if (mTrack) {
+    // TODO(Bug 1991619): mTrack is null for tracks transferred to a worker.
+    mTrack->SetDisabledTrackMode(mEnabled ? DisabledTrackMode::ENABLED
+                                          : DisabledTrackMode::SILENCE_BLACK);
+  }
+  if (mHolder) {
+    mHolder->SetEnabled(mEnabled);
+  }
   NotifyEnabledChanged();
 }
 
@@ -313,6 +497,14 @@ already_AddRefed<Promise> MediaStreamTrack::ApplyConstraints(
     return nullptr;
   }
 
+  if (!GetOwnerWindow()) {
+    // TODO(Bug 1991619): Proxy applyConstraints() to the main thread for
+    // tracks transferred to a worker. MediaStreamError also needs a window.
+    promise->MaybeRejectWithNotSupportedError(
+        "applyConstraints() is not supported in workers yet");
+    return promise.forget();
+  }
+
   // Forward constraints to the source.
   //
   // After GetSource().ApplyConstraints succeeds (after it's been to
@@ -328,7 +520,7 @@ already_AddRefed<Promise> MediaStreamTrack::ApplyConstraints(
   GetSource()
       .ApplyConstraints(aConstraints, aCallerType)
       ->Then(
-          AbstractThread::MainThread(), __func__,
+          mAbstractThread, __func__,
           [this, self, promise, aConstraints](bool aDummy) {
             nsGlobalWindowInner* window = GetOwnerWindow();
             if (!window || !window->IsCurrentInnerWindow()) {
@@ -348,6 +540,7 @@ already_AddRefed<Promise> MediaStreamTrack::ApplyConstraints(
 
 ProcessedMediaTrack* MediaStreamTrack::GetTrack() const {
   MOZ_DIAGNOSTIC_ASSERT(!Ended());
+  // TODO(Bug 1991619): Null for tracks transferred to a worker.
   return mTrack;
 }
 
@@ -380,6 +573,12 @@ void MediaStreamTrack::SetPrincipal(nsIPrincipal* aPrincipal) {
 }
 
 void MediaStreamTrack::PrincipalChanged() {
+  if (!NS_IsMainThread()) {
+    // TODO(Bug 1991619): Principals are main-thread objects. Tracks
+    // transferred to a worker will mirror the PrincipalHandle of their graph
+    // track's data instead.
+    return;
+  }
   mPendingPrincipal = GetSource().GetPrincipal();
   nsCOMPtr<nsIPrincipal> newPrincipal = mPrincipal;
   LOG(LogLevel::Info, ("MediaStreamTrack {} Principal changed on main thread "
@@ -427,7 +626,7 @@ void MediaStreamTrack::OnPrincipalHandleChanged() {
 }
 
 void MediaStreamTrack::MutedChanged(bool aNewState) {
-  MOZ_ASSERT(NS_IsMainThread());
+  NS_ASSERT_OWNINGTHREAD(MediaStreamTrack);
 
   /**
    * 4.3.1 Life-cycle and Media flow - Media flow
@@ -458,7 +657,7 @@ void MediaStreamTrack::MutedChanged(bool aNewState) {
 
 void MediaStreamTrack::ConstraintsChanged(
     const MediaTrackConstraints& aConstraints) {
-  MOZ_ASSERT(NS_IsMainThread());
+  NS_ASSERT_OWNINGTHREAD(MediaStreamTrack);
   mConstraints = aConstraints;
 }
 
@@ -490,6 +689,8 @@ void MediaStreamTrack::NotifyEnabledChanged() {
 
 bool MediaStreamTrack::AddPrincipalChangeObserver(
     PrincipalChangeObserver<MediaStreamTrack>* aObserver) {
+  MOZ_ASSERT(NS_IsMainThread(),
+             "Principal changes are not hooked up in worker tracks");
   // XXX(Bug 1631371) Check if this should use a fallible operation as it
   // pretended earlier.
   mPrincipalChangeObservers.AppendElement(aObserver);
@@ -498,6 +699,8 @@ bool MediaStreamTrack::AddPrincipalChangeObserver(
 
 bool MediaStreamTrack::RemovePrincipalChangeObserver(
     PrincipalChangeObserver<MediaStreamTrack>* aObserver) {
+  MOZ_ASSERT(NS_IsMainThread(),
+             "Principal changes are not hooked up in worker tracks");
   return mPrincipalChangeObservers.RemoveElement(aObserver);
 }
 
@@ -531,13 +734,24 @@ void MediaStreamTrack::SetReadyState(MediaStreamTrackState aState) {
 
   if (mReadyState == MediaStreamTrackState::Live &&
       aState == MediaStreamTrackState::Ended) {
-    if (mSource) {
-      mSource->UnregisterSink(mSink.get());
-    }
+    // Stop borrowing mTrack before unregistering from the source. Unregistering
+    // may let the graph track's holder destroy it, and our mirrors and
+    // listeners must be gone from it on the graph thread by then.
     mWatchManager.Shutdown();
     mTrackEnded.DisconnectIfConnected();
     mTrackPrincipalHandle.DisconnectIfConnected();
-    mTrack = nullptr;
+    if (mTrack) {
+      for (const auto& listener : mTrackListeners) {
+        mTrack->RemoveListener(listener);
+      }
+      for (const auto& listener : mDirectTrackListeners) {
+        mTrack->RemoveDirectListener(listener);
+      }
+      mTrack = nullptr;
+    }
+    if (mSource) {
+      mSource->UnregisterSink(mSink.get());
+    }
     if (mHolder) {
       mHolder->Shutdown();
       mHolder = nullptr;
@@ -552,13 +766,13 @@ void MediaStreamTrack::OnTrackEnded() {
   MOZ_ASSERT(mTrackEnded);
   // OverrideEnded() fires "ended" synchronously to content JS after setting
   // [[ReadyState]], so call it from its own regular task.
-  AbstractThread::MainThread()->Dispatch(
+  mAbstractThread->Dispatch(
       NewRunnableMethod("MediaStreamTrack::OverrideEnded", this,
                         &MediaStreamTrack::OverrideEnded));
 }
 
 void MediaStreamTrack::OverrideEnded() {
-  MOZ_ASSERT(NS_IsMainThread());
+  NS_ASSERT_OWNINGTHREAD(MediaStreamTrack);
 
   if (Ended()) {
     return;
@@ -578,7 +792,8 @@ void MediaStreamTrack::AddListener(MediaTrackListener* aListener) {
                         fmt::ptr(this), fmt::ptr(aListener)));
   mTrackListeners.AppendElement(aListener);
 
-  if (Ended()) {
+  if (Ended() || !mTrack) {
+    // TODO(Bug 1991619): mTrack is null for tracks transferred to a worker.
     return;
   }
   mTrack->AddListener(aListener);
@@ -589,7 +804,8 @@ void MediaStreamTrack::RemoveListener(MediaTrackListener* aListener) {
                         fmt::ptr(this), fmt::ptr(aListener)));
   mTrackListeners.RemoveElement(aListener);
 
-  if (Ended()) {
+  if (Ended() || !mTrack) {
+    // TODO(Bug 1991619): mTrack is null for tracks transferred to a worker.
     return;
   }
   mTrack->RemoveListener(aListener);
@@ -603,7 +819,8 @@ void MediaStreamTrack::AddDirectListener(DirectMediaTrackListener* aListener) {
        fmt::ptr(aListener), fmt::ptr(mTrack.get())));
   mDirectTrackListeners.AppendElement(aListener);
 
-  if (Ended()) {
+  if (Ended() || !mTrack) {
+    // TODO(Bug 1991619): mTrack is null for tracks transferred to a worker.
     return;
   }
   mTrack->AddDirectListener(aListener);
@@ -616,7 +833,8 @@ void MediaStreamTrack::RemoveDirectListener(
        fmt::ptr(this), fmt::ptr(aListener), fmt::ptr(mTrack.get())));
   mDirectTrackListeners.RemoveElement(aListener);
 
-  if (Ended()) {
+  if (Ended() || !mTrack) {
+    // TODO(Bug 1991619): mTrack is null for tracks transferred to a worker.
     return;
   }
   mTrack->RemoveDirectListener(aListener);
