@@ -25,6 +25,17 @@ class AudioStreamTrack : public MediaStreamTrack {
     return track.forget();
   }
 
+  static already_AddRefed<AudioStreamTrack> Create(
+      nsIGlobalObject* aGlobal, already_AddRefed<GraphTrackHolder> aHolder,
+      MediaStreamTrackSource* aSource, MediaStreamTrackState aReadyState,
+      bool aMuted, const MediaTrackConstraints& aConstraints) {
+    RefPtr<AudioStreamTrack> track =
+        new AudioStreamTrack(aGlobal, std::move(aHolder), aSource, aReadyState,
+                             aMuted, aConstraints);
+    track->Init();
+    return track.forget();
+  }
+
   already_AddRefed<MediaStreamTrack> Clone() override;
 
   AudioStreamTrack* AsAudioStreamTrack() override { return this; }
@@ -53,6 +64,14 @@ class AudioStreamTrack : public MediaStreamTrack {
                    MediaStreamTrackState aReadyState, bool aMuted,
                    const MediaTrackConstraints& aConstraints)
       : MediaStreamTrack(aGlobal, aSource, aReadyState, aMuted, aConstraints) {}
+
+  AudioStreamTrack(nsIGlobalObject* aGlobal,
+                   already_AddRefed<GraphTrackHolder> aHolder,
+                   MediaStreamTrackSource* aSource,
+                   MediaStreamTrackState aReadyState, bool aMuted,
+                   const MediaTrackConstraints& aConstraints)
+      : MediaStreamTrack(aGlobal, std::move(aHolder), aSource, aReadyState,
+                         aMuted, aConstraints) {}
 
   void SetReadyState(MediaStreamTrackState aState) override;
 

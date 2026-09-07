@@ -23,12 +23,32 @@ already_AddRefed<VideoStreamTrack> VideoStreamTrack::Create(
   return track.forget();
 }
 
+/* static */
+already_AddRefed<VideoStreamTrack> VideoStreamTrack::Create(
+    nsIGlobalObject* aGlobal, already_AddRefed<GraphTrackHolder> aHolder,
+    MediaStreamTrackSource* aSource, MediaStreamTrackState aReadyState,
+    bool aMuted, const MediaTrackConstraints& aConstraints) {
+  RefPtr<VideoStreamTrack> track = new VideoStreamTrack(
+      aGlobal, std::move(aHolder), aSource, aReadyState, aMuted, aConstraints);
+  track->Init();
+  return track.forget();
+}
+
 VideoStreamTrack::VideoStreamTrack(nsIGlobalObject* aGlobal,
                                    MediaStreamTrackSource* aSource,
                                    MediaStreamTrackState aReadyState,
                                    bool aMuted,
                                    const MediaTrackConstraints& aConstraints)
     : MediaStreamTrack(aGlobal, aSource, aReadyState, aMuted, aConstraints) {}
+
+VideoStreamTrack::VideoStreamTrack(nsIGlobalObject* aGlobal,
+                                   already_AddRefed<GraphTrackHolder> aHolder,
+                                   MediaStreamTrackSource* aSource,
+                                   MediaStreamTrackState aReadyState,
+                                   bool aMuted,
+                                   const MediaTrackConstraints& aConstraints)
+    : MediaStreamTrack(aGlobal, std::move(aHolder), aSource, aReadyState,
+                       aMuted, aConstraints) {}
 
 void VideoStreamTrack::Destroy() {
   mVideoOutputs.Clear();

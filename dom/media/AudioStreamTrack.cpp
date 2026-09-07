@@ -130,7 +130,7 @@ already_AddRefed<MediaStreamTrack> AudioStreamTrack::Clone() {
 }
 
 void AudioStreamTrack::SetReadyState(MediaStreamTrackState aState) {
-  MOZ_ASSERT(NS_IsMainThread());
+  NS_ASSERT_OWNINGTHREAD(AudioStreamTrack);
 
   // When transitioning from Live to Ended, mTrack will be destroyed. Since
   // mTrack is the source for cross-graph data forwarding, keeping cross-graph

@@ -1,0 +1,34 @@
+<!doctype html>
+<meta charset=utf-8>
+<title>Transfers a remote track to a port and another to the parent, then ends both sources</title>
+<script>
+"use strict";
+window.addEventListener("message", async e => {
+  try {
+    const [port] = e.ports;
+    const pc1 = new RTCPeerConnection();
+    const pc2 = new RTCPeerConnection();
+    pc1.addTransceiver("video");
+    pc1.addTransceiver("video");
+    const tracks = [];
+    const bothReceived = new Promise(resolve => {
+      pc2.ontrack = ev => {
+        tracks.push(ev.track);
+        if (tracks.length == 2) {
+          resolve();
+        }
+      };
+    });
+    await pc1.setLocalDescription();
+    await pc2.setRemoteDescription(pc1.localDescription);
+    await bothReceived;
+    const [remote, barrier] = tracks;
+    port.postMessage(remote, [remote]);
+    parent.postMessage(barrier, "*", [barrier]);
+    pc2.close();
+    pc1.close();
+  } catch (err) {
+    parent.postMessage({error: `${err.name}: ${err.message}`}, "*");
+  }
+}, {once: true});
+</script>

@@ -1,0 +1,118 @@
+<!doctype html>
+<meta charset=utf-8>
+<title>A MediaStreamTrack whose source ends while it is being transferred ends in its destination</title>
+<link rel="help" href="https://w3c.github.io/mediacapture-extensions/#transferable-mediastreamtrack">
+<script src=/resources/testharness.js></script>
+<script src=/resources/testharnessreport.js></script>
+<script src=support/transfer-helper.js></script>
+<script>
+"use strict";
+
+// Transfers a remote track into a port that is not started and ends its source
+// by closing the peer connection, before the track is delivered. A second remote
+// track serves as a barrier: closing the peer connection ends both.
+async function transferRemoteTrackAndEndSource(t, port) {
+  const pc1 = new RTCPeerConnection();
+  const pc2 = new RTCPeerConnection();
+  t.add_cleanup(() => {
+    pc1.close();
+    pc2.close();
+  });
+  pc1.addTransceiver("video");
+  pc1.addTransceiver("video");
+  const tracks = [];
+  const bothReceived = new Promise(resolve => {
+    pc2.ontrack = e => {
+      tracks.push(e.track);
+      if (tracks.length == 2) {
+        resolve();
+      }
+    };
+  });
+  await pc1.setLocalDescription();
+  await pc2.setRemoteDescription(pc1.localDescription);
+  await bothReceived;
+  const [remote, barrier] = tracks;
+  const barrierEnded = new Promise(resolve => {
+    barrier.addEventListener("ended", resolve, {once: true});
+  });
+  port.postMessage(remote, [remote]);
+  pc2.close();
+  await barrierEnded;
+}
+
+promise_test(async t => {
+  const {port1, port2} = new MessageChannel();
+  const events = [];
+  let track;
+  const received = new Promise(resolve => {
+    port2.addEventListener("message", e => {
+      track = e.data;
+      track.addEventListener("ended", () => events.push("ended"));
+      resolve();
+    }, {once: true});
+  });
+  await transferRemoteTrackAndEndSource(t, port1);
+
+  port2.start();
+  await received;
+  assert_true(track instanceof MediaStreamTrack, "is a MediaStreamTrack");
+  await t.step_wait(() => track.readyState === "ended",
+                    "the track ends once its source has ended");
+  await new Promise(resolve => t.step_timeout(resolve, 100));
+  assert_array_equals(events, ["ended"], "one ended event");
+}, "A track whose source ends in flight ends in a window");
+
+promise_test(async t => {
+  const {port1, port2} = new MessageChannel();
+  const events = [];
+  let track;
+  const received = new Promise(resolve => {
+    port1.addEventListener("message", e => {
+      track = e.data;
+      track.addEventListener("ended", () => events.push("ended"));
+      resolve();
+    }, {once: true});
+  });
+  const iframe = document.createElement("iframe");
+  t.add_cleanup(() => iframe.remove());
+  const barrierReceived = new Promise(resolve => {
+    window.addEventListener("message", e => resolve(e.data), {once: true});
+  });
+  iframe.src = "support/iframe-remote-track-transfer-via-port.html";
+  await new Promise(resolve => {
+    iframe.onload = resolve;
+    document.body.appendChild(iframe);
+  });
+  iframe.contentWindow.postMessage("start", "*", [port2]);
+  const barrier = await barrierReceived;
+  assert_true(barrier instanceof MediaStreamTrack,
+              `got a track from the iframe: ${JSON.stringify(barrier)}`);
+  await t.step_wait(() => barrier.readyState === "ended",
+                    "the barrier track ends once its source has ended");
+
+  port1.start();
+  await received;
+  assert_true(track instanceof MediaStreamTrack, "is a MediaStreamTrack");
+  await t.step_wait(() => track.readyState === "ended",
+                    "the track ends once its source has ended");
+  await new Promise(resolve => t.step_timeout(resolve, 100));
+  assert_array_equals(events, ["ended"], "one ended event");
+}, "A track whose source ends in flight ends in another window");
+
+promise_test(async t => {
+  const worker = await createWorker(t, TRACK_WORKER_SCRIPT);
+  const {port1, port2} = new MessageChannel();
+  await callWorker(worker, {type: "listenForTrack", port: port2}, [port2]);
+  await transferRemoteTrackAndEndSource(t, port1);
+
+  await callWorker(worker, {type: "startListening"});
+  await callWorker(worker, {type: "takeArrivedTrack"});
+  await callWorker(worker, {type: "waitForEvent", name: "ended"});
+  assert_equals((await callWorker(worker, {type: "state"})).readyState,
+                "ended");
+  await new Promise(resolve => t.step_timeout(resolve, 100));
+  assert_array_equals(await callWorker(worker, {type: "events"}), [],
+                      "one ended event");
+}, "A track whose source ends in flight ends in a worker");
+</script>

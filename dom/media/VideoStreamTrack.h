@@ -23,6 +23,11 @@ class VideoStreamTrack : public MediaStreamTrack {
       bool aMuted = false,
       const MediaTrackConstraints& aConstraints = MediaTrackConstraints());
 
+  static already_AddRefed<VideoStreamTrack> Create(
+      nsIGlobalObject* aGlobal, already_AddRefed<GraphTrackHolder> aHolder,
+      MediaStreamTrackSource* aSource, MediaStreamTrackState aReadyState,
+      bool aMuted, const MediaTrackConstraints& aConstraints);
+
   already_AddRefed<MediaStreamTrack> Clone() override;
 
   void Destroy() override;
@@ -45,6 +50,12 @@ class VideoStreamTrack : public MediaStreamTrack {
 
  protected:
   VideoStreamTrack(nsIGlobalObject* aGlobal, MediaStreamTrackSource* aSource,
+                   MediaStreamTrackState aReadyState, bool aMuted,
+                   const MediaTrackConstraints& aConstraints);
+
+  VideoStreamTrack(nsIGlobalObject* aGlobal,
+                   already_AddRefed<GraphTrackHolder> aHolder,
+                   MediaStreamTrackSource* aSource,
                    MediaStreamTrackState aReadyState, bool aMuted,
                    const MediaTrackConstraints& aConstraints);
 

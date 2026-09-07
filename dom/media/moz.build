@@ -343,6 +343,7 @@ UNIFIED_SOURCES += [
     "VideoTrack.cpp",
     "VideoTrackList.cpp",
     "VideoUtils.cpp",
+    "WorkerTrackSourceProxy.cpp",
     "XiphExtradata.cpp",
 ]
 
