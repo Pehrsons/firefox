@@ -10,6 +10,7 @@
 #include "mozilla/DOMEventTargetHelper.h"
 #include "mozilla/RelativeTimeline.h"
 #include "mozilla/WeakPtr.h"
+#include "mozilla/dom/MediaStreamTrack.h"  // MediaStreamTrack::IsExposed
 #include "nsCycleCollectionParticipant.h"
 #include "nsIPrincipal.h"
 #include "nsWrapperCache.h"
@@ -40,7 +41,9 @@ class OverlayImage;
 /**
  * DOMMediaStream is the implementation of the js-exposed MediaStream interface.
  *
- * This is a thin main-thread class grouping MediaStreamTracks together.
+ * This is a thin class grouping MediaStreamTracks together. It lives on the
+ * thread of its global, i.e., the main thread for a Window and a worker thread
+ * for a DedicatedWorkerGlobalScope.
  */
 class DOMMediaStream : public DOMEventTargetHelper,
                        public RelativeTimeline,
@@ -94,7 +97,7 @@ class DOMMediaStream : public DOMEventTargetHelper,
     virtual ~TrackListener() = default;
   };
 
-  explicit DOMMediaStream(nsPIDOMWindowInner* aWindow);
+  explicit DOMMediaStream(nsIGlobalObject* aGlobal);
 
   NS_DECL_ISUPPORTS_INHERITED
   NS_DECL_CYCLE_COLLECTION_CLASS_INHERITED(DOMMediaStream, DOMEventTargetHelper)
@@ -186,12 +189,12 @@ class DOMMediaStream : public DOMEventTargetHelper,
 
   // Registers a track listener to this MediaStream, for listening to changes
   // to our track set. The caller must call UnregisterTrackListener before
-  // being destroyed, so we don't hold on to a dead pointer. Main thread only.
+  // being destroyed, so we don't hold on to a dead pointer. Owner thread only.
   void RegisterTrackListener(TrackListener* aListener);
 
   // Unregisters a track listener from this MediaStream. The caller must call
   // UnregisterTrackListener before being destroyed, so we don't hold on to
-  // a dead pointer. Main thread only.
+  // a dead pointer. Owner thread only.
   void UnregisterTrackListener(TrackListener* aListener);
 
  protected:

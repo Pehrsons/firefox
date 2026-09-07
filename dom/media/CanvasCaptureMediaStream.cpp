@@ -150,9 +150,9 @@ NS_IMPL_RELEASE_INHERITED(CanvasCaptureMediaStream, DOMMediaStream)
 NS_INTERFACE_MAP_BEGIN_CYCLE_COLLECTION(CanvasCaptureMediaStream)
 NS_INTERFACE_MAP_END_INHERITING(DOMMediaStream)
 
-CanvasCaptureMediaStream::CanvasCaptureMediaStream(nsPIDOMWindowInner* aWindow,
+CanvasCaptureMediaStream::CanvasCaptureMediaStream(nsIGlobalObject* aGlobal,
                                                    HTMLCanvasElement* aCanvas)
-    : DOMMediaStream(aWindow), mCanvas(aCanvas) {}
+    : DOMMediaStream(aGlobal), mCanvas(aCanvas) {}
 
 CanvasCaptureMediaStream::~CanvasCaptureMediaStream() = default;
 

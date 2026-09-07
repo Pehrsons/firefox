@@ -124,8 +124,8 @@ NS_INTERFACE_MAP_BEGIN_CYCLE_COLLECTION(DOMMediaStream::TrackListener)
   NS_INTERFACE_MAP_ENTRY(nsISupports)
 NS_INTERFACE_MAP_END
 
-DOMMediaStream::DOMMediaStream(nsPIDOMWindowInner* aWindow)
-    : DOMEventTargetHelper(aWindow),
+DOMMediaStream::DOMMediaStream(nsIGlobalObject* aGlobal)
+    : DOMEventTargetHelper(aGlobal),
       mPlaybackTrackListener(MakeAndAddRef<PlaybackTrackListener>(this)) {
   nsresult rv;
   nsCOMPtr<nsIUUIDGenerator> uuidgen =
@@ -195,14 +195,13 @@ already_AddRefed<DOMMediaStream> DOMMediaStream::Constructor(
     const GlobalObject& aGlobal,
     const Sequence<OwningNonNull<MediaStreamTrack>>& aTracks,
     ErrorResult& aRv) {
-  nsCOMPtr<nsPIDOMWindowInner> ownerWindow =
-      do_QueryInterface(aGlobal.GetAsSupports());
-  if (!ownerWindow) {
+  nsCOMPtr<nsIGlobalObject> global = do_QueryInterface(aGlobal.GetAsSupports());
+  if (!global) {
     aRv.Throw(NS_ERROR_FAILURE);
     return nullptr;
   }
 
-  auto newStream = MakeRefPtr<DOMMediaStream>(ownerWindow);
+  auto newStream = MakeRefPtr<DOMMediaStream>(global);
   for (MediaStreamTrack& track : aTracks) {
     newStream->AddTrack(track);
   }
@@ -372,7 +371,7 @@ void DOMMediaStream::RemoveTrack(MediaStreamTrack& aTrack) {
 }
 
 already_AddRefed<DOMMediaStream> DOMMediaStream::Clone() {
-  auto newStream = MakeRefPtr<DOMMediaStream>(GetOwnerWindow());
+  auto newStream = MakeRefPtr<DOMMediaStream>(GetParentObject());
 
   LOG(LogLevel::Info, ("DOMMediaStream {} created clone {}", fmt::ptr(this),
                        fmt::ptr(newStream.get())));
@@ -476,18 +475,18 @@ void DOMMediaStream::NotifyInaudible() {
 }
 
 void DOMMediaStream::RegisterTrackListener(TrackListener* aListener) {
-  MOZ_ASSERT(NS_IsMainThread());
+  NS_ASSERT_OWNINGTHREAD(DOMMediaStream);
 
   mTrackListeners.AppendElement(aListener);
 }
 
 void DOMMediaStream::UnregisterTrackListener(TrackListener* aListener) {
-  MOZ_ASSERT(NS_IsMainThread());
+  NS_ASSERT_OWNINGTHREAD(DOMMediaStream);
   mTrackListeners.RemoveElement(aListener);
 }
 
 void DOMMediaStream::NotifyTrackAdded(const RefPtr<MediaStreamTrack>& aTrack) {
-  MOZ_ASSERT(NS_IsMainThread());
+  NS_ASSERT_OWNINGTHREAD(DOMMediaStream);
 
   aTrack->AddConsumer(mPlaybackTrackListener);
 
@@ -514,7 +513,7 @@ void DOMMediaStream::NotifyTrackAdded(const RefPtr<MediaStreamTrack>& aTrack) {
 
 void DOMMediaStream::NotifyTrackRemoved(
     const RefPtr<MediaStreamTrack>& aTrack) {
-  MOZ_ASSERT(NS_IsMainThread());
+  NS_ASSERT_OWNINGTHREAD(DOMMediaStream);
 
   if (aTrack) {
     // aTrack may be null to allow HTMLMediaElement::MozCaptureStream streams

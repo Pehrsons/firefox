@@ -19,9 +19,7 @@
 #include "mozilla/OwningNonNull.h"
 #include "mozilla/RefPtr.h"
 #include "mozilla/StaticPrefs_dom.h"
-#ifdef MOZ_WEBRTC
-#  include "mozilla/StaticPrefs_media.h"
-#endif
+#include "mozilla/StaticPrefs_media.h"
 #include "mozilla/dom/AudioData.h"
 #include "mozilla/dom/BindingDeclarations.h"
 #include "mozilla/dom/BindingUtils.h"
@@ -51,6 +49,8 @@
 #include "mozilla/dom/ImageBitmap.h"
 #include "mozilla/dom/ImageBitmapBinding.h"
 #include "mozilla/dom/JSExecutionManager.h"
+#include "mozilla/dom/MediaStreamTrack.h"
+#include "mozilla/dom/MediaStreamTrackBinding.h"
 #include "mozilla/dom/MessagePort.h"
 #include "mozilla/dom/MessagePortBinding.h"
 #include "mozilla/dom/OffscreenCanvas.h"
@@ -1620,6 +1620,37 @@ StructuredCloneHolder::CustomReadTransferHandler(
     return true;
   }
 
+  if (StaticPrefs::media_mediastreamtrack_transferable_enabled() &&
+      aTag == SCTAG_DOM_MEDIASTREAMTRACK &&
+      CloneScope() == StructuredCloneScope::SameProcess &&
+      aCloneDataPolicy.areIntraClusterClonableSharedObjectsAllowed()) {
+    MOZ_ASSERT(aContent);
+
+    // aContent will be released in CustomFreeTransferHandler if we return
+    // false.
+    if (!MediaStreamTrack_Binding::ConstructorEnabled(aCx, global)) {
+      return false;
+    }
+
+    MediaStreamTrack::TransferredData* data =
+        static_cast<MediaStreamTrack::TransferredData*>(aContent);
+    RefPtr<MediaStreamTrack> track =
+        MediaStreamTrack::FromTransferred(nativeGlobal, *data);
+    if (!track) {
+      return false;
+    }
+
+    JS::Rooted<JS::Value> value(aCx);
+    if (!GetOrCreateDOMReflector(aCx, track, &value)) {
+      JS_ClearPendingException(aCx);
+      return false;
+    }
+    delete data;
+    aContent = nullptr;
+    aReturnObject.set(&value.toObject());
+    return true;
+  }
+
 #ifdef MOZ_WEBRTC
   if (aTag == SCTAG_DOM_RTCDATACHANNEL &&
       CloneScope() == StructuredCloneScope::SameProcess) {
@@ -1774,6 +1805,30 @@ StructuredCloneHolder::CustomWriteTransferHandler(
           if (!data) {
             return false;
           }
+          *aContent = data.release();
+          MOZ_ASSERT(*aContent);
+          *aOwnership = JS::SCTAG_TMO_CUSTOM;
+          return true;
+        }
+      }
+
+      if (StaticPrefs::media_mediastreamtrack_transferable_enabled()) {
+        MediaStreamTrack* track = nullptr;
+        rv = UNWRAP_OBJECT(MediaStreamTrack, &obj, track);
+        if (NS_SUCCEEDED(rv)) {
+          MOZ_ASSERT(track);
+
+          *aExtraData = 0;
+          *aTag = SCTAG_DOM_MEDIASTREAMTRACK;
+          *aContent = nullptr;
+
+          // Null if the track is detached, per the transfer steps.
+          UniquePtr<MediaStreamTrack::TransferredData> data = track->Transfer();
+          if (!data) {
+            return false;
+          }
+          // Processed by CustomReadTransferHandler, or freed by
+          // CustomFreeTransferHandler on error.
           *aContent = data.release();
           MOZ_ASSERT(*aContent);
           *aOwnership = JS::SCTAG_TMO_CUSTOM;
@@ -1954,6 +2009,15 @@ void StructuredCloneHolder::CustomFreeTransferHandler(
     }
     return;
   }
+  if (aTag == SCTAG_DOM_MEDIASTREAMTRACK &&
+      CloneScope() == StructuredCloneScope::SameProcess) {
+    if (aContent) {
+      MediaStreamTrack::TransferredData* data =
+          static_cast<MediaStreamTrack::TransferredData*>(aContent);
+      delete data;
+    }
+    return;
+  }
 #ifdef MOZ_WEBRTC
   if (aTag == SCTAG_DOM_RTCDATACHANNEL &&
       CloneScope() == StructuredCloneScope::SameProcess) {
@@ -2051,6 +2115,15 @@ bool StructuredCloneHolder::CustomCanTransferHandler(
   if (StaticPrefs::dom_media_webcodecs_enabled()) {
     mozilla::dom::AudioData* audioData = nullptr;
     nsresult rv = UNWRAP_OBJECT(AudioData, &obj, audioData);
+    if (NS_SUCCEEDED(rv)) {
+      SameProcessScopeRequired(aSameProcessScopeRequired);
+      return CloneScope() == StructuredCloneScope::SameProcess;
+    }
+  }
+
+  if (StaticPrefs::media_mediastreamtrack_transferable_enabled()) {
+    MediaStreamTrack* track = nullptr;
+    nsresult rv = UNWRAP_OBJECT(MediaStreamTrack, &obj, track);
     if (NS_SUCCEEDED(rv)) {
       SameProcessScopeRequired(aSameProcessScopeRequired);
       return CloneScope() == StructuredCloneScope::SameProcess;

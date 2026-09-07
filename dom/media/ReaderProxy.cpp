@@ -248,3 +248,5 @@ bool ReaderProxy::IsEncryptedCustomIdent() const {
 }
 
 }  // namespace mozilla
+
+#undef LOG

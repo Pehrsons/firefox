@@ -18,7 +18,7 @@ namespace dom {
 class VideoStreamTrack : public MediaStreamTrack {
  public:
   VideoStreamTrack(
-      nsPIDOMWindowInner* aWindow, mozilla::MediaTrack* aInputTrack,
+      nsIGlobalObject* aGlobal, mozilla::MediaTrack* aInputTrack,
       MediaStreamTrackSource* aSource,
       MediaStreamTrackState aState = MediaStreamTrackState::Live,
       bool aMuted = false,

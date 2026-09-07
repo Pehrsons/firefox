@@ -4415,7 +4415,7 @@ already_AddRefed<DOMMediaStream> HTMLMediaElement::CaptureStreamInternal(
 
   nsPIDOMWindowInner* window = OwnerDoc()->GetInnerWindow();
   OutputMediaStream* out = mOutputStreams.EmplaceBack(
-      MakeRefPtr<DOMMediaStream>(window),
+      MakeRefPtr<DOMMediaStream>(window ? window->AsGlobal() : nullptr),
       aStreamCaptureType == StreamCaptureType::CAPTURE_AUDIO,
       aFinishBehavior == StreamCaptureBehavior::FINISH_WHEN_ENDED);
 

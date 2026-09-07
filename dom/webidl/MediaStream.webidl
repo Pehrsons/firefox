@@ -27,7 +27,11 @@ dictionary DisplayMediaStreamConstraints {
     (boolean or MediaTrackConstraints) audio = false;
 };
 
-[Exposed=Window]
+// Exposure in DedicatedWorker is gated on the pref
+// media.mediastreamtrack.transferable.enabled through IsExposed, see
+// https://w3c.github.io/mediacapture-extensions/#mediastream-in-dedicated-workers
+[Exposed=(Window,DedicatedWorker),
+ Func="mozilla::dom::MediaStreamTrack::IsExposed"]
 interface MediaStream : EventTarget {
     [Throws]
     constructor();

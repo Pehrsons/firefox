@@ -2908,7 +2908,8 @@ DOMMediaStream* PeerConnectionImpl::GetReceiveStream(
 
 DOMMediaStream* PeerConnectionImpl::CreateReceiveStream(
     const std::string& aId) {
-  mReceiveStreams.AppendElement(MakeRefPtr<DOMMediaStream>(mWindow));
+  mReceiveStreams.AppendElement(
+      MakeRefPtr<DOMMediaStream>(mWindow->AsGlobal()));
   mReceiveStreams.LastElement()->AssignId(NS_ConvertASCIItoUTF16(aId.c_str()));
   return mReceiveStreams.LastElement();
 }

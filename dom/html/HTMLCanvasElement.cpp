@@ -917,7 +917,7 @@ already_AddRefed<CanvasCaptureMediaStream> HTMLCanvasElement::CaptureStream(
     return nullptr;
   }
 
-  auto stream = MakeRefPtr<CanvasCaptureMediaStream>(window, this);
+  auto stream = MakeRefPtr<CanvasCaptureMediaStream>(window->AsGlobal(), this);
 
   nsCOMPtr<nsIPrincipal> principal = NodePrincipal();
   nsresult rv = stream->Init(aFrameRate, principal);
@@ -927,7 +927,7 @@ already_AddRefed<CanvasCaptureMediaStream> HTMLCanvasElement::CaptureStream(
   }
 
   RefPtr<MediaStreamTrack> track =
-      new VideoStreamTrack(window, stream->GetSourceStream(),
+      new VideoStreamTrack(window->AsGlobal(), stream->GetSourceStream(),
                            new CanvasCaptureTrackSource(principal, stream));
   stream->AddTrackInternal(track);
 
