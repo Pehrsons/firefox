@@ -6,6 +6,7 @@
 #define MEDIASTREAMTRACK_H_
 
 #include "MediaEngineSource.h"
+#include "MediaSegment.h"
 #include "MediaTrackConstraints.h"
 #include "PerformanceRecorder.h"
 #include "PrincipalChangeObserver.h"
@@ -13,6 +14,7 @@
 #include "mozilla/DOMEventTargetHelper.h"
 #include "mozilla/StateMirroring.h"
 #include "mozilla/StateWatching.h"
+#include "mozilla/UniquePtr.h"
 #include "mozilla/WeakPtr.h"
 #include "mozilla/dom/MediaStreamTrackBinding.h"
 #include "mozilla/dom/MediaTrackCapabilitiesBinding.h"
@@ -44,6 +46,7 @@ namespace dom {
 class AudioStreamTrack;
 class GraphTrackHolder;
 class VideoStreamTrack;
+class MediaStreamTrackSourceHandle;
 class RTCStatsTimestampMaker;
 enum class CallerType : uint32_t;
 
@@ -52,7 +55,12 @@ using MediaStreamTrackSourceCapabilities = MediaEngineSourceCapabilities;
 
 /**
  * Common interface through which a MediaStreamTrack can communicate with its
- * producer on the main thread.
+ * producer on the thread owning the track.
+ *
+ * Sources of tracks created on the main thread live on the main thread. A
+ * track transferred to a worker gets a TransferredTrackSource living on the
+ * worker thread, which proxies to the original source through a
+ * MediaStreamTrackSourceHandle.
  *
  * Kept alive by a strong ref in all MediaStreamTracks (original and clones)
  * sharing this source.
@@ -242,6 +250,17 @@ class MediaStreamTrackSource : public nsISupports {
   }
 
   /**
+   * Returns the thread-safe handle this source proxies to, if it is a
+   * TransferredTrackSource, so that a track transferred multiple times stays
+   * tied to the original source only. Sources living on the main thread return
+   * null, and the track being transferred creates a handle holding this
+   * source instead. See MediaStreamTrackSourceHandle.
+   */
+  virtual already_AddRefed<MediaStreamTrackSourceHandle> TransferHandle() {
+    return nullptr;
+  }
+
+  /**
    * Called by the source interface when all registered sinks with
    * KeepsSourceAlive() == true have unregistered.
    */
@@ -277,7 +296,7 @@ class MediaStreamTrackSource : public nsISupports {
    * Called by each MediaStreamTrack clone on initialization.
    */
   void RegisterSink(Sink* aSink) {
-    MOZ_ASSERT(NS_IsMainThread());
+    NS_ASSERT_OWNINGTHREAD(MediaStreamTrackSource);
     if (mStopped) {
       return;
     }
@@ -293,7 +312,7 @@ class MediaStreamTrackSource : public nsISupports {
    * source (us) or destruction.
    */
   void UnregisterSink(Sink* aSink) {
-    MOZ_ASSERT(NS_IsMainThread());
+    NS_ASSERT_OWNINGTHREAD(MediaStreamTrackSource);
     mSinks.RemoveElementsBy([](const WeakPtr<Sink>& aElem) {
       MOZ_ASSERT(aElem, "Sink was not explicitly removed");
       return !aElem;
@@ -336,7 +355,7 @@ class MediaStreamTrackSource : public nsISupports {
    * Notifies all sinks.
    */
   void PrincipalChanged() {
-    MOZ_ASSERT(NS_IsMainThread());
+    NS_ASSERT_OWNINGTHREAD(MediaStreamTrackSource);
     mSinks.RemoveElementsBy([](const WeakPtr<Sink>& aElem) {
       MOZ_ASSERT(aElem, "Sink was not explicitly removed");
       return !aElem;
@@ -352,7 +371,7 @@ class MediaStreamTrackSource : public nsISupports {
    * Notifies all sinks.
    */
   void MutedChanged(bool aNewState) {
-    MOZ_ASSERT(NS_IsMainThread());
+    NS_ASSERT_OWNINGTHREAD(MediaStreamTrackSource);
     mSinks.RemoveElementsBy([](const WeakPtr<Sink>& aElem) {
       MOZ_ASSERT(aElem, "Sink was not explicitly removed");
       return !aElem;
@@ -367,7 +386,7 @@ class MediaStreamTrackSource : public nsISupports {
    * Notifies all sinks.
    */
   void ConstraintsChanged(const MediaTrackConstraints& aConstraints) {
-    MOZ_ASSERT(NS_IsMainThread());
+    NS_ASSERT_OWNINGTHREAD(MediaStreamTrackSource);
     mSinks.RemoveElementsBy([](const WeakPtr<Sink>& aElem) {
       MOZ_ASSERT(aElem, "Sink was not explicitly removed");
       return !aElem;
@@ -382,7 +401,7 @@ class MediaStreamTrackSource : public nsISupports {
    * i.e., it has ended. Notifies all sinks.
    */
   void OverrideEnded() {
-    MOZ_ASSERT(NS_IsMainThread());
+    NS_ASSERT_OWNINGTHREAD(MediaStreamTrackSource);
     mSinks.RemoveElementsBy([](const WeakPtr<Sink>& aElem) {
       MOZ_ASSERT(aElem, "Sink was not explicitly removed");
       return !aElem;
@@ -474,6 +493,10 @@ class MediaStreamTrackConsumer : public SupportsWeakPtr {
  *            *          -> t1
  *
  *   (*) is a copy of A's input track
+ *
+ * Only the main thread creates and destroys graph objects. When a track is
+ * transferred to a dedicated worker, its holder moves to a
+ * MediaStreamTrackSourceHandle on the main thread.
  */
 // clang-format on
 class MediaStreamTrack : public DOMEventTargetHelper, public SupportsWeakPtr {
@@ -485,6 +508,55 @@ class MediaStreamTrack : public DOMEventTargetHelper, public SupportsWeakPtr {
   class TrackSink;
 
  public:
+  /**
+   * The data holder of the MediaStreamTrack transfer steps, see
+   * https://w3c.github.io/mediacapture-extensions/#transferable-mediastreamtrack
+   *
+   * Created by Transfer() on the transferring thread and consumed by
+   * FromTransferred() on the receiving thread. May be destroyed on any thread.
+   * Keeps the underlying source alive while it exists.
+   */
+  struct TransferredData final {
+    TransferredData(const nsAString& aId, MediaSegment::Type aKind,
+                    const nsAString& aLabel, MediaStreamTrackState aReadyState,
+                    bool aEnabled, bool aMuted,
+                    const MediaTrackConstraints& aConstraints,
+                    const MediaStreamTrackSourceSettings& aSettings,
+                    const MediaStreamTrackSourceCapabilities& aCapabilities,
+                    const nsAString& aDeviceId, const nsAString& aGroupId,
+                    MediaSourceEnum aMediaSource, bool aHasAlpha,
+                    RefPtr<MediaStreamTrackSourceHandle> aSource);
+    ~TransferredData();
+
+    // [[id]]
+    const nsString mId;
+    // [[kind]]
+    const MediaSegment::Type mKind;
+    // [[label]]
+    const nsString mLabel;
+    // [[readyState]]
+    const MediaStreamTrackState mReadyState;
+    // [[enabled]]
+    const bool mEnabled;
+    // [[muted]]
+    const bool mMuted;
+    // [[constraints]]
+    const MediaTrackConstraints mConstraints;
+    // [[contentHint]] is not implemented.
+
+    // Snapshots of source state for a track on another thread than the
+    // source, until its Mirrors of the source's Canonicals catch up.
+    const MediaStreamTrackSourceSettings mSettings;
+    const MediaStreamTrackSourceCapabilities mCapabilities;
+    const nsString mDeviceId;
+    const nsString mGroupId;
+    const MediaSourceEnum mMediaSource;
+    const bool mHasAlpha;
+
+    // [[source]]
+    const RefPtr<MediaStreamTrackSourceHandle> mSource;
+  };
+
   MediaStreamTrack(
       nsIGlobalObject* aGlobal, mozilla::MediaTrack* aInputTrack,
       MediaStreamTrackSource* aSource,
@@ -502,6 +574,29 @@ class MediaStreamTrack : public DOMEventTargetHelper, public SupportsWeakPtr {
   nsIGlobalObject* GetParentObject() const { return mGlobal; }
   // The window of mGlobal, or null for other globals.
   nsGlobalWindowInner* GetOwnerWindow() const;
+
+  /**
+   * WebIDL Func for MediaStreamTrack and MediaStreamTrackEvent, and through
+   * DOMMediaStream::IsExposed for MediaStream.
+   * Always exposed in Window. Exposed in DedicatedWorker only when the pref
+   * media.mediastreamtrack.transferable.enabled is set.
+   */
+  static bool IsExposed(JSContext* aCx, JSObject* aGlobal);
+
+  /**
+   * The MediaStreamTrack transfer steps. Returns nullptr if the track is
+   * detached, in which case the caller throws a DataCloneError. Detaches this
+   * track and sets its readyState to "ended" without stopping the source.
+   */
+  UniquePtr<TransferredData> Transfer();
+
+  /**
+   * The MediaStreamTrack transfer-receiving steps. Creates a track in aGlobal
+   * tied to the source of the transferred track. Returns nullptr if the
+   * receiving worker is shutting down.
+   */
+  static already_AddRefed<MediaStreamTrack> FromTransferred(
+      nsIGlobalObject* aGlobal, const TransferredData& aData);
 
   virtual AudioStreamTrack* AsAudioStreamTrack() { return nullptr; }
   virtual VideoStreamTrack* AsVideoStreamTrack() { return nullptr; }
@@ -741,11 +836,14 @@ class MediaStreamTrack : public DOMEventTargetHelper, public SupportsWeakPtr {
   // keeps ending and firing events after its window has navigated away.
   nsCOMPtr<nsIGlobalObject> mGlobal;
   // Holds the input track assigned us by the data producer and owns mTrack.
-  // Set on construction if we're live. Valid until we end.
+  // Set on construction if we're live and on the main thread. Valid until we
+  // end. Shut down and released when we end or are transferred.
   RefPtr<GraphTrackHolder> mHolder;
   // The MediaTrack representing this MediaStreamTrack in the MediaTrackGraph.
   // Borrowed from mHolder, which guarantees it is not destroyed while we
   // borrow it. Set on construction if we're live. Valid until we end.
+  // TODO(Bug 1991619): Null for tracks transferred to a worker, which have no
+  // MediaTrackGraph representation yet.
   RefPtr<ProcessedMediaTrack> mTrack;
   RefPtr<MediaStreamTrackSource> mSource;
   const UniquePtr<TrackSink> mSink;
@@ -759,7 +857,12 @@ class MediaStreamTrack : public DOMEventTargetHelper, public SupportsWeakPtr {
   MediaStreamTrackState mReadyState;
   bool mEnabled;
   bool mMuted;
+  // [[IsDetached]] per the transfer steps. Set by Transfer().
+  bool mIsDetached = false;
   dom::MediaTrackConstraints mConstraints;
+  // The owning thread. The main thread, or a worker thread's AbstractThread,
+  // see WorkerPrivate::GetWorkerAbstractThread().
+  const RefPtr<AbstractThread> mAbstractThread;
   WatchManager<MediaStreamTrack> mWatchManager;
   // Mirrors mTrack's ended state from the MediaTrackGraph while we're live.
   Mirror<bool> mTrackEnded;

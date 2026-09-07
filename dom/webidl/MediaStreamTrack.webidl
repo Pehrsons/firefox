@@ -100,7 +100,16 @@ enum MediaStreamTrackState {
     "ended"
 };
 
-[Exposed=Window]
+// MediaStreamTrack is [Transferable] per
+// https://w3c.github.io/mediacapture-extensions/#transferable-mediastreamtrack
+// The attribute is not added here since the WebIDL parser does not support it
+// (see Bug 1562065); the transfer steps are implemented in
+// StructuredCloneHolder and MediaStreamTrack::Transfer.
+//
+// Exposure in DedicatedWorker is gated on the pref
+// media.mediastreamtrack.transferable.enabled through IsExposed.
+[Exposed=(Window,DedicatedWorker),
+ Func="mozilla::dom::MediaStreamTrack::IsExposed"]
 interface MediaStreamTrack : EventTarget {
     readonly    attribute DOMString             kind;
     readonly    attribute DOMString             id;

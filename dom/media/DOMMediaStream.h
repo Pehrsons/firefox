@@ -40,7 +40,9 @@ class OverlayImage;
 /**
  * DOMMediaStream is the implementation of the js-exposed MediaStream interface.
  *
- * This is a thin main-thread class grouping MediaStreamTracks together.
+ * This is a thin class grouping MediaStreamTracks together. It lives on the
+ * thread of its global, i.e., the main thread for a Window and a worker thread
+ * for a DedicatedWorkerGlobalScope.
  */
 class DOMMediaStream : public DOMEventTargetHelper,
                        public RelativeTimeline,
@@ -102,6 +104,9 @@ class DOMMediaStream : public DOMEventTargetHelper,
 
   virtual JSObject* WrapObject(JSContext* aCx,
                                JS::Handle<JSObject*> aGivenProto) override;
+
+  // WebIDL Func, see MediaStreamTrack::IsExposed.
+  static bool IsExposed(JSContext* aCx, JSObject* aGlobal);
 
   // WebIDL
 
@@ -186,12 +191,12 @@ class DOMMediaStream : public DOMEventTargetHelper,
 
   // Registers a track listener to this MediaStream, for listening to changes
   // to our track set. The caller must call UnregisterTrackListener before
-  // being destroyed, so we don't hold on to a dead pointer. Main thread only.
+  // being destroyed, so we don't hold on to a dead pointer. Owner thread only.
   void RegisterTrackListener(TrackListener* aListener);
 
   // Unregisters a track listener from this MediaStream. The caller must call
   // UnregisterTrackListener before being destroyed, so we don't hold on to
-  // a dead pointer. Main thread only.
+  // a dead pointer. Owner thread only.
   void UnregisterTrackListener(TrackListener* aListener);
 
  protected:

@@ -7,6 +7,7 @@
 #include "AudioCaptureTrack.h"
 #include "AudioChannelAgent.h"
 #include "AudioStreamTrack.h"
+#include "MediaStreamTrack.h"
 #include "MediaTrackGraph.h"
 #include "MediaTrackGraphImpl.h"
 #include "MediaTrackListener.h"
@@ -160,6 +161,11 @@ void DOMMediaStream::Destroy() {
 JSObject* DOMMediaStream::WrapObject(JSContext* aCx,
                                      JS::Handle<JSObject*> aGivenProto) {
   return dom::MediaStream_Binding::Wrap(aCx, this, aGivenProto);
+}
+
+/* static */
+bool DOMMediaStream::IsExposed(JSContext* aCx, JSObject* aGlobal) {
+  return MediaStreamTrack::IsExposed(aCx, aGlobal);
 }
 
 /* static */
@@ -475,18 +481,18 @@ void DOMMediaStream::NotifyInaudible() {
 }
 
 void DOMMediaStream::RegisterTrackListener(TrackListener* aListener) {
-  MOZ_ASSERT(NS_IsMainThread());
+  NS_ASSERT_OWNINGTHREAD(DOMMediaStream);
 
   mTrackListeners.AppendElement(aListener);
 }
 
 void DOMMediaStream::UnregisterTrackListener(TrackListener* aListener) {
-  MOZ_ASSERT(NS_IsMainThread());
+  NS_ASSERT_OWNINGTHREAD(DOMMediaStream);
   mTrackListeners.RemoveElement(aListener);
 }
 
 void DOMMediaStream::NotifyTrackAdded(const RefPtr<MediaStreamTrack>& aTrack) {
-  MOZ_ASSERT(NS_IsMainThread());
+  NS_ASSERT_OWNINGTHREAD(DOMMediaStream);
 
   aTrack->AddConsumer(mPlaybackTrackListener);
 
@@ -513,7 +519,7 @@ void DOMMediaStream::NotifyTrackAdded(const RefPtr<MediaStreamTrack>& aTrack) {
 
 void DOMMediaStream::NotifyTrackRemoved(
     const RefPtr<MediaStreamTrack>& aTrack) {
-  MOZ_ASSERT(NS_IsMainThread());
+  NS_ASSERT_OWNINGTHREAD(DOMMediaStream);
 
   if (aTrack) {
     // aTrack may be null to allow HTMLMediaElement::MozCaptureStream streams
