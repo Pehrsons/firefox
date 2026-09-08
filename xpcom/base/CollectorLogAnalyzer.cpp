@@ -89,20 +89,21 @@ already_AddRefed<dom::Promise> CollectorLogAnalyzer::DispatchToBackground(
   }
   MOZ_ASSERT(jsPromise);
 
-  auto nativePromise =
-      MakeRefPtr<typename MozPromise<OkT, LogError, true>::Private>(__func__);
-  mBackgroundEventTarget->Dispatch(
+  using NativePromise = MozPromise<OkT, LogError, true>;
+  MozPromiseHolder<NativePromise> holder;
+  RefPtr<NativePromise> nativePromise = holder.Ensure(__func__);
+  MOZ_ALWAYS_SUCCEEDS(mBackgroundEventTarget->Dispatch(
       NS_NewRunnableFunction(
           "CollectorLogAnalyzer::BackgroundTaskQueue::Dispatch",
-          [nativePromise, func = std::move(aFunc)] {
+          [holder = std::move(holder), func = std::move(aFunc)]() mutable {
             Result<OkT, LogError> result = func();
             if (result.isErr()) {
-              nativePromise->Reject(result.unwrapErr(), __func__);
+              holder.Reject(result.unwrapErr(), __func__);
             } else {
-              nativePromise->Resolve(result.unwrap(), __func__);
+              holder.Resolve(result.unwrap(), __func__);
             }
           }),
-      NS_DISPATCH_EVENT_MAY_BLOCK);
+      NS_DISPATCH_EVENT_MAY_BLOCK));
 
   nativePromise->Then(
       GetCurrentSerialEventTarget(), __func__,
