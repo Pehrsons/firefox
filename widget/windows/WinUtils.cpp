@@ -2211,23 +2211,25 @@ Result<bool, nsresult> WinUtils::MaybeWriteFileZoneIdSync(
 RefPtr<WinUtils::WriteFileZonePromise> WinUtils::MaybeWriteFileZoneId(
     nsIFile* aSaveFile, nsIURI* aSourceURI, nsIReferrerInfo* aReferrerInfo,
     bool aShouldStoreUrls) {
-  RefPtr promise = MakeRefPtr<WriteFileZonePromise::Private>(__func__);
-  nsresult rv = NS_DispatchBackgroundTask(NS_NewRunnableFunction(
-      "WriteFileZoneId",
+  nsCOMPtr<nsISerialEventTarget> target;
+  nsresult rv =
+      NS_CreateBackgroundTaskQueue("WriteFileZoneId", getter_AddRefs(target));
+  if (NS_FAILED(rv)) {
+    return WriteFileZonePromise::CreateAndReject(rv, __func__);
+  }
+  return InvokeAsync(
+      target, __func__,
       [saveFile = RefPtr{aSaveFile}, sourceURI = RefPtr{aSourceURI},
-       referrerInfo = RefPtr{aReferrerInfo}, aShouldStoreUrls, promise]() {
+       referrerInfo = RefPtr{aReferrerInfo}, aShouldStoreUrls]() {
         auto result = MaybeWriteFileZoneIdSync(saveFile, sourceURI,
                                                referrerInfo, aShouldStoreUrls);
-        if (result.isOk()) {
-          promise->Resolve(result.unwrap(), __func__);
-        } else {
-          promise->Reject(result.unwrapErr(), __func__);
+        if (result.isErr()) {
+          return WriteFileZonePromise::CreateAndReject(result.unwrapErr(),
+                                                       __func__);
         }
-      }));
-  if (NS_FAILED(rv)) {
-    promise->Reject(rv, __func__);
-  }
-  return promise;
+        return WriteFileZonePromise::CreateAndResolve(result.unwrap(),
+                                                      __func__);
+      });
 }
 
 // There are undocumented APIs to query/change the system DPI settings found by
