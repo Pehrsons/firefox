@@ -322,9 +322,6 @@ void MediaTrackGraphImpl::ProcessChunkMetadataForInterval(MediaTrack* aTrack,
            fmt::ptr(this), fmt::ptr(aTrack),
            aSegment.GetType() == MediaSegment::AUDIO ? "Audio" : "Video",
            (long long)chunk->GetDuration()));
-      for (const auto& listener : aTrack->mTrackListeners) {
-        listener->NotifyPrincipalHandleChanged(this, principalHandle);
-      }
     }
   }
 }
@@ -2576,9 +2573,6 @@ void MediaTrack::AddListenerImpl(
   RefPtr<MediaTrackListener> l(aListener);
   mTrackListeners.AppendElement(std::move(l));
 
-  PrincipalHandle lastPrincipalHandle = mSegment->GetLastPrincipalHandle();
-  mTrackListeners.LastElement()->NotifyPrincipalHandleChanged(
-      Graph(), lastPrincipalHandle);
   if (mNotifiedEnded) {
     mTrackListeners.LastElement()->NotifyEnded(Graph());
   }
