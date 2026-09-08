@@ -68,9 +68,8 @@ void MediaMgrError::Reject(dom::Promise* aPromise) const {
     case Name::OverconstrainedError: {
       // TODO: Add OverconstrainedError type.
       // https://bugzilla.mozilla.org/show_bug.cgi?id=1453013
-      nsCOMPtr<nsPIDOMWindowInner> window =
-          do_QueryInterface(aPromise->GetGlobalObject());
-      aPromise->MaybeReject(MakeRefPtr<dom::MediaStreamError>(window, *this));
+      aPromise->MaybeReject(MakeRefPtr<dom::MediaStreamError>(
+          aPromise->GetGlobalObject(), *this));
       return;
     }
     case Name::SecurityError:
