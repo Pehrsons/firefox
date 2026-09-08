@@ -169,28 +169,21 @@ RefPtr<AddFilesPromise> FileTransferPortal::AddFilesBatch(
   int nextStart = aStart + count;
 
   mCancellable = GUniquePtr<GCancellable>(g_cancellable_new());
-  auto promise = MakeRefPtr<AddFilesPromise::Private>(__func__);
-  DBusProxyCallWithUnixFDList(
-      mProxy, "AddFiles",
-      g_variant_new("(saha{sv})", aKey.get(), &fds, &options),
-      G_DBUS_CALL_FLAGS_NONE, /* timeout */ -1, fdList, mCancellable.get())
+  return DBusProxyCallWithUnixFDList(
+             mProxy, "AddFiles",
+             g_variant_new("(saha{sv})", aKey.get(), &fds, &options),
+             G_DBUS_CALL_FLAGS_NONE, /* timeout */ -1, fdList,
+             mCancellable.get())
       ->Then(
           GetCurrentSerialEventTarget(), __func__,
-          [this, promise, keyCopy = std::move(keyCopy),
-           filesCopy = std::move(filesCopy), nextStart](
-              std::pair<RefPtr<GVariant>, RefPtr<GUnixFDList>>&&) mutable {
-            AddFilesBatch(keyCopy, filesCopy, nextStart)
-                ->Then(
-                    GetCurrentSerialEventTarget(), __func__,
-                    [promise](bool aVal) { promise->Resolve(aVal, __func__); },
-                    [promise](GUniquePtr<GError>&& aError) {
-                      promise->Reject(std::move(aError), __func__);
-                    });
+          [this, keyCopy = std::move(keyCopy), filesCopy = std::move(filesCopy),
+           nextStart](std::pair<RefPtr<GVariant>, RefPtr<GUnixFDList>>&&) {
+            return AddFilesBatch(keyCopy, filesCopy, nextStart);
           },
-          [promise](GUniquePtr<GError>&& aError) {
-            promise->Reject(std::move(aError), __func__);
+          [](GUniquePtr<GError>&& aError) {
+            return AddFilesPromise::CreateAndReject(std::move(aError),
+                                                    __func__);
           });
-  return promise;
 }
 
 RefPtr<FileTransferPortal::RegisterFilesPromise>
@@ -210,33 +203,35 @@ FileTransferPortal::RegisterFiles(const nsTArray<nsCString>& aFiles,
                         g_variant_new_boolean(TRUE));
 
   nsTArray<nsCString> filesCopy(aFiles.Clone());
-  auto promise = MakeRefPtr<RegisterFilesPromise::Private>(__func__);
 
   mCancellable = GUniquePtr<GCancellable>(g_cancellable_new());
-  DBusProxyCall(mProxy, "StartTransfer", g_variant_new("(a{sv})", &options),
-                G_DBUS_CALL_FLAGS_NONE, /* timeout */ -1, mCancellable.get())
+  return DBusProxyCall(
+             mProxy, "StartTransfer", g_variant_new("(a{sv})", &options),
+             G_DBUS_CALL_FLAGS_NONE, /* timeout */ -1, mCancellable.get())
       ->Then(
           GetCurrentSerialEventTarget(), __func__,
-          [this, promise, filesCopy = std::move(filesCopy)](
-              RefPtr<GVariant>&& aResult) mutable {
+          [this, filesCopy = std::move(filesCopy)](
+              RefPtr<GVariant>&& aResult) -> RefPtr<RegisterFilesPromise> {
             const char* key = nullptr;
             g_variant_get(aResult, "(&s)", &key);
             nsCString keyCopy(key);
 
-            AddFilesBatch(keyCopy, filesCopy, 0)
+            return AddFilesBatch(keyCopy, filesCopy, 0)
                 ->Then(
                     GetCurrentSerialEventTarget(), __func__,
-                    [promise, keyCopy](bool) {
-                      promise->Resolve(keyCopy, __func__);
+                    [keyCopy](bool) {
+                      return RegisterFilesPromise::CreateAndResolve(keyCopy,
+                                                                    __func__);
                     },
-                    [promise](GUniquePtr<GError>&& aError) {
-                      promise->Reject(std::move(aError), __func__);
+                    [](GUniquePtr<GError>&& aError) {
+                      return RegisterFilesPromise::CreateAndReject(
+                          std::move(aError), __func__);
                     });
           },
-          [promise](GUniquePtr<GError>&& aError) {
-            promise->Reject(std::move(aError), __func__);
+          [](GUniquePtr<GError>&& aError) {
+            return RegisterFilesPromise::CreateAndReject(std::move(aError),
+                                                         __func__);
           });
-  return promise;
 }
 
 // TODO: Implement aWritable/autostop parameters?
@@ -339,15 +334,14 @@ FileTransferPortal::RetrieveFiles(const char* aKey) {
   GVariantBuilder options;
   g_variant_builder_init(&options, G_VARIANT_TYPE_VARDICT);
 
-  auto promise = MakeRefPtr<RetrieveFilesPromise::Private>(__func__);
   mCancellable = GUniquePtr<GCancellable>(g_cancellable_new());
 
-  DBusProxyCall(mProxy, "RetrieveFiles",
-                g_variant_new("(sa{sv})", aKey, &options),
-                G_DBUS_CALL_FLAGS_NONE, /* timeout */ -1, mCancellable.get())
+  return DBusProxyCall(
+             mProxy, "RetrieveFiles", g_variant_new("(sa{sv})", aKey, &options),
+             G_DBUS_CALL_FLAGS_NONE, /* timeout */ -1, mCancellable.get())
       ->Then(
           GetCurrentSerialEventTarget(), __func__,
-          [promise](RefPtr<GVariant>&& aResult) {
+          [](RefPtr<GVariant>&& aResult) {
             const char** files = nullptr;
             g_variant_get(aResult, "(^a&s)", &files);
 
@@ -358,12 +352,13 @@ FileTransferPortal::RetrieveFiles(const char* aKey) {
               }
               g_free(files);
             }
-            promise->Resolve(std::move(result), __func__);
+            return RetrieveFilesPromise::CreateAndResolve(std::move(result),
+                                                          __func__);
           },
-          [promise](GUniquePtr<GError>&& aError) {
-            promise->Reject(std::move(aError), __func__);
+          [](GUniquePtr<GError>&& aError) {
+            return RetrieveFilesPromise::CreateAndReject(std::move(aError),
+                                                         __func__);
           });
-  return promise;
 }
 
 GUniquePtr<char*> FileTransferPortal::RetrieveFilesSync(const char* aKey) {
