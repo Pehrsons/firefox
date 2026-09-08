@@ -11,6 +11,8 @@
 #include "PlatformEncoderModule.h"
 #include "WMFDataEncoderUtils.h"
 #include "WMFUtils.h"
+#include "mozilla/Maybe.h"
+#include "mozilla/MozPromise.h"
 #include "mozilla/WindowsProcessMitigations.h"
 
 namespace mozilla {
@@ -101,7 +103,15 @@ class WMFMediaDataEncoder final : public MediaDataEncoder {
   // Can be accessed on any thread, but only written on during init.
   Atomic<bool> mIsHardwareAccelerated;
 
-  AutoTArray<RefPtr<EncodePromise::Private>, 4> mEncodePromises;
+  struct PendingEncode {
+    RefPtr<EncodePromise> mPromise;
+    MozPromiseHolder<EncodePromise> mHolder;
+  };
+  // Removes and returns the holder for aPromise, if it is still pending.
+  Maybe<MozPromiseHolder<EncodePromise>> TakePendingEncode(
+      EncodePromise* aPromise);
+
+  AutoTArray<PendingEncode, 4> mEncodePromises;
   MozPromiseHolder<EncodePromise> mDrainPromise;
   MozPromiseRequestHolder<MFTEncoder::EncodePromise> mDrainRequest;
 };

@@ -1139,8 +1139,9 @@ RefPtr<MFTEncoder::EncodePromise> MFTEncoder::EncodeWithAsyncCallback(
 
   SetState(State::Encoding);
 
-  auto p = MakeRefPtr<MFTEncoder::EncodePromise::Private>(__func__);
-  mEncodePromises.push_back(p);
+  MozPromiseHolder<EncodePromise> holder;
+  RefPtr<EncodePromise> p = holder.Ensure(__func__);
+  mEncodePromises.push_back(std::move(holder));
 
   size_t inputCounts = aInputs.Length();
   for (auto& input : aInputs) {
@@ -1424,7 +1425,7 @@ void MFTEncoder::MaybeResolveOrRejectEncodePromise(
     mEncodePromises.clear();
 
     for (auto& p : encodePromises) {
-      p->Reject(mPendingError, __func__);
+      p.Reject(mPendingError, __func__);
     }
     mPendingError = NS_OK;
     return;
@@ -1433,7 +1434,7 @@ void MFTEncoder::MaybeResolveOrRejectEncodePromise(
   if (!aResolveAll) {
     auto p = std::move(mEncodePromises.front());
     mEncodePromises.pop_front();
-    p->Resolve(std::move(mOutputs), __func__);
+    p.Resolve(std::move(mOutputs), __func__);
 
     if (!mEncodePromises.empty() && !MaybeArmTimer()) {
       aResolveAll = true;
@@ -1446,7 +1447,7 @@ void MFTEncoder::MaybeResolveOrRejectEncodePromise(
 
     // Only the first promise gets the pending outputs, if any.
     for (auto& p : encodePromises) {
-      p->Resolve(std::move(mOutputs), __func__);
+      p.Resolve(std::move(mOutputs), __func__);
     }
   }
 

@@ -75,7 +75,7 @@ RefPtr<ShutdownPromise> WMFMediaDataEncoder::Shutdown() {
         // Cancel encode in flight if any.
         auto pendingEncodes = std::move(self->mEncodePromises);
         for (auto& i : pendingEncodes) {
-          i->Reject(r, __func__);
+          i.mHolder.Reject(r, __func__);
         }
 
         // Cancel drain in flight if any.
@@ -267,8 +267,9 @@ RefPtr<EncodePromise> WMFMediaDataEncoder::ProcessEncode(
         __func__);
   }
 
-  auto p = MakeRefPtr<EncodePromise::Private>(__func__);
-  mEncodePromises.AppendElement(p);
+  MozPromiseHolder<EncodePromise> holder;
+  RefPtr<EncodePromise> p = holder.Ensure(__func__);
+  mEncodePromises.AppendElement(PendingEncode{p, std::move(holder)});
 
   nsTArray<MFTEncoder::InputSample> inputs;
   inputs.AppendElement(MFTEncoder::InputSample{
@@ -277,18 +278,20 @@ RefPtr<EncodePromise> WMFMediaDataEncoder::ProcessEncode(
       ->Then(GetCurrentSerialEventTarget(), __func__,
              [self = RefPtr{this},
               p](MFTEncoder::EncodePromise::ResolveOrRejectValue&& aValue) {
-               if (!self->mEncodePromises.RemoveElement(p)) {
+               Maybe<MozPromiseHolder<EncodePromise>> holder =
+                   self->TakePendingEncode(p);
+               if (holder.isNothing()) {
                  return;
                }
 
                if (aValue.IsResolve()) {
-                 p->Resolve(self->ProcessOutputSamples(
-                                std::move(aValue.ResolveValue())),
-                            __func__);
+                 holder->Resolve(self->ProcessOutputSamples(
+                                     std::move(aValue.ResolveValue())),
+                                 __func__);
                } else {
                  const auto& error = aValue.RejectValue();
                  WMF_ENC_SLOGE("Encode failed: {}", error.Description().get());
-                 p->Reject(error, __func__);
+                 holder->Reject(error, __func__);
                }
              });
   return p;
@@ -326,28 +329,45 @@ RefPtr<EncodePromise> WMFMediaDataEncoder::ProcessEncodeBatch(
         .mSample = std::move(nv12), .mKeyFrameRequested = sample->mKeyframe});
   }
 
-  auto p = MakeRefPtr<EncodePromise::Private>(__func__);
-  mEncodePromises.AppendElement(p);
+  MozPromiseHolder<EncodePromise> holder;
+  RefPtr<EncodePromise> p = holder.Ensure(__func__);
+  mEncodePromises.AppendElement(PendingEncode{p, std::move(holder)});
 
   mEncoder->Encode(std::move(inputs))
       ->Then(GetCurrentSerialEventTarget(), __func__,
              [self = RefPtr{this},
               p](MFTEncoder::EncodePromise::ResolveOrRejectValue&& aValue) {
-               if (!self->mEncodePromises.RemoveElement(p)) {
+               Maybe<MozPromiseHolder<EncodePromise>> holder =
+                   self->TakePendingEncode(p);
+               if (holder.isNothing()) {
                  return;
                }
 
                if (aValue.IsResolve()) {
-                 p->Resolve(self->ProcessOutputSamples(
-                                std::move(aValue.ResolveValue())),
-                            __func__);
+                 holder->Resolve(self->ProcessOutputSamples(
+                                     std::move(aValue.ResolveValue())),
+                                 __func__);
                } else {
                  const auto& error = aValue.RejectValue();
                  WMF_ENC_SLOGE("Encode failed: {}", error.Description().get());
-                 p->Reject(error, __func__);
+                 holder->Reject(error, __func__);
                }
              });
   return p;
+}
+
+Maybe<MozPromiseHolder<EncodePromise>> WMFMediaDataEncoder::TakePendingEncode(
+    EncodePromise* aPromise) {
+  AssertOnTaskQueue();
+  for (size_t i = 0; i < mEncodePromises.Length(); ++i) {
+    if (mEncodePromises[i].mPromise == aPromise) {
+      Maybe<MozPromiseHolder<EncodePromise>> holder =
+          Some(std::move(mEncodePromises[i].mHolder));
+      mEncodePromises.RemoveElementAt(i);
+      return holder;
+    }
+  }
+  return Nothing();
 }
 
 RefPtr<EncodePromise> WMFMediaDataEncoder::ProcessDrain() {

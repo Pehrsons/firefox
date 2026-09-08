@@ -221,7 +221,7 @@ class MFTEncoder final {
 
   // The following members are used only for realtime asynchronous processing
   // model.
-  std::deque<RefPtr<EncodePromise::Private>> mEncodePromises;
+  std::deque<MozPromiseHolder<EncodePromise>> mEncodePromises;
   MediaResult mPendingError;
   MozPromiseHolder<EncodePromise> mDrainPromise;
   MozPromiseHolder<EncodePromise> mPreDrainPromise;

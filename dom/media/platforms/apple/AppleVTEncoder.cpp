@@ -1019,8 +1019,9 @@ RefPtr<MediaDataEncoder::EncodePromise> AppleVTEncoder::ProcessEncode(
         __func__);
   }
 
-  auto p = MakeRefPtr<EncodePromise::Private>(__func__);
-  mEncodePromises.push_back(p);
+  MozPromiseHolder<EncodePromise> holder;
+  RefPtr<EncodePromise> p = holder.Ensure(__func__);
+  mEncodePromises.push_back(std::move(holder));
 
   MOZ_ASSERT(mEncodeState == EncodeState::NotEncoding);
   mEncodeState = EncodeState::Encoding;
@@ -1414,7 +1415,7 @@ void AppleVTEncoder::MaybeResolveOrRejectEncodePromises(
     auto encodePromises = std::move(mEncodePromises);
     mEncodePromises.clear();
     for (auto& p : encodePromises) {
-      p->Reject(mError, __func__);
+      p.Reject(mError, __func__);
     }
     return;
   }
@@ -1423,7 +1424,7 @@ void AppleVTEncoder::MaybeResolveOrRejectEncodePromises(
     LOGV("Resolving with {} encoded outputs", mEncodedData.Length());
     auto p = std::move(mEncodePromises.front());
     mEncodePromises.pop_front();
-    p->Resolve(std::move(mEncodedData), __func__);
+    p.Resolve(std::move(mEncodedData), __func__);
     aResolveAll = !mEncodePromises.empty() && !MaybeArmTimer();
   }
 
@@ -1435,7 +1436,7 @@ void AppleVTEncoder::MaybeResolveOrRejectEncodePromises(
 
     // Only the first promise gets the pending outputs, if any.
     for (auto& p : encodePromises) {
-      p->Resolve(std::move(mEncodedData), __func__);
+      p.Resolve(std::move(mEncodedData), __func__);
     }
   }
 }

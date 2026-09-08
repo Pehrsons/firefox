@@ -103,7 +103,7 @@ class AppleVTEncoder final : public MediaDataEncoder {
   EncodeState mEncodeState = EncodeState::NotEncoding;
   EncodedData mEncodedData;
   MozPromiseHolder<EncodePromise> mDrainPromise;
-  std::deque<RefPtr<EncodePromise::Private>> mEncodePromises;
+  std::deque<MozPromiseHolder<EncodePromise>> mEncodePromises;
   RefPtr<MediaByteBuffer> mAvcc;  // Stores latest avcC data.
   MediaResult mError;
 
