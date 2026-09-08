@@ -14,7 +14,7 @@
 #include "mozilla/ContentClassifierEngine.h"
 #include "mozilla/ClearOnShutdown.h"
 #include "mozilla/dom/Promise.h"
-#include "mozilla/dom/Promise-inl.h"
+#include "mozilla/dom/PromiseNativeHandler.h"
 #include "mozilla/dom/TypedArray.h"
 #include "mozilla/ErrorResult.h"
 #include "mozilla/Preferences.h"
@@ -1287,31 +1287,30 @@ static RefPtr<ListBytesPromise> FetchListBytesFromRemoteSettings(
         NS_FAILED(rv) ? rv : NS_ERROR_FAILURE, __func__);
   }
 
-  RefPtr<ListBytesPromise::Private> result =
-      new ListBytesPromise::Private(__func__);
-  jsPromise->AddCallbacksWithCycleCollectedArgs(
-      [result](JSContext* aCx, JS::Handle<JS::Value> aValue, ErrorResult&) {
+  auto handler = MakeRefPtr<dom::MozPromiseNativeHandler<ListBytesPromise>>(
+      [](JSContext* aCx,
+         JS::Handle<JS::Value> aValue) -> RefPtr<ListBytesPromise> {
         if (!aValue.isObject()) {
-          result->Reject(NS_ERROR_FAILURE, __func__);
-          return;
+          return ListBytesPromise::CreateAndReject(NS_ERROR_FAILURE, __func__);
         }
         JS::Rooted<JSObject*> jsObj(aCx, &aValue.toObject());
         dom::Uint8Array arr;
         if (!arr.Init(jsObj)) {
-          result->Reject(NS_ERROR_FAILURE, __func__);
-          return;
+          return ListBytesPromise::CreateAndReject(NS_ERROR_FAILURE, __func__);
         }
         nsTArray<uint8_t> bytes;
         if (!arr.AppendDataTo(bytes)) {
-          result->Reject(NS_ERROR_OUT_OF_MEMORY, __func__);
-          return;
+          return ListBytesPromise::CreateAndReject(NS_ERROR_OUT_OF_MEMORY,
+                                                   __func__);
         }
-        result->Resolve(std::move(bytes), __func__);
+        return ListBytesPromise::CreateAndResolve(std::move(bytes), __func__);
       },
-      [result](JSContext*, JS::Handle<JS::Value>, ErrorResult&) {
-        result->Reject(NS_ERROR_FAILURE, __func__);
-      });
-  return result;
+      [](JSContext*, JS::Handle<JS::Value>) {
+        return ListBytesPromise::CreateAndReject(NS_ERROR_FAILURE, __func__);
+      },
+      __func__);
+  jsPromise->AppendNativeHandler(handler);
+  return handler->Promise();
 }
 
 nsresult BuildEngineFromRules(const ContentClassifierFeature& aFeature,
@@ -1754,12 +1753,10 @@ ContentClassifierService::FetchEngineDataForFeature(
                                                 __func__);
   }
 
-  RefPtr<EngineRulesPromise::Private> result =
-      new EngineRulesPromise::Private(__func__);
   RefPtr<ContentClassifierService> self = this;
-  ListBytesPromise::AllSettled(GetMainThreadSerialEventTarget(), fetches)
+  return ListBytesPromise::AllSettled(GetMainThreadSerialEventTarget(), fetches)
       ->Then(GetMainThreadSerialEventTarget(), __func__,
-             [self, result, feature = &aFeature,
+             [self, feature = &aFeature,
               listIdsInOrder = std::move(listIdsInOrder)](
                  const ListBytesPromise::AllSettledPromiseType::
                      ResolveOrRejectValue& aValue) mutable {
@@ -1768,8 +1765,8 @@ ContentClassifierService::FetchEngineDataForFeature(
                              "FetchEngineDataForFeature - failed to fetch "
                              "list bytes for feature \"{}\"",
                              feature->mName);
-                 result->Reject(NS_ERROR_NOT_AVAILABLE, __func__);
-                 return;
+                 return EngineRulesPromise::CreateAndReject(
+                     NS_ERROR_NOT_AVAILABLE, __func__);
                }
 
                const auto& fetchPromises = aValue.ResolveValue();
@@ -1792,9 +1789,9 @@ ContentClassifierService::FetchEngineDataForFeature(
                  }
                  ParseFilterListRules(fetchResult, rules);
                }
-               result->Resolve(std::move(rules), __func__);
+               return EngineRulesPromise::CreateAndResolve(std::move(rules),
+                                                           __func__);
              });
-  return result;
 }
 
 RefPtr<ContentClassifierService::EngineRulesPromise>
@@ -1842,22 +1839,19 @@ ContentClassifierService::FetchEngineDataForTestFeature(
     promises.AppendElement(loader->Load(listURLS[i]));
   }
 
-  RefPtr<EngineRulesPromise::Private> result =
-      new EngineRulesPromise::Private(__func__);
-
-  GenericPromise::AllSettled(GetMainThreadSerialEventTarget(), promises)
+  return GenericPromise::AllSettled(GetMainThreadSerialEventTarget(), promises)
       ->Then(
           GetMainThreadSerialEventTarget(), __func__,
-          [self = RefPtr{this}, result, filterRules = std::move(filterRules)](
+          [self = RefPtr{this}, filterRules = std::move(filterRules)](
               const GenericPromise::AllSettledPromiseType::ResolveOrRejectValue&
                   aResults) {
             nsTArray<nsCString> rules;
             for (const auto& fromUrl : filterRules) {
               rules.AppendElements(fromUrl);
             }
-            result->Resolve(std::move(rules), __func__);
+            return EngineRulesPromise::CreateAndResolve(std::move(rules),
+                                                        __func__);
           });
-  return result;
 }
 
 }  // namespace mozilla
