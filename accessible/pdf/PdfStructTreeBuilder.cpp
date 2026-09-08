@@ -150,7 +150,7 @@ PdfStructTreeBuilder::GlobalAccessibleId PdfStructTreeBuilder::GetAccId(
 
 PdfStructTreeBuilder::PdfStructTreeBuilder(uint64_t aInnerWindowId)
     : mRootInnerWindowId(aInnerWindowId) {
-  mReadyPromise = new ReadyPromise::Private(__func__);
+  mReadyPromise = mReadyHolder.Ensure(__func__);
 }
 
 void PdfStructTreeBuilder::InitInternal(dom::WindowContext* aWindowContext) {
@@ -180,7 +180,7 @@ void PdfStructTreeBuilder::InitInternal(dom::WindowContext* aWindowContext) {
   if (mPendingOopIframes == 0) {
     // Once we've received all pending out-of-process iframes, we are ready to
     // build the PDF struct tree.
-    mReadyPromise->Resolve(mozilla::Ok(), __func__);
+    mReadyHolder.ResolveIfExists(mozilla::Ok(), __func__);
   }
 }
 

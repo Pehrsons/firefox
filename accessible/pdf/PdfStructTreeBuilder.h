@@ -90,6 +90,7 @@ class PdfStructTreeBuilder {
 
  private:
   explicit PdfStructTreeBuilder(uint64_t aInnerWindowId);
+  ~PdfStructTreeBuilder() { mReadyHolder.RejectIfExists(Ok(), __func__); }
   void InitInternal(dom::WindowContext*);
   int GeneratePdfId(Accessible* aAcc);
   void BuildStructSubtree(Accessible* aAcc, SkPDF::StructureElementNode& aPdf);
@@ -103,7 +104,8 @@ class PdfStructTreeBuilder {
   // Tracks BrowserParents to which we've sent RequestDocAccessibleForPrint,
   // to avoid sending it more than once to the same BrowserParent.
   nsTHashSet<uint64_t> mRequestedBrowserParentIds;
-  RefPtr<ReadyPromise::Private> mReadyPromise;
+  MozPromiseHolder<ReadyPromise> mReadyHolder;
+  RefPtr<ReadyPromise> mReadyPromise;
   int mLastPdfId = 0;
   // Maps {innerWindowId, accessibleId} to SkPDF id.
   mozilla::HashMap<GlobalAccessibleId, int, PairHasher<uint64_t, uint64_t>>
