@@ -6,8 +6,8 @@
 #define mozilla_dom_MediaStreamError_h
 
 #include "js/TypeDecls.h"
-#include "mozilla/RefPtr.h"
-#include "nsPIDOMWindow.h"
+#include "nsCOMPtr.h"
+#include "nsIGlobalObject.h"
 #include "nsWrapperCache.h"
 
 #if defined(XP_WIN) && defined(GetMessage)
@@ -75,7 +75,7 @@ class MediaStreamError final : public nsISupports,
                                public BaseMediaMgrError,
                                public nsWrapperCache {
  public:
-  MediaStreamError(nsPIDOMWindowInner* aParent, const BaseMediaMgrError& aOther)
+  MediaStreamError(nsIGlobalObject* aParent, const BaseMediaMgrError& aOther)
       : BaseMediaMgrError(aOther.mName, aOther.mMessage, aOther.mConstraint),
         mParent(aParent) {}
 
@@ -86,7 +86,7 @@ class MediaStreamError final : public nsISupports,
   JSObject* WrapObject(JSContext* aCx,
                        JS::Handle<JSObject*> aGivenProto) override;
 
-  nsPIDOMWindowInner* GetParentObject() const { return mParent; }
+  nsIGlobalObject* GetParentObject() const { return mParent; }
   void GetName(nsAString& aName) const;
   void GetMessage(nsAString& aMessage) const;
   void GetConstraint(nsAString& aConstraint) const;
@@ -94,7 +94,7 @@ class MediaStreamError final : public nsISupports,
  private:
   virtual ~MediaStreamError() = default;
 
-  RefPtr<nsPIDOMWindowInner> mParent;
+  nsCOMPtr<nsIGlobalObject> mParent;
 };
 
 }  // namespace dom
