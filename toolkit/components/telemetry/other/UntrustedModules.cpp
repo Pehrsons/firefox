@@ -61,7 +61,9 @@ class MOZ_HEAP_CLASS MultiGetUntrustedModulesData final {
       delete;
 
  private:
-  ~MultiGetUntrustedModulesData() = default;
+  ~MultiGetUntrustedModulesData() {
+    mPromise.RejectIfExists(NS_ERROR_ABORT, __func__);
+  }
 
   void AddPending(RefPtr<UntrustedModulesPromise>&& aNewPending) {
     MOZ_ASSERT(NS_IsMainThread());
@@ -126,6 +128,8 @@ RefPtr<MultiGetUntrustedModulesPromise>
 MultiGetUntrustedModulesData::GetUntrustedModuleLoadEvents() {
   MOZ_ASSERT(XRE_IsParentProcess() && NS_IsMainThread());
 
+  RefPtr<MultiGetUntrustedModulesPromise> promise = mPromise.Ensure(__func__);
+
   // Parent process
   RefPtr<DllServices> dllSvc(DllServices::Get());
   AddPending(dllSvc->GetUntrustedModulesData());
@@ -167,7 +171,7 @@ MultiGetUntrustedModulesData::GetUntrustedModuleLoadEvents() {
     }
   }
 
-  return mPromise.Ensure(__func__);
+  return promise;
 }
 
 #if defined(XP_WIN)

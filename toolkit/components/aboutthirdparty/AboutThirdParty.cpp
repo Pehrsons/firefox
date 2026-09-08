@@ -668,6 +668,10 @@ already_AddRefed<AboutThirdParty> AboutThirdParty::GetSingleton() {
 AboutThirdParty::AboutThirdParty()
     : mPromise(mPromiseHolder.Ensure(__func__)) {}
 
+AboutThirdParty::~AboutThirdParty() {
+  mPromiseHolder.RejectIfExists(NS_ERROR_ABORT, __func__);
+}
+
 void AboutThirdParty::AddKnownModule(const nsString& aPath,
                                      KnownModuleType aType) {
   MOZ_ASSERT(!NS_IsMainThread());
@@ -881,9 +885,9 @@ RefPtr<BackgroundThreadPromise> AboutThirdParty::CollectSystemInfoAsync() {
     nsCOMPtr<nsIRunnable> runnable = NS_NewRunnableFunction(
         "AboutThirdParty::BackgroundThread", [self = RefPtr{this}]() mutable {
           self->BackgroundThread();
-          NS_DispatchToMainThread(NS_NewRunnableFunction(
+          MOZ_ALWAYS_SUCCEEDS(NS_DispatchToMainThread(NS_NewRunnableFunction(
               "AboutThirdParty::BackgroundThread Done",
-              [self]() { self->mPromiseHolder.Resolve(true, __func__); }));
+              [self]() { self->mPromiseHolder.Resolve(true, __func__); })));
         });
 
     nsresult rv =

@@ -91,7 +91,7 @@ class AboutThirdParty final : public nsIAboutThirdParty {
   nsTHashSet<nsStringCaseInsensitiveHashKey> mDynamicBlocklistAtLaunch;
 #endif
 
-  ~AboutThirdParty() = default;
+  ~AboutThirdParty();
   void BackgroundThread();
   void AddKnownModule(const nsString& aPath, KnownModuleType aType);
 
