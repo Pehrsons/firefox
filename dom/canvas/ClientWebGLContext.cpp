@@ -5534,19 +5534,18 @@ RefPtr<dom::HTMLCanvasElement::SurfaceSnapshotPromise>
 ClientWebGLContext::DoReadPixelsAsync() {
   MOZ_ASSERT(GetChild());
 
-  RefPtr<dom::HTMLCanvasElement::SurfaceSnapshotPromise::Private> promise =
-      new dom::HTMLCanvasElement::SurfaceSnapshotPromise::Private(__func__);
+  using SurfaceSnapshotPromise = dom::HTMLCanvasElement::SurfaceSnapshotPromise;
 
   RefPtr<webgl::NotLostData> notLost(mNotLost);
   if (!notLost) {
-    promise->Reject(NS_ERROR_NOT_AVAILABLE, __func__);
-    return promise;
+    return SurfaceSnapshotPromise::CreateAndReject(NS_ERROR_NOT_AVAILABLE,
+                                                   __func__);
   }
 
   const auto& child = notLost->outOfProcess;
   if (!child || !child->CanSend()) {
-    promise->Reject(NS_ERROR_NOT_AVAILABLE, __func__);
-    return promise;
+    return SurfaceSnapshotPromise::CreateAndReject(NS_ERROR_NOT_AVAILABLE,
+                                                   __func__);
   }
 
   const auto& options = notLost->info.options;
@@ -5559,8 +5558,8 @@ ClientWebGLContext::DoReadPixelsAsync() {
   CheckedInt<size_t> checkedStride = CheckedInt<size_t>(size.x) * 4;
   CheckedInt<size_t> checkedByteSize = checkedStride * size.y;
   if (!checkedByteSize.isValid()) {
-    promise->Reject(NS_ERROR_NOT_AVAILABLE, __func__);
-    return promise;
+    return SurfaceSnapshotPromise::CreateAndReject(NS_ERROR_NOT_AVAILABLE,
+                                                   __func__);
   }
 
   const size_t expectedSize = checkedByteSize.value();
@@ -5569,37 +5568,50 @@ ClientWebGLContext::DoReadPixelsAsync() {
   RefPtr<dom::PWebGLChild::ReadPixelsAsyncPromise> ipcPromise =
       child->SendReadPixelsAsync(desc, static_cast<uint64_t>(expectedSize));
   if (!ipcPromise) {
-    promise->Reject(NS_ERROR_FAILURE, __func__);
-    return promise;
+    return SurfaceSnapshotPromise::CreateAndReject(NS_ERROR_FAILURE, __func__);
   }
 
-  ipcPromise->Then(
+  return ipcPromise->Then(
       GetCurrentSerialEventTarget(), __func__,
-      [self = RefPtr{this}, promise, child, desc, size, surfaceFormat,
-       expectedSize](webgl::ReadPixelsResultIpc&& aReply) mutable {
-        if (!aReply.byteStride || !aReply.shmem) {
-          promise->Reject(NS_ERROR_FAILURE, __func__);
-          return;
+      [self = RefPtr{this}, child, desc, size, surfaceFormat, expectedSize](
+          dom::PWebGLChild::ReadPixelsAsyncPromise::ResolveOrRejectValue&&
+              aValue) mutable -> RefPtr<SurfaceSnapshotPromise> {
+        if (aValue.IsReject()) {
+          switch (aValue.RejectValue()) {
+            case mozilla::ipc::ResponseRejectReason::ActorDestroyed:
+              return SurfaceSnapshotPromise::CreateAndReject(
+                  NS_ERROR_NOT_AVAILABLE, __func__);
+
+            default:
+              return SurfaceSnapshotPromise::CreateAndReject(NS_ERROR_FAILURE,
+                                                             __func__);
+          }
+        }
+
+        webgl::ReadPixelsResultIpc& reply = aValue.ResolveValue();
+        if (!reply.byteStride || !reply.shmem) {
+          return SurfaceSnapshotPromise::CreateAndReject(NS_ERROR_FAILURE,
+                                                         __func__);
         }
 
         // Move shmem to RAII
         webgl::RaiiShmem shmem{
             child,
-            aReply.shmem.ref(),
+            reply.shmem.ref(),
         };
 
         if (!shmem) {
           self->EnqueueError(LOCAL_GL_OUT_OF_MEMORY,
                              "Failed to map in back buffer.");
-          promise->Reject(NS_ERROR_OUT_OF_MEMORY, __func__);
-          return;
+          return SurfaceSnapshotPromise::CreateAndReject(NS_ERROR_OUT_OF_MEMORY,
+                                                         __func__);
         }
 
         const auto shmemBytes = shmem.ByteRange();
 
         if (shmemBytes.length() < expectedSize) {
-          promise->Reject(NS_ERROR_UNEXPECTED, __func__);
-          return;
+          return SurfaceSnapshotPromise::CreateAndReject(NS_ERROR_UNEXPECTED,
+                                                         __func__);
         }
 
         const auto stride = size.x * 4;
@@ -5609,8 +5621,8 @@ ClientWebGLContext::DoReadPixelsAsync() {
         if (NS_WARN_IF(!sourceSurface)) {
           // Was this an OOM or alloc-limit? (500MB is our default resource size
           // limit)
-          promise->Reject(NS_ERROR_OUT_OF_MEMORY, __func__);
-          return;
+          return SurfaceSnapshotPromise::CreateAndReject(NS_ERROR_OUT_OF_MEMORY,
+                                                         __func__);
         }
 
         {
@@ -5618,8 +5630,8 @@ ClientWebGLContext::DoReadPixelsAsync() {
               sourceSurface, gfx::DataSourceSurface::READ_WRITE);
           if (!map.IsMapped()) {
             MOZ_ASSERT(false);
-            promise->Reject(NS_ERROR_UNEXPECTED, __func__);
-            return;
+            return SurfaceSnapshotPromise::CreateAndReject(NS_ERROR_UNEXPECTED,
+                                                           __func__);
           }
           MOZ_ASSERT(static_cast<uint32_t>(map.GetStride()) == stride);
 
@@ -5629,13 +5641,13 @@ ClientWebGLContext::DoReadPixelsAsync() {
           const auto pii = webgl::PackingInfoInfo::For(desc.pi);
           if (!pii) {
             gfxCriticalError() << "ReadPixels: Bad " << desc.pi;
-            promise->Reject(NS_ERROR_UNEXPECTED, __func__);
-            return;
+            return SurfaceSnapshotPromise::CreateAndReject(NS_ERROR_UNEXPECTED,
+                                                           __func__);
           }
 
           const auto bpp = pii->BytesPerPixel();
-          const auto& byteStride = aReply.byteStride;
-          const auto& subrect = aReply.subrect;
+          const auto& byteStride = reply.byteStride;
+          const auto& subrect = reply.subrect;
 
           const auto& packing = desc.packState;
           auto packRect = *uvec2::From(subrect.x, subrect.y);
@@ -5662,22 +5674,9 @@ ClientWebGLContext::DoReadPixelsAsync() {
               {size.x, size.y}));
         }
 
-        promise->Resolve(std::move(sourceSurface), __func__);
-      },
-
-      [promise](const mozilla::ipc::ResponseRejectReason aReason) {
-        switch (aReason) {
-          case mozilla::ipc::ResponseRejectReason::ActorDestroyed:
-            promise->Reject(NS_ERROR_NOT_AVAILABLE, __func__);
-            break;
-
-          default:
-            promise->Reject(NS_ERROR_FAILURE, __func__);
-            break;
-        }
+        return SurfaceSnapshotPromise::CreateAndResolve(
+            std::move(sourceSurface), __func__);
       });
-
-  return promise;
 }
 
 bool ClientWebGLContext::ReadPixels_SharedPrecheck(
