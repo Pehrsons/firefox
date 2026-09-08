@@ -357,7 +357,7 @@ class SpeechRecognition final
   // install() call for the same language can wait on the in-flight download
   // instead of starting a redundant one. See GetDownloadCompletionPromise().
   static nsTHashMap<nsCStringHashKey,
-                    RefPtr<GenericNonExclusivePromise::Private>>
+                    MozPromiseHolder<GenericNonExclusivePromise>>
       sLanguageDownloadPromises MOZ_GUARDED_BY(sMainThreadCapability);
 };
 
