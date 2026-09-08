@@ -596,9 +596,9 @@ already_AddRefed<Promise> MediaDevices::GetDisplayMedia(
     }
     if (badConstraint) {
       p->MaybeReject(MakeRefPtr<dom::MediaStreamError>(
-          owner, *MakeRefPtr<MediaMgrError>(
-                     MediaMgrError::Name::OverconstrainedError, "",
-                     NS_ConvertASCIItoUTF16(badConstraint))));
+          owner->AsGlobal(), *MakeRefPtr<MediaMgrError>(
+                                 MediaMgrError::Name::OverconstrainedError, "",
+                                 NS_ConvertASCIItoUTF16(badConstraint))));
       return p.forget();
     }
   }

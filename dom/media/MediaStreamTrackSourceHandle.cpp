@@ -7,7 +7,6 @@
 #include "MediaStreamTrack.h"
 #include "MediaTrackGraph.h"
 #include "mozilla/Logging.h"
-#include "nsProxyRelease.h"
 #include "nsThreadUtils.h"
 
 extern mozilla::LazyLogModule gMediaStreamTrackLog;
@@ -16,105 +15,191 @@ extern mozilla::LazyLogModule gMediaStreamTrackLog;
 
 namespace mozilla::dom {
 
-/**
- * The Sink registered with the source on the source's thread. It keeps the
- * source alive on behalf of the handle's users and forwards notifications to
- * the handle's listeners.
- */
-class MediaStreamTrackSourceHandle::KeepAliveSink final
-    : public MediaStreamTrackSource::Sink {
- public:
-  explicit KeepAliveSink(MediaStreamTrackSourceHandle* aHandle)
-      : mHandle(aHandle) {}
-
-  bool KeepsSourceAlive() const override { return true; }
-  bool Enabled() const override { return mHandle->AnyUserEnabled(); }
-  void PrincipalChanged() override { mHandle->ForwardPrincipalChanged(); }
-  void MutedChanged(bool aNewState) override {
-    mHandle->ForwardMutedChanged(aNewState);
-  }
-  void ConstraintsChanged(const MediaTrackConstraints& aConstraints) override {
-    mHandle->ForwardConstraintsChanged(aConstraints);
-  }
-  void OverrideEnded() override { mHandle->ForwardOverrideEnded(); }
-
- private:
-  // Raw pointer is safe because the handle owns this sink and only deletes it
-  // on the source thread, where all calls into this sink happen.
-  MediaStreamTrackSourceHandle* const mHandle;
-};
-
 /* static */
 already_AddRefed<MediaStreamTrackSourceHandle>
 MediaStreamTrackSourceHandle::Create(MediaStreamTrackSource* aSource,
-                                     mozilla::MediaTrack* aInputTrack) {
+                                     mozilla::MediaTrack* aInputTrack,
+                                     bool aEnabled) {
   MOZ_ASSERT(NS_IsMainThread());
   MOZ_ASSERT(aSource);
   RefPtr<MediaStreamTrackSourceHandle> handle =
-      new MediaStreamTrackSourceHandle(aSource, aInputTrack);
-  handle->RegisterSink();
+      new MediaStreamTrackSourceHandle();
+  handle->SetHolder(
+      GraphTrackHolder::Create(handle.get(), aSource, aInputTrack, aEnabled));
   return handle.forget();
 }
 
-MediaStreamTrackSourceHandle::MediaStreamTrackSourceHandle(
-    MediaStreamTrackSource* aSource, mozilla::MediaTrack* aInputTrack)
-    : mSource(aSource),
-      mInputTrack(aInputTrack),
-      mMutex("MediaStreamTrackSourceHandle::mMutex") {
-  LOG(LogLevel::Debug, ("MediaStreamTrackSourceHandle {} created for source {}",
-                        fmt::ptr(this), fmt::ptr(aSource)));
+/* static */
+already_AddRefed<MediaStreamTrackSourceHandle>
+MediaStreamTrackSourceHandle::CreateClone(
+    MediaStreamTrackSourceHandle* aOriginal, bool aEnabled) {
+  MOZ_ASSERT(aOriginal);
+  RefPtr<MediaStreamTrackSourceHandle> handle =
+      new MediaStreamTrackSourceHandle();
+  handle->AddUser(aEnabled);
+  LOG(LogLevel::Debug,
+      ("MediaStreamTrackSourceHandle {} created as pending clone of {}",
+       fmt::ptr(handle.get()), fmt::ptr(aOriginal)));
+  DispatchToMainThread("MediaStreamTrackSourceHandle::InitializeClone",
+                       [handle, original = RefPtr(aOriginal)] {
+                         handle->InitializeClone(original);
+                       });
+  return handle.forget();
+}
+
+MediaStreamTrackSourceHandle::MediaStreamTrackSourceHandle()
+    : mMutex("MediaStreamTrackSourceHandle::mMutex") {
+  LOG(LogLevel::Debug,
+      ("MediaStreamTrackSourceHandle {} created", fmt::ptr(this)));
 }
 
 MediaStreamTrackSourceHandle::~MediaStreamTrackSourceHandle() {
   LOG(LogLevel::Debug,
       ("MediaStreamTrackSourceHandle {} destroyed", fmt::ptr(this)));
   if (IsOnSourceThread()) {
-    UnregisterSink();
+    ReleaseHolder();
     return;
   }
-  // mSink can only be deleted on the source thread, since the source holds a
-  // WeakPtr to it. It is normally already gone since UnregisterSink() runs
-  // when the last user is removed; this only happens if that dispatch failed.
-  if (mSink) {
-    (void)NS_DispatchToMainThread(NS_NewRunnableFunction(
+  // The holder can only be used and destroyed on the main thread. It is
+  // normally already gone since ReleaseHolder() runs when the last user is
+  // removed; it is only set here if that dispatch failed. The holder's owner
+  // pointer must not be used from the runnable since we are gone.
+  if (mHolder) {
+    DispatchToMainThread(
         "MediaStreamTrackSourceHandle::~MediaStreamTrackSourceHandle",
-        [sink = std::move(mSink)] {}));
+        [holder = std::move(mHolder)] { holder->Shutdown(); });
   }
-  NS_ReleaseOnMainThread("MediaStreamTrackSourceHandle::mSource",
-                         mSource.forget());
 }
 
 bool MediaStreamTrackSourceHandle::IsOnSourceThread() const {
   return NS_IsMainThread();
 }
 
-MediaStreamTrackSource* MediaStreamTrackSourceHandle::Source() const {
+GraphTrackHolder* MediaStreamTrackSourceHandle::Holder() const {
   MOZ_ASSERT(IsOnSourceThread());
-  return mSource;
+  return mHolder.get();
 }
 
-mozilla::MediaTrack* MediaStreamTrackSourceHandle::InputTrack() const {
-  MOZ_ASSERT(IsOnSourceThread());
-  return mInputTrack;
+template <typename Function>
+/* static */
+void MediaStreamTrackSourceHandle::DispatchToMainThread(const char* aName,
+                                                        Function&& aFunction) {
+  // A failed dispatch only happens during shutdown.
+  (void)NS_DispatchToMainThread(
+      NS_NewRunnableFunction(aName, std::forward<Function>(aFunction)));
 }
 
-void MediaStreamTrackSourceHandle::RegisterSink() {
+void MediaStreamTrackSourceHandle::SetHolder(
+    already_AddRefed<GraphTrackHolder> aHolder) {
   MOZ_ASSERT(IsOnSourceThread());
-  MOZ_ASSERT(!mSink);
-  mSink = MakeUnique<KeepAliveSink>(this);
-  mSource->RegisterSink(mSink.get());
-}
+  MOZ_ASSERT(!mHolder);
+  mHolder = aHolder;
+  MOZ_ASSERT(mHolder);
+  LOG(LogLevel::Debug, ("MediaStreamTrackSourceHandle {} owns holder {}",
+                        fmt::ptr(this), fmt::ptr(mHolder.get())));
 
-void MediaStreamTrackSourceHandle::UnregisterSink() {
-  MOZ_ASSERT(IsOnSourceThread());
-  if (!mSink) {
+  if (mReleased) {
+    // All users went away while a clone was pending.
+    ReleaseHolder();
     return;
   }
-  LOG(LogLevel::Debug,
-      ("MediaStreamTrackSourceHandle {} unregistering from source {}",
-       fmt::ptr(this), fmt::ptr(mSource.get())));
-  mSource->UnregisterSink(mSink.get());
-  mSink = nullptr;
+
+  if (mHolder->Ended()) {
+    HolderEnded();
+    return;
+  }
+
+  ApplyEnabled();
+
+  RefPtr<ProcessedMediaTrack> graphTrack = mHolder->GraphTrack();
+  MOZ_ASSERT(graphTrack);
+  {
+    MutexAutoLock lock(mMutex);
+    mGraphTrack = graphTrack;
+  }
+  ForwardToListeners("MediaStreamTrackSourceHandle::GraphTrackAvailable",
+                     [graphTrack](Listener* aListener) {
+                       aListener->GraphTrackAvailable(graphTrack);
+                     });
+}
+
+void MediaStreamTrackSourceHandle::InitializeClone(
+    MediaStreamTrackSourceHandle* aOriginal) {
+  MOZ_ASSERT(IsOnSourceThread());
+  MOZ_ASSERT(!mHolder);
+
+  GraphTrackHolder* originalHolder = aOriginal->Holder();
+  if (!originalHolder) {
+    LOG(LogLevel::Info,
+        ("MediaStreamTrackSourceHandle {} cannot clone {}: its holder is gone "
+         "or still pending",
+         fmt::ptr(this), fmt::ptr(aOriginal)));
+    HolderEnded();
+    return;
+  }
+
+  LOG(LogLevel::Debug, ("MediaStreamTrackSourceHandle {} cloning holder {}",
+                        fmt::ptr(this), fmt::ptr(originalHolder)));
+  SetHolder(originalHolder->Clone(this, AnyUserEnabled()));
+}
+
+void MediaStreamTrackSourceHandle::ApplyEnabled() {
+  MOZ_ASSERT(IsOnSourceThread());
+  if (mHolder) {
+    mHolder->SetEnabled(AnyUserEnabled());
+  }
+}
+
+void MediaStreamTrackSourceHandle::ReleaseHolder() {
+  MOZ_ASSERT(IsOnSourceThread());
+  mReleased = true;
+  if (!mHolder) {
+    return;
+  }
+  LOG(LogLevel::Debug, ("MediaStreamTrackSourceHandle {} releasing holder {}",
+                        fmt::ptr(this), fmt::ptr(mHolder.get())));
+  {
+    MutexAutoLock lock(mMutex);
+    mGraphTrack = nullptr;
+  }
+  // No users depend on the graph track anymore, so it can be destroyed.
+  mHolder->Shutdown();
+  mHolder = nullptr;
+}
+
+void MediaStreamTrackSourceHandle::HolderEnded() {
+  MOZ_ASSERT(IsOnSourceThread());
+  {
+    MutexAutoLock lock(mMutex);
+    if (mEnded) {
+      return;
+    }
+    mEnded = true;
+  }
+  LOG(LogLevel::Info,
+      ("MediaStreamTrackSourceHandle {} holder ended", fmt::ptr(this)));
+  ForwardToListeners("MediaStreamTrackSourceHandle::HolderEnded",
+                     [](Listener* aListener) { aListener->OverrideEnded(); });
+}
+
+void MediaStreamTrackSourceHandle::HolderMutedChanged(bool aMuted) {
+  MOZ_ASSERT(IsOnSourceThread());
+  ForwardToListeners(
+      "MediaStreamTrackSourceHandle::HolderMutedChanged",
+      [aMuted](Listener* aListener) { aListener->MutedChanged(aMuted); });
+}
+
+void MediaStreamTrackSourceHandle::HolderConstraintsChanged(
+    const MediaTrackConstraints& aConstraints,
+    const MediaTrackSettings& aSettings) {
+  MOZ_ASSERT(IsOnSourceThread());
+  // WebIDL dictionaries have explicit copy constructors.
+  ForwardToListeners(
+      "MediaStreamTrackSourceHandle::HolderConstraintsChanged",
+      [constraints = MediaTrackConstraints(aConstraints),
+       settings = MediaTrackSettings(aSettings)](Listener* aListener) {
+        aListener->ConstraintsChanged(constraints, settings);
+      });
 }
 
 bool MediaStreamTrackSourceHandle::AnyEnabledLocked() const {
@@ -147,7 +232,7 @@ void MediaStreamTrackSourceHandle::AddUser(bool aEnabled) {
     enabledAfter = AnyEnabledLocked();
   }
   if (enabledBefore != enabledAfter) {
-    NotifySourceEnabledStateChanged();
+    NotifyEnabledStateChanged();
   }
 }
 
@@ -171,14 +256,31 @@ void MediaStreamTrackSourceHandle::AddListener(Listener* aListener,
   MOZ_ASSERT(aTarget);
   bool enabledBefore;
   bool enabledAfter;
+  bool ended;
+  RefPtr<ProcessedMediaTrack> graphTrack;
   {
     MutexAutoLock lock(mMutex);
     enabledBefore = AnyEnabledLocked();
     mListeners.AppendElement(ListenerEntry{aListener, aTarget, aEnabled});
     enabledAfter = AnyEnabledLocked();
+    ended = mEnded;
+    graphTrack = mGraphTrack;
   }
   if (enabledBefore != enabledAfter) {
-    NotifySourceEnabledStateChanged();
+    NotifyEnabledStateChanged();
+  }
+  const ListenerEntry entry{aListener, aTarget, aEnabled};
+  if (graphTrack) {
+    DispatchToListener(entry,
+                       "MediaStreamTrackSourceHandle::AddListener::GraphTrack",
+                       [graphTrack](Listener* aListener) {
+                         aListener->GraphTrackAvailable(graphTrack);
+                       });
+  }
+  if (ended) {
+    DispatchToListener(entry,
+                       "MediaStreamTrackSourceHandle::AddListener::Ended",
+                       [](Listener* aListener) { aListener->OverrideEnded(); });
   }
 }
 
@@ -213,7 +315,7 @@ void MediaStreamTrackSourceHandle::SetListenerEnabled(Listener* aListener,
     enabledAfter = AnyEnabledLocked();
   }
   if (enabledBefore != enabledAfter) {
-    NotifySourceEnabledStateChanged();
+    NotifyEnabledStateChanged();
   }
 }
 
@@ -226,35 +328,39 @@ void MediaStreamTrackSourceHandle::OnUserRemoved(bool aWasEnabled) {
     enabledChanged = aWasEnabled && !AnyEnabledLocked();
   }
   if (lastUser) {
-    // Unregistering may stop the source, so the enabled state is moot.
+    // Releasing destroys the holder, so the enabled state is moot.
     if (IsOnSourceThread()) {
-      UnregisterSink();
+      ReleaseHolder();
       return;
     }
-    (void)NS_DispatchToMainThread(NS_NewRunnableFunction(
-        "MediaStreamTrackSourceHandle::UnregisterSink",
-        [self = RefPtr(this)] { self->UnregisterSink(); }));
+    DispatchToMainThread("MediaStreamTrackSourceHandle::ReleaseHolder",
+                         [self = RefPtr(this)] { self->ReleaseHolder(); });
     return;
   }
   if (enabledChanged) {
-    NotifySourceEnabledStateChanged();
+    NotifyEnabledStateChanged();
   }
 }
 
-void MediaStreamTrackSourceHandle::NotifySourceEnabledStateChanged() {
+void MediaStreamTrackSourceHandle::NotifyEnabledStateChanged() {
   if (IsOnSourceThread()) {
-    if (mSink) {
-      mSource->SinkEnabledStateChanged();
-    }
+    ApplyEnabled();
     return;
   }
-  (void)NS_DispatchToMainThread(NS_NewRunnableFunction(
-      "MediaStreamTrackSourceHandle::NotifySourceEnabledStateChanged",
-      [self = RefPtr(this)] {
-        if (self->mSink) {
-          self->mSource->SinkEnabledStateChanged();
-        }
-      }));
+  DispatchToMainThread("MediaStreamTrackSourceHandle::ApplyEnabled",
+                       [self = RefPtr(this)] { self->ApplyEnabled(); });
+}
+
+template <typename Function>
+/* static */
+void MediaStreamTrackSourceHandle::DispatchToListener(
+    const ListenerEntry& aEntry, const char* aName, const Function& aFunction) {
+  // A failed dispatch means the listener's thread is gone, which is fine.
+  (void)aEntry.mTarget->Dispatch(
+      NS_NewRunnableFunction(
+          aName, [listener = aEntry.mListener,
+                  function = aFunction] { function(listener.get()); }),
+      NS_DISPATCH_FALLIBLE);
 }
 
 template <typename Function>
@@ -263,46 +369,8 @@ void MediaStreamTrackSourceHandle::ForwardToListeners(const char* aName,
   MOZ_ASSERT(IsOnSourceThread());
   MutexAutoLock lock(mMutex);
   for (const ListenerEntry& entry : mListeners) {
-    // A failed dispatch means the listener's thread is gone, which is fine.
-    (void)entry.mTarget->Dispatch(
-        NS_NewRunnableFunction(
-            aName, [listener = entry.mListener,
-                    function = aFunction] { function(listener.get()); }),
-        NS_DISPATCH_FALLIBLE);
+    DispatchToListener(entry, aName, aFunction);
   }
-}
-
-void MediaStreamTrackSourceHandle::ForwardPrincipalChanged() {
-  MOZ_ASSERT(IsOnSourceThread());
-  ForwardToListeners("MediaStreamTrackSourceHandle::ForwardPrincipalChanged",
-                     [principalHandle = MakePrincipalHandle(
-                          mSource->GetPrincipal())](Listener* aListener) {
-                       aListener->PrincipalChanged(principalHandle);
-                     });
-}
-
-void MediaStreamTrackSourceHandle::ForwardMutedChanged(bool aNewState) {
-  MOZ_ASSERT(IsOnSourceThread());
-  ForwardToListeners(
-      "MediaStreamTrackSourceHandle::ForwardMutedChanged",
-      [aNewState](Listener* aListener) { aListener->MutedChanged(aNewState); });
-}
-
-void MediaStreamTrackSourceHandle::ForwardConstraintsChanged(
-    const MediaTrackConstraints& aConstraints) {
-  MOZ_ASSERT(IsOnSourceThread());
-  // WebIDL dictionaries have explicit copy constructors.
-  ForwardToListeners(
-      "MediaStreamTrackSourceHandle::ForwardConstraintsChanged",
-      [constraints = MediaTrackConstraints(aConstraints)](Listener* aListener) {
-        aListener->ConstraintsChanged(constraints);
-      });
-}
-
-void MediaStreamTrackSourceHandle::ForwardOverrideEnded() {
-  MOZ_ASSERT(IsOnSourceThread());
-  ForwardToListeners("MediaStreamTrackSourceHandle::ForwardOverrideEnded",
-                     [](Listener* aListener) { aListener->OverrideEnded(); });
 }
 
 }  // namespace mozilla::dom

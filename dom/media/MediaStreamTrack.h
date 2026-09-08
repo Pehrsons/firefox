@@ -119,6 +119,13 @@ class MediaStreamTrackSource : public nsISupports {
      */
     virtual void OverrideEnded() = 0;
 
+    /**
+     * Called by a TransferredTrackSource when the MediaTrackGraph track its
+     * tracks borrow from their main-thread GraphTrackHolder becomes available.
+     * See MediaStreamTrack::SetGraphTrack.
+     */
+    virtual void GraphTrackAvailable(ProcessedMediaTrack* aTrack) {}
+
    protected:
     virtual ~Sink() = default;
   };
@@ -218,17 +225,15 @@ class MediaStreamTrackSource : public nsISupports {
   virtual void GetCapabilities(dom::MediaTrackCapabilities& aResult) {};
 
   /**
-   * Creates a thread-safe handle to the underlying source, for transferring a
-   * track backed by this source to another thread. aInputTrack is the
-   * MediaTrack of the track being transferred.
-   *
-   * The default creates a handle to this source, which then must live on the
-   * main thread. A TransferredTrackSource returns the handle to the original
-   * source instead, so that a track transferred multiple times stays tied to
-   * the original source only.
+   * Returns the thread-safe handle this source proxies to, if it is a
+   * TransferredTrackSource, so that a track transferred multiple times stays
+   * tied to the original source only. Sources living on the main thread return
+   * null, and the track being transferred creates a handle holding this
+   * source instead. See MediaStreamTrackSourceHandle.
    */
-  virtual already_AddRefed<MediaStreamTrackSourceHandle> CreateTransferHandle(
-      mozilla::MediaTrack* aInputTrack);
+  virtual already_AddRefed<MediaStreamTrackSourceHandle> TransferHandle() {
+    return nullptr;
+  }
 
   /**
    * Called by the source interface when all registered sinks with
@@ -455,6 +460,15 @@ class MediaStreamTrackConsumer : public SupportsWeakPtr {
  *            *          -> t1
  *
  *   (*) is a copy of A's mInputTrack
+ *
+ * Tracks living on other threads than the main thread (transferred to a
+ * dedicated worker) do not own graph objects, since only the main thread may
+ * create and destroy them. Each such track has a main-thread GraphTrackHolder,
+ * owned by a MediaStreamTrackSourceHandle, that holds the input track and owns
+ * mTrack on its behalf. The worker track borrows mTrack (mInputTrack is null)
+ * so that it can address the graph track in messages, and the holder
+ * guarantees mTrack is not destroyed for as long as tracks depending on it
+ * exist.
  */
 // clang-format on
 class MediaStreamTrack : public DOMEventTargetHelper, public SupportsWeakPtr {
@@ -482,8 +496,8 @@ class MediaStreamTrack : public DOMEventTargetHelper, public SupportsWeakPtr {
                     const MediaTrackSettings& aSettings,
                     const MediaTrackCapabilities& aCapabilities,
                     MediaSourceEnum aMediaSource, bool aHasAlpha,
-                    const PrincipalHandle& aPrincipalHandle,
-                    RefPtr<MediaStreamTrackSourceHandle> aSource);
+                    RefPtr<MediaStreamTrackSourceHandle> aSource,
+                    RefPtr<ProcessedMediaTrack> aTrack);
     ~TransferredData();
 
     // [[id]]
@@ -503,16 +517,19 @@ class MediaStreamTrack : public DOMEventTargetHelper, public SupportsWeakPtr {
     // [[contentHint]] is not implemented.
 
     // Snapshots of source state a track on another thread than the source
-    // cannot query synchronously.
-    // TODO(Bug 1991619): Keep these in sync with the source after transfer.
+    // cannot query synchronously. Settings are kept in sync afterwards through
+    // the constraints notifications of MediaStreamTrackSourceHandle.
     const MediaTrackSettings mSettings;
     const MediaTrackCapabilities mCapabilities;
     const MediaSourceEnum mMediaSource;
     const bool mHasAlpha;
-    const PrincipalHandle mPrincipalHandle;
 
     // [[source]]
     const RefPtr<MediaStreamTrackSourceHandle> mSource;
+    // The holder's graph track, for the receiving track to borrow. Null if the
+    // holder is still being created; the receiving track then gets it through
+    // its TransferredTrackSource.
+    const RefPtr<ProcessedMediaTrack> mTrack;
   };
 
   MediaStreamTrack(
@@ -589,6 +606,29 @@ class MediaStreamTrack : public DOMEventTargetHelper, public SupportsWeakPtr {
    * Convenience (and legacy) method for when ready state is "ended".
    */
   bool Ended() const { return mReadyState == MediaStreamTrackState::Ended; }
+
+  /**
+   * Whether this track owns its graph track, mTrack. Main-thread tracks do.
+   * Tracks on other threads borrow mTrack from their main-thread
+   * GraphTrackHolder and must not destroy it. They mirror its state from the
+   * MediaTrackGraph like owning tracks do, but leave changing it (enabled
+   * state, listeners) to the holder.
+   * TODO(Bug 1991619): Let tracks not owning mTrack add listeners to it, for
+   * consumers on their thread.
+   */
+  bool OwnsGraphTrack() const { return !!mInputTrack; }
+
+  /**
+   * Sets mTrack for a live track that does not own its graph track, once its
+   * holder has made it available.
+   */
+  void SetGraphTrack(ProcessedMediaTrack* aTrack);
+
+  /**
+   * True if our global is still the current one, i.e., a window that is the
+   * current inner window or a worker global that is not dying.
+   */
+  bool IsGlobalCurrent() const;
 
   /**
    * Get this track's principal.
@@ -701,6 +741,12 @@ class MediaStreamTrack : public DOMEventTargetHelper, public SupportsWeakPtr {
   void OverrideEnded();
 
   /**
+   * Connects mTrackEnded, and on the main thread mTrackPrincipalHandle, to
+   * mTrack's canonicals.
+   */
+  void MirrorGraphTrackState();
+
+  /**
    * Called on the main thread when mTrackPrincipalHandle changes, i.e., when
    * the PrincipalHandle of the data in mTrack has changed in the
    * MediaTrackGraph. When it matches the pending principal we know that the
@@ -709,8 +755,8 @@ class MediaStreamTrack : public DOMEventTargetHelper, public SupportsWeakPtr {
   void OnPrincipalHandleChanged();
 
   /**
-   * Called on the main thread when mTrackEnded changes, i.e., when mTrack has
-   * ended in the MediaTrackGraph. Queues a task to end this track.
+   * Called on the owning thread when mTrackEnded changes, i.e., when mTrack
+   * has ended in the MediaTrackGraph. Queues a task to end this track.
    */
   void OnTrackEnded();
 
@@ -762,8 +808,10 @@ class MediaStreamTrack : public DOMEventTargetHelper, public SupportsWeakPtr {
   template <typename TrackType>
   already_AddRefed<MediaStreamTrack> CloneInternal() {
     auto cloneRes = mSource->Clone();
-    MOZ_ASSERT(!!cloneRes.mSource == !!cloneRes.mInputTrack);
-    if (!cloneRes.mSource || !cloneRes.mInputTrack) {
+    // Tracks not owning their graph track have no input track, and neither do
+    // their clones. Their TransferredTrackSource provides the graph track.
+    MOZ_ASSERT_IF(cloneRes.mSource && OwnsGraphTrack(), cloneRes.mInputTrack);
+    if (!cloneRes.mSource) {
       cloneRes.mSource = mSource;
       cloneRes.mInputTrack = mInputTrack;
     }
@@ -785,14 +833,13 @@ class MediaStreamTrack : public DOMEventTargetHelper, public SupportsWeakPtr {
   // keeps ending and firing events after its window has navigated away.
   nsCOMPtr<nsIGlobalObject> mGlobal;
   // The input MediaTrack assigned us by the data producer.
-  // Owned by the producer.
-  // TODO(Bug 1991619): Null for tracks transferred to a worker, which have no
-  // MediaTrackGraph representation yet.
+  // Owned by the producer. Null for tracks on other threads than the main
+  // thread; their GraphTrackHolder holds it, see OwnsGraphTrack().
   const RefPtr<mozilla::MediaTrack> mInputTrack;
   // The MediaTrack representing this MediaStreamTrack in the MediaTrackGraph.
-  // Set on construction if we're live. Valid until we end. Owned by us.
-  // TODO(Bug 1991619): Null for tracks transferred to a worker, which have no
-  // MediaTrackGraph representation yet.
+  // Set on construction if we're live. Valid until we end. Owned by us if
+  // OwnsGraphTrack(), otherwise borrowed from our GraphTrackHolder, which keeps
+  // it alive for as long as we are.
   RefPtr<ProcessedMediaTrack> mTrack;
   // The MediaInputPort connecting mInputTrack to mTrack. Set on construction
   // if mInputTrack is non-destroyed and we're live. Valid until we end. Owned
@@ -813,10 +860,14 @@ class MediaStreamTrack : public DOMEventTargetHelper, public SupportsWeakPtr {
   // [[IsDetached]] per the transfer steps. Set by Transfer().
   bool mIsDetached = false;
   dom::MediaTrackConstraints mConstraints;
+  // The owning thread. The main thread, or a worker thread's AbstractThread,
+  // see WorkerPrivate::GetWorkerAbstractThread().
+  const RefPtr<AbstractThread> mAbstractThread;
   WatchManager<MediaStreamTrack> mWatchManager;
   // Mirrors mTrack's ended state from the MediaTrackGraph while we're live.
   Mirror<bool> mTrackEnded;
   // Mirrors the PrincipalHandle of mTrack's most recent data while we're live.
+  // Main thread only; tracks on other threads have no principal.
   Mirror<PrincipalHandle> mTrackPrincipalHandle;
 };
 

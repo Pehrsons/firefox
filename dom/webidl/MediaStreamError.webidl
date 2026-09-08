@@ -12,8 +12,12 @@
 // TODO: This is an 'exception', not an interface, by virtue of needing to be
 // passed as a promise rejection-reason. Revisit if DOMException grows a customArg
 
+// Exposed in DedicatedWorker for MediaStreamTrack.applyConstraints()
+// rejections. Without an interface object this is only observable when a
+// MediaStreamTrack exists in the worker, which the pref
+// media.mediastreamtrack.transferable.enabled gates.
 [ExceptionClass, LegacyNoInterfaceObject,
- Exposed=Window]
+ Exposed=(Window,DedicatedWorker)]
 interface MediaStreamError {
   readonly attribute DOMString  name;
   readonly attribute DOMString? message;
