@@ -6,6 +6,7 @@
 
 #include <memory>
 
+#include "mozilla/Atomics.h"
 #include "mozilla/ClearOnShutdown.h"
 #include "mozilla/DelayedRunnable.h"
 #include "mozilla/MozPromise.h"  // We initialize the MozPromise logging in this file.
@@ -34,22 +35,28 @@ class XPCOMThreadWrapper final : public AbstractThread,
                                  public nsIDirectTaskDispatcher {
  public:
   XPCOMThreadWrapper(nsIThreadInternal* aThread,
-                     enum TailDispatchPolicy aTailDispatchPolicy,
-                     bool aOnThread)
+                     enum TailDispatchPolicy aTailDispatchPolicy)
       : AbstractThread(aTailDispatchPolicy),
         mThread(aThread),
-        mDirectTaskDispatcher(do_QueryInterface(aThread)),
-        mOnThread(aOnThread) {
+        mDirectTaskDispatcher(do_QueryInterface(aThread)) {
     MOZ_DIAGNOSTIC_ASSERT(mThread && mDirectTaskDispatcher);
-    MOZ_DIAGNOSTIC_ASSERT(!aOnThread || IsCurrentThreadIn());
-    if (aOnThread) {
-      MOZ_ASSERT(!sCurrentThreadTLS.get(),
-                 "There can only be a single XPCOMThreadWrapper available on a "
-                 "thread");
-      // Set the default current thread so that GetCurrent() never returns
-      // nullptr.
-      sCurrentThreadTLS.set(this);
-    }
+    MOZ_DIAGNOSTIC_ASSERT(IsCurrentThreadIn());
+    MOZ_ASSERT(!sCurrentThreadTLS.get(),
+               "There can only be a single XPCOMThreadWrapper available on a "
+               "thread");
+    // Set the default current thread so that GetCurrent() never returns
+    // nullptr.
+    sCurrentThreadTLS.set(this);
+  }
+
+  // Stops being the current thread on mThread, see AutoXPCOMThreadWrapper.
+  // mThread only.
+  void Unregister() {
+    MOZ_DIAGNOSTIC_ASSERT(IsCurrentThreadIn());
+    MOZ_DIAGNOSTIC_ASSERT(sCurrentThreadTLS.get() == this);
+    MaybeFireTailDispatcher();
+    sCurrentThreadTLS.set(nullptr);
+    mRegistered = false;
   }
 
   NS_DECL_THREADSAFE_ISUPPORTS
@@ -57,6 +64,9 @@ class XPCOMThreadWrapper final : public AbstractThread,
   nsresult Dispatch(already_AddRefed<nsIRunnable> aRunnable,
                     DispatchReason aReason = NormalDispatch) override {
     nsCOMPtr<nsIRunnable> r = aRunnable;
+    if (!mRegistered) {
+      return NS_ERROR_NOT_AVAILABLE;
+    }
     AbstractThread* currentThread;
     if (aReason != TailDispatch && (currentThread = GetCurrent()) &&
         RequiresTailDispatch(currentThread) &&
@@ -111,7 +121,7 @@ class XPCOMThreadWrapper final : public AbstractThread,
   }
 
   bool IsCurrentThreadIn() const override {
-    return mThread->IsOnCurrentThread();
+    return mRegistered && mThread->IsOnCurrentThread();
   }
 
   TaskDispatcher& TailDispatcher() override {
@@ -131,7 +141,7 @@ class XPCOMThreadWrapper final : public AbstractThread,
     // callbacks. If we're not doing event processing, it won't work.
     bool inEventLoop =
         static_cast<nsThread*>(mThread.get())->RecursionDepth() > 0;
-    return inEventLoop;
+    return mRegistered && inEventLoop;
   }
 
   bool MightHaveTailTasks() override { return !!mTailDispatcher; }
@@ -180,10 +190,12 @@ class XPCOMThreadWrapper final : public AbstractThread,
   const RefPtr<nsIThreadInternal> mThread;
   const nsCOMPtr<nsIDirectTaskDispatcher> mDirectTaskDispatcher;
   std::unique_ptr<AutoTaskDispatcher> mTailDispatcher;
-  const bool mOnThread;
+  // Whether this is what GetCurrent() returns on mThread. Set only on mThread,
+  // read anywhere. Always set for the main thread's wrapper.
+  Atomic<bool> mRegistered{true};
 
   ~XPCOMThreadWrapper() {
-    if (mOnThread) {
+    if (mRegistered) {
       MOZ_DIAGNOSTIC_ASSERT(IsCurrentThreadIn(),
                             "Must be destroyed on the thread it was created");
       sCurrentThreadTLS.set(nullptr);
@@ -207,6 +219,11 @@ class XPCOMThreadWrapper final : public AbstractThread,
           mRunnable(aRunnable) {}
 
     NS_IMETHOD Run() override {
+      if (!mThread->mRegistered) {
+        // Queued before mThread was unregistered. Whatever runs on the thread
+        // now is not what this was dispatched to.
+        return NS_OK;
+      }
       MOZ_ASSERT(mThread == AbstractThread::GetCurrent());
       MOZ_ASSERT(mThread->IsCurrentThreadIn());
       SerialEventTargetGuard guard(mThread);
@@ -323,13 +340,23 @@ void AbstractThread::InitMainThread() {
     MOZ_CRASH();
   }
   sMainThread = new XPCOMThreadWrapper(mainThread.get(),
-                                       TailDispatchPolicy::ConsistentOrdering,
-                                       true /* onThread */);
+                                       TailDispatchPolicy::ConsistentOrdering);
 }
 
 void AbstractThread::ShutdownMainThread() {
   MOZ_ASSERT(NS_IsMainThread());
   sMainThread = nullptr;
+}
+
+AutoXPCOMThreadWrapper::AutoXPCOMThreadWrapper(
+    nsIThreadInternal* aThread, TailDispatchPolicy aTailDispatchPolicy)
+    : mWrapper(new XPCOMThreadWrapper(aThread, aTailDispatchPolicy)) {
+  MOZ_ASSERT(!NS_IsMainThread(),
+             "The main thread has AbstractThread::MainThread()");
+}
+
+AutoXPCOMThreadWrapper::~AutoXPCOMThreadWrapper() {
+  static_cast<XPCOMThreadWrapper*>(mWrapper.get())->Unregister();
 }
 
 void AbstractThread::DispatchStateChange(

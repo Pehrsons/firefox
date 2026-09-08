@@ -6,7 +6,9 @@
 #define XPCOM_THREADS_ABSTRACTTHREAD_H_
 
 #include "mozilla/AlreadyAddRefed.h"
+#include "mozilla/Attributes.h"
 #include "mozilla/DefineEnum.h"
+#include "mozilla/RefPtr.h"
 #include "mozilla/ThreadLocal.h"
 #include "nsISerialEventTarget.h"
 #include "nsISupports.h"
@@ -15,6 +17,7 @@
 class nsIEventTarget;
 class nsIRunnable;
 class nsIThread;
+class nsIThreadInternal;
 
 namespace mozilla {
 
@@ -155,6 +158,36 @@ class AbstractThread : public nsISerialEventTarget {
   // AbstractThread to go through our tail dispatcher, and if so, how they
   // should be grouped together for different event targets.
   const TailDispatchPolicy mTailDispatcherPolicy;
+};
+
+/**
+ * Makes aThread, the current XPCOM thread, an AbstractThread for the lifetime
+ * of this object. Meant for a thread that runs a unit of work within one task
+ * and may be reused for other work afterwards, like a worker thread running a
+ * worker. AbstractThread::GetCurrent() returns get() on aThread until this goes
+ * away. Only one may exist per thread at a time.
+ *
+ * With a tail dispatch policy, tasks running on aThread may use the tail
+ * dispatcher whether or not they were dispatched through get().
+ *
+ * On destruction, pending tail tasks are dispatched and get() is unregistered.
+ * It may outlive this through other references, but from then on it is not
+ * the current thread anywhere, dispatching to it fails, and tasks already
+ * queued through it are dropped without running.
+ */
+class MOZ_STACK_CLASS AutoXPCOMThreadWrapper final {
+ public:
+  AutoXPCOMThreadWrapper(nsIThreadInternal* aThread,
+                         TailDispatchPolicy aTailDispatchPolicy);
+  ~AutoXPCOMThreadWrapper();
+
+  AutoXPCOMThreadWrapper(const AutoXPCOMThreadWrapper&) = delete;
+  AutoXPCOMThreadWrapper& operator=(const AutoXPCOMThreadWrapper&) = delete;
+
+  AbstractThread* get() const { return mWrapper; }
+
+ private:
+  const RefPtr<AbstractThread> mWrapper;
 };
 
 }  // namespace mozilla
