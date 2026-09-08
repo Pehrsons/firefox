@@ -3738,9 +3738,9 @@ SourceMediaTrack* MediaTrackGraph::CreateSourceTrack(MediaSegment::Type aType) {
 }
 
 ProcessedMediaTrack* MediaTrackGraph::CreateForwardedInputTrack(
-    MediaSegment::Type aType) {
+    MediaSegment::Type aType, MediaTrack::Flags aFlags) {
   ForwardedInputTrack* track = new ForwardedInputTrack(GraphRate(), aType);
-  AddTrack(track, MediaTrack::Flag::None);
+  AddTrack(track, aFlags);
   return track;
 }
 
