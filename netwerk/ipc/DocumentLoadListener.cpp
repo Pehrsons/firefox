@@ -502,6 +502,7 @@ DocumentLoadListener::DocumentLoadListener(
 
 DocumentLoadListener::~DocumentLoadListener() {
   LOG(("DocumentLoadListener dtor [this=%p]", this));
+  RejectOpenPromise(NS_BINDING_ABORTED, NS_BINDING_ABORTED, false, __func__);
 }
 
 void DocumentLoadListener::AddURIVisit(nsIChannel* aChannel,
