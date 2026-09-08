@@ -18,6 +18,7 @@
 #include "js/experimental/CTypes.h"  // JS::CTypesActivityType, JS::SetCTypesActivityCallback
 #include "js/friend/ErrorMessages.h"  // js::GetErrorMessage, JSMSG_*
 #include "jsfriendapi.h"
+#include "mozilla/AbstractThread.h"
 #include "mozilla/Atomics.h"
 #include "mozilla/Attributes.h"
 #include "mozilla/CycleCollectedJSContext.h"
@@ -2387,6 +2388,12 @@ WorkerThreadPrimaryRunnable::Run() {
       if (!InitJSContextForWorker(mWorkerPrivate, cx)) {
         return NS_ERROR_FAILURE;
       }
+
+      // Unregistered when this scope ends, after the last pass through the
+      // event loop, so that it does not outlive the worker on this thread,
+      // which may be reused for another worker.
+      AutoXPCOMThreadWrapper abstractThread(
+          mThread.unsafeGetRawPtr(), TailDispatchPolicy::ConsistentOrdering);
 
       failureCleanup.release();
 

@@ -28,6 +28,7 @@
 #include "js/friend/ErrorMessages.h"  // JSMSG_OUT_OF_MEMORY
 #include "js/friend/MicroTask.h"
 #include "js/loader/ModuleLoaderBase.h"
+#include "mozilla/AbstractThread.h"
 #include "mozilla/AntiTrackingUtils.h"
 #include "mozilla/BasePrincipal.h"
 #include "mozilla/CycleCollectedJSContext.h"
@@ -6763,6 +6764,13 @@ WorkerDebuggerGlobalScope* WorkerPrivate::CreateDebuggerGlobalScope(
   JS_FireOnNewGlobalObject(aCx, global);
 
   return data->mDebuggerScope;
+}
+
+AbstractThread* WorkerPrivate::GetWorkerAbstractThread() const {
+  AssertIsOnWorkerThread();
+  AbstractThread* thread = AbstractThread::GetCurrent();
+  MOZ_ASSERT(thread, "Set up by WorkerThreadPrimaryRunnable");
+  return thread;
 }
 
 bool WorkerPrivate::IsOnWorkerThread() const {

@@ -61,6 +61,7 @@ class Dispatchable;
 }  // namespace JS
 
 namespace mozilla {
+class AbstractThread;
 class ThrottledEventQueue;
 namespace dom {
 
@@ -540,6 +541,13 @@ class WorkerPrivate final
   void SetWorkerPrivateInWorkerThread(WorkerThread* aThread);
 
   void ResetWorkerPrivateInWorkerThread();
+
+  /**
+   * The AbstractThread of the worker thread, for the few places that need tail
+   * dispatch on a worker, like MediaStreamTracks transferred to it. Valid while
+   * the worker runs, see WorkerThreadPrimaryRunnable. Worker thread only.
+   */
+  AbstractThread* GetWorkerAbstractThread() const;
 
   bool IsOnWorkerThread() const;
 
