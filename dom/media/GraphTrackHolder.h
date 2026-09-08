@@ -47,6 +47,9 @@ namespace dom {
  *    WorkerTrackSourceProxy, which keeps the holder attached. The track on the
  *    main thread that the holder is then transferred to takes it over as its
  *    own, and calls Unattach().
+ *  - A clone of a track on a worker gets a holder that is pending until it is
+ *    initialized on the main thread as a clone of the original's. See
+ *    CreateClone().
  *
  * The holder is refcounted thread-safely, may be AddRefed and Released on any
  * thread and is destroyed on the main thread when the last reference is
@@ -70,10 +73,12 @@ class GraphTrackHolder final : public MediaStreamTrackSource::Sink {
       GraphTrackHolder)
 
   /**
-   * What the holder provides to the track on another thread: the Canonicals of
-   * the holder's source. Null unless the holder is attached and live.
+   * What the holder provides to the track on another thread: the graph track
+   * it borrows for as long as it holds the holder, and the Canonicals of the
+   * holder's source. All null unless the holder is attached and live.
    */
   struct HolderState {
+    RefPtr<ProcessedMediaTrack> mGraphTrack;
     RefPtr<AbstractCanonical<MediaStreamTrackSourceSettings>> mSettings;
     RefPtr<AbstractCanonical<MediaStreamTrackSourceCapabilities>> mCapabilities;
     bool operator==(const HolderState&) const = default;
@@ -88,6 +93,16 @@ class GraphTrackHolder final : public MediaStreamTrackSource::Sink {
    */
   static already_AddRefed<GraphTrackHolder> Create(
       mozilla::MediaTrack* aInputTrack, MediaTrackGraph* aGraph, bool aEnabled);
+
+  /**
+   * Creates a pending holder for a clone of aOriginal's track, for a track on
+   * another thread. Any thread. aEnabled and aMuted are the clone's states,
+   * which CanonicalMuted() reports until the holder is initialized on the main
+   * thread, by cloning aOriginal's source where it supports that, and attached
+   * to it. A clone of an ended holder starts out ended.
+   */
+  static already_AddRefed<GraphTrackHolder> CreateClone(
+      GraphTrackHolder* aOriginal, bool aEnabled, bool aMuted);
 
   /**
    * Makes this holder aSource's sink, on behalf of the track on the other
@@ -117,6 +132,12 @@ class GraphTrackHolder final : public MediaStreamTrackSource::Sink {
    */
   void ShutdownAsync();
 
+  // Whether we reference a source, i.e., are attached. A pending holder is
+  // attached by the time it is transferred to the main thread.
+  bool Attached() const {
+    MOZ_ASSERT(NS_IsMainThread());
+    return !!mSource;
+  }
   // Once attached.
   MediaStreamTrackSource& Source() const {
     MOZ_ASSERT(NS_IsMainThread());
@@ -124,19 +145,19 @@ class GraphTrackHolder final : public MediaStreamTrackSource::Sink {
     return *mSource;
   }
   // The graph track, borrowed by the MediaStreamTrack. Null if created ended
-  // or after Shutdown().
-  ProcessedMediaTrack* GraphTrack() const {
-    MOZ_ASSERT(NS_IsMainThread());
-    return mTrack;
-  }
+  // or after Shutdown(). The main thread writes it, so a track on another
+  // thread reads it only once the holder has made it available to that thread,
+  // and until its owner shuts the holder down.
+  ProcessedMediaTrack* GraphTrack() const { return mTrack; }
   bool Ended() const {
     MOZ_ASSERT(NS_IsMainThread());
     return mEnded.Ref();
   }
 
   /**
-   * Sets the enabled state of the track tied to this holder. Applies to the
-   * source like MediaStreamTrack::SetEnabled does once attached.
+   * Sets the enabled state of the track tied to this holder. Once attached,
+   * applies to the graph track and the source like MediaStreamTrack::SetEnabled
+   * does.
    */
   void SetEnabled(bool aEnabled);
 
@@ -170,8 +191,15 @@ class GraphTrackHolder final : public MediaStreamTrackSource::Sink {
 
  private:
   GraphTrackHolder(mozilla::MediaTrack* aInputTrack, MediaTrackGraph* aGraph,
-                   bool aEnabled);
+                   bool aEnabled, bool aMuted, bool aPending);
   ~GraphTrackHolder();
+
+  // Creates the graph track forwarding aInputTrack in aGraph.
+  void InitGraphTrack(mozilla::MediaTrack* aInputTrack,
+                      MediaTrackGraph* aGraph);
+
+  // Initializes a pending holder as a clone of aOriginal. Main thread.
+  void InitializeClone(GraphTrackHolder* aOriginal);
 
   // Called on the main thread when mTrackEnded changes.
   void OnTrackEnded();

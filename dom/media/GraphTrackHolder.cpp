@@ -22,26 +22,52 @@ already_AddRefed<GraphTrackHolder> GraphTrackHolder::Create(
   MOZ_ASSERT(NS_IsMainThread());
   MOZ_ASSERT_IF(aInputTrack, aGraph);
   RefPtr<GraphTrackHolder> holder =
-      new GraphTrackHolder(aInputTrack, aGraph, aEnabled);
+      new GraphTrackHolder(aInputTrack, aGraph, aEnabled, /* aMuted = */ false,
+                           /* aPending = */ false);
+  return holder.forget();
+}
+
+/* static */
+already_AddRefed<GraphTrackHolder> GraphTrackHolder::CreateClone(
+    GraphTrackHolder* aOriginal, bool aEnabled, bool aMuted) {
+  MOZ_ASSERT(aOriginal);
+  RefPtr<GraphTrackHolder> holder = new GraphTrackHolder(
+      nullptr, nullptr, aEnabled, aMuted, /* aPending = */ true);
+  LOG(LogLevel::Debug, ("GraphTrackHolder {} created as pending clone of {}",
+                        fmt::ptr(holder.get()), fmt::ptr(aOriginal)));
+  DispatchToMainThread("GraphTrackHolder::InitializeClone",
+                       [holder, original = RefPtr(aOriginal)] {
+                         holder->InitializeClone(original);
+                       });
   return holder.forget();
 }
 
 GraphTrackHolder::GraphTrackHolder(mozilla::MediaTrack* aInputTrack,
-                                   MediaTrackGraph* aGraph, bool aEnabled)
+                                   MediaTrackGraph* aGraph, bool aEnabled,
+                                   bool aMuted, bool aPending)
     : mWatchManager(this, AbstractThread::MainThread()),
       mTrackEnded(AbstractThread::MainThread(), false,
                   "GraphTrackHolder::mTrackEnded"),
-      mMuted(AbstractThread::MainThread(), false, "GraphTrackHolder::mMuted"),
-      mEnded(AbstractThread::MainThread(), !aInputTrack,
+      mMuted(AbstractThread::MainThread(), aMuted, "GraphTrackHolder::mMuted"),
+      mEnded(AbstractThread::MainThread(), !aInputTrack && !aPending,
              "GraphTrackHolder::mEnded"),
       mHolderState(AbstractThread::MainThread(), HolderState(),
                    "GraphTrackHolder::mHolderState"),
       mEnabled(aEnabled) {
+  if (aPending) {
+    return;
+  }
   if (!aInputTrack) {
     LOG(LogLevel::Info, ("GraphTrackHolder {} created ended", fmt::ptr(this)));
     return;
   }
+  InitGraphTrack(aInputTrack, aGraph);
+}
 
+void GraphTrackHolder::InitGraphTrack(mozilla::MediaTrack* aInputTrack,
+                                      MediaTrackGraph* aGraph) {
+  MOZ_ASSERT(NS_IsMainThread());
+  MOZ_ASSERT(!mTrack);
   // Even if the input track is destroyed we need a graph track so that methods
   // like MediaStreamTrack::AddListener still work. Keeping the number of paths
   // to a minimum also helps prevent bugs elsewhere. We'll be ended through the
@@ -53,6 +79,32 @@ GraphTrackHolder::GraphTrackHolder(mozilla::MediaTrack* aInputTrack,
   mWatchManager.Watch(mTrackEnded, &GraphTrackHolder::OnTrackEnded);
   LOG(LogLevel::Info, ("GraphTrackHolder {} created with graph track {}",
                        fmt::ptr(this), fmt::ptr(mTrack.get())));
+}
+
+void GraphTrackHolder::InitializeClone(GraphTrackHolder* aOriginal) {
+  MOZ_ASSERT(NS_IsMainThread());
+  MOZ_ASSERT(!mSource && !mTrack);
+  if (!aOriginal->mSource || aOriginal->mEnded.Ref() ||
+      aOriginal->mSource->InputTrack()->IsDestroyed()) {
+    // The original has not been initialized or its producer has stopped, and
+    // the source will not notify a sink registering now, so the clone starts
+    // out ended.
+    LOG(LogLevel::Info, ("GraphTrackHolder {} cannot clone {}: it is ended",
+                         fmt::ptr(this), fmt::ptr(aOriginal)));
+    End();
+    mSource = aOriginal->mSource;
+    return;
+  }
+
+  LOG(LogLevel::Debug, ("GraphTrackHolder {} cloning holder {}", fmt::ptr(this),
+                        fmt::ptr(aOriginal)));
+  RefPtr<MediaStreamTrackSource> source = aOriginal->mSource->Clone();
+  if (!source) {
+    // The source does not support independent clones. Share it.
+    source = aOriginal->mSource;
+  }
+  InitGraphTrack(source->InputTrack(), aOriginal->mTrack->Graph());
+  Attach(source, mMuted.Ref());
 }
 
 GraphTrackHolder::~GraphTrackHolder() {
@@ -82,8 +134,11 @@ void GraphTrackHolder::Attach(MediaStreamTrackSource* aSource, bool aMuted) {
     return;
   }
   mSource->RegisterSink(this);
+  mTrack->SetDisabledTrackMode(mEnabled ? DisabledTrackMode::ENABLED
+                                        : DisabledTrackMode::SILENCE_BLACK);
   mHolderState =
-      HolderState{.mSettings = &mSource->CanonicalSettings(),
+      HolderState{.mGraphTrack = mTrack,
+                  .mSettings = &mSource->CanonicalSettings(),
                   .mCapabilities = &mSource->CanonicalCapabilities()};
   mSource->SinkEnabledStateChanged();
 }
@@ -109,6 +164,8 @@ void GraphTrackHolder::SetEnabled(bool aEnabled) {
   if (mEnded.Ref() || !mSource) {
     return;
   }
+  mTrack->SetDisabledTrackMode(mEnabled ? DisabledTrackMode::ENABLED
+                                        : DisabledTrackMode::SILENCE_BLACK);
   mSource->SinkEnabledStateChanged();
 }
 
