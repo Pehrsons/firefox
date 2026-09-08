@@ -64,7 +64,9 @@ class HWInferenceParent final : public PHWInferenceParent {
   friend PHWInferenceParent;
   friend class HWInferenceProcess;
 
-  ~HWInferenceParent() = default;
+  ~HWInferenceParent() {
+    mReadyHolder.RejectIfExists(NS_ERROR_NOT_AVAILABLE, __func__);
+  }
 
   // Runs aSend(*this) once bound, drops it if the process never comes up.
   template <typename Send>
@@ -73,9 +75,9 @@ class HWInferenceParent final : public PHWInferenceParent {
   // Cleared once the owner has taken this actor's last report.
   HWInferenceProcess* mOwner = nullptr;
 
-  const RefPtr<GenericNonExclusivePromise::Private> mReadyPromise =
-      new GenericNonExclusivePromise::Private(
-          "HWInferenceParent::mReadyPromise");
+  MozPromiseHolder<GenericNonExclusivePromise> mReadyHolder;
+  const RefPtr<GenericNonExclusivePromise> mReadyPromise =
+      mReadyHolder.Ensure("HWInferenceParent::mReadyPromise");
 };
 
 }  // namespace mozilla::hwinference

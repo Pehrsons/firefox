@@ -206,7 +206,7 @@ void HWInferenceParent::ActorDestroy(ActorDestroyReason aReason) {
   LOGD("{} - reason={}", __func__, static_cast<int>(aReason));
   // A no-op once bound: let go of anyone waiting on an actor that never made it
   // to its process.
-  mReadyPromise->Reject(NS_ERROR_NOT_AVAILABLE, __func__);
+  mReadyHolder.RejectIfExists(NS_ERROR_NOT_AVAILABLE, __func__);
   if (mOwner) {
     mOwner->OnActorDestroyed(this, aReason);
   }
@@ -221,7 +221,7 @@ nsresult HWInferenceParent::BindToUtilityProcess(
     return NS_ERROR_FAILURE;
   }
 
-  mReadyPromise->Resolve(true, __func__);
+  mReadyHolder.ResolveIfExists(true, __func__);
   return NS_OK;
 }
 
