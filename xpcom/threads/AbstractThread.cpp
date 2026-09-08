@@ -176,11 +176,21 @@ class XPCOMThreadWrapper final : public AbstractThread,
     return mDirectTaskDispatcher->HaveDirectTasks(aResult);
   }
 
+  void Detach() {
+    MOZ_DIAGNOSTIC_ASSERT(mOnThread);
+    MOZ_DIAGNOSTIC_ASSERT(IsCurrentThreadIn());
+    MOZ_DIAGNOSTIC_ASSERT(sCurrentThreadTLS.get() == this);
+    MaybeFireTailDispatcher();
+    sCurrentThreadTLS.set(nullptr);
+    mOnThread = false;
+  }
+
  private:
   const RefPtr<nsIThreadInternal> mThread;
   const nsCOMPtr<nsIDirectTaskDispatcher> mDirectTaskDispatcher;
   std::unique_ptr<AutoTaskDispatcher> mTailDispatcher;
-  const bool mOnThread;
+  // Whether GetCurrent() returns this on mThread. Cleared by Detach().
+  bool mOnThread;
 
   ~XPCOMThreadWrapper() {
     if (mOnThread) {
@@ -330,6 +340,21 @@ void AbstractThread::InitMainThread() {
 void AbstractThread::ShutdownMainThread() {
   MOZ_ASSERT(NS_IsMainThread());
   sMainThread = nullptr;
+}
+
+/* static */
+already_AddRefed<AbstractThread> AbstractThread::CreateXPCOMThreadWrapper(
+    nsIThreadInternal* aThread, TailDispatchPolicy aTailDispatchPolicy,
+    bool aOnThread) {
+  RefPtr<AbstractThread> wrapper =
+      new XPCOMThreadWrapper(aThread, aTailDispatchPolicy, aOnThread);
+  return wrapper.forget();
+}
+
+/* static */
+void AbstractThread::DetachXPCOMThreadWrapper(AbstractThread* aWrapper) {
+  // Only CreateXPCOMThreadWrapper() hands out wrappers.
+  static_cast<XPCOMThreadWrapper*>(aWrapper)->Detach();
 }
 
 void AbstractThread::DispatchStateChange(

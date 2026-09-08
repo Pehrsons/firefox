@@ -15,6 +15,7 @@
 class nsIEventTarget;
 class nsIRunnable;
 class nsIThread;
+class nsIThreadInternal;
 
 namespace mozilla {
 
@@ -142,6 +143,32 @@ class AbstractThread : public nsISerialEventTarget {
   static void InitTLS();
   static void InitMainThread();
   static void ShutdownMainThread();
+
+  /**
+   * Creates an AbstractThread wrapping aThread, an XPCOM thread. With aOnThread
+   * this must be called on aThread, and the wrapper becomes what GetCurrent()
+   * returns on that thread until it is destroyed on that thread, or detached
+   * with DetachXPCOMThreadWrapper(). Only one such wrapper may exist per
+   * thread at a time.
+   *
+   * With a tail dispatch policy, tasks running on aThread may use the tail
+   * dispatcher whether or not they were dispatched through the wrapper. Direct
+   * tasks run when the current task has finished, before the next one.
+   */
+  static already_AddRefed<AbstractThread> CreateXPCOMThreadWrapper(
+      nsIThreadInternal* aThread, TailDispatchPolicy aTailDispatchPolicy,
+      bool aOnThread);
+
+  /**
+   * Detaches aWrapper, created by CreateXPCOMThreadWrapper() with aOnThread,
+   * from its thread, so that GetCurrent() no longer returns it there and the
+   * last reference to it may be dropped on any thread. Must be called on that
+   * thread before it goes away. Tasks still queued in the tail dispatcher are
+   * dispatched. This is for threads whose wrapper is referenced from other
+   * threads, e.g., by mirrors of state on the wrapped thread, which may
+   * release it after the thread has gone away.
+   */
+  static void DetachXPCOMThreadWrapper(AbstractThread* aWrapper);
 
   void DispatchStateChange(already_AddRefed<nsIRunnable> aRunnable);
 

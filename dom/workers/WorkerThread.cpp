@@ -118,9 +118,25 @@ void WorkerThread::SetWorker(const WorkerThreadFriendKey& /* aKey */,
   MOZ_ALWAYS_SUCCEEDS(AddObserver(mObserver));
 }
 
+AbstractThread* WorkerThread::GetAbstractThread() {
+  MOZ_ASSERT(PR_GetCurrentThread() == mThread);
+  if (!mAbstractThread) {
+    mAbstractThread = AbstractThread::CreateXPCOMThreadWrapper(
+        this, TailDispatchPolicy::ConsistentOrdering, /* aOnThread = */ true);
+  }
+  return mAbstractThread;
+}
+
 void WorkerThread::ClearEventQueueAndWorker(
     const WorkerThreadFriendKey& /* aKey */) {
   MOZ_ASSERT(PR_GetCurrentThread() == mThread);
+
+  if (mAbstractThread) {
+    // Other threads may hold references to the wrapper, e.g., through mirrors
+    // of state on this thread, and release them after this thread is gone.
+    AbstractThread::DetachXPCOMThreadWrapper(mAbstractThread);
+    mAbstractThread = nullptr;
+  }
 
   MOZ_ALWAYS_SUCCEEDS(RemoveObserver(mObserver));
   mObserver = nullptr;

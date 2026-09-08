@@ -6778,6 +6778,17 @@ WorkerDebuggerGlobalScope* WorkerPrivate::CreateDebuggerGlobalScope(
   return data->mDebuggerScope;
 }
 
+AbstractThread* WorkerPrivate::GetWorkerAbstractThread() {
+  AssertIsOnWorkerThread();
+  RefPtr<WorkerThread> thread;
+  {
+    MutexAutoLock lock(mMutex);
+    thread = mThread;
+  }
+  MOZ_ASSERT(thread);
+  return thread->GetAbstractThread();
+}
+
 bool WorkerPrivate::IsOnWorkerThread() const {
   // We can't use mThread because it must be protected by mMutex and sometimes
   // this method is called when mMutex is already locked. This method should

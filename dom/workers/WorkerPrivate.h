@@ -61,6 +61,7 @@ class Dispatchable;
 }  // namespace JS
 
 namespace mozilla {
+class AbstractThread;
 class ThrottledEventQueue;
 namespace dom {
 
@@ -540,6 +541,12 @@ class WorkerPrivate final
   void SetWorkerPrivateInWorkerThread(WorkerThread* aThread);
 
   void ResetWorkerPrivateInWorkerThread();
+
+  /**
+   * The AbstractThread of the worker thread, see
+   * WorkerThread::GetAbstractThread(). Worker thread only.
+   */
+  AbstractThread* GetWorkerAbstractThread();
 
   bool IsOnWorkerThread() const;
 
