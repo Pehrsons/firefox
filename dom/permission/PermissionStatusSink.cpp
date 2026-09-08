@@ -379,32 +379,26 @@ PermissionStatusSink::ComputeSystemState() {
   }
 
   // Avoid using PContent on a background thread.
-  auto spsPromisePrivate =
-      MakeRefPtr<PermissionStatusSink::SystemPermissionStatePromise::Private>(
-          __func__);
-
-  nsresult rv = NS_DispatchToMainThread(NS_NewRunnableFunction(
-      "PermissionStatusSink::ComputeSystemState", [spsPromisePrivate]() {
-        if (auto* contentChild = ContentChild::GetSingleton()) {
-          contentChild->SendGetSystemGeolocationPermissionBehavior()->Then(
-              GetCurrentSerialEventTarget(), __func__,
-              [spsPromisePrivate](
-                  geolocation::SystemGeolocationPermissionBehavior aBehavior) {
-                spsPromisePrivate->Resolve(
-                    ComputeGeolocationBehavior(aBehavior), __func__);
-              },
-              [spsPromisePrivate](mozilla::ipc::ResponseRejectReason aReason) {
-                spsPromisePrivate->Resolve(PermissionState::Granted, __func__);
-              });
-        } else {
+  return InvokeAsync(
+      GetMainThreadSerialEventTarget(), __func__,
+      []() -> RefPtr<SystemPermissionStatePromise> {
+        auto* contentChild = ContentChild::GetSingleton();
+        if (!contentChild) {
           // No ContentChild. Fall back to Granted.
-          spsPromisePrivate->Resolve(PermissionState::Granted, __func__);
+          return SystemPermissionStatePromise::CreateAndResolve(
+              PermissionState::Granted, __func__);
         }
-      }));
-  if (NS_FAILED(rv)) {
-    spsPromisePrivate->Resolve(PermissionState::Granted, __func__);
-  }
-  return spsPromisePrivate;
+        return contentChild->SendGetSystemGeolocationPermissionBehavior()->Then(
+            GetCurrentSerialEventTarget(), __func__,
+            [](geolocation::SystemGeolocationPermissionBehavior aBehavior) {
+              return SystemPermissionStatePromise::CreateAndResolve(
+                  ComputeGeolocationBehavior(aBehavior), __func__);
+            },
+            [](mozilla::ipc::ResponseRejectReason aReason) {
+              return SystemPermissionStatePromise::CreateAndResolve(
+                  PermissionState::Granted, __func__);
+            });
+      });
 }
 
 void PermissionStatusSink::SystemPermissionChangedOnMainThread(
