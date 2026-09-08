@@ -36,7 +36,7 @@ class IdentityCredentialRequestManager final : nsISupports {
  private:
   static StaticRefPtr<IdentityCredentialRequestManager> sSingleton;
   IdentityCredentialRequestManager() = default;
-  ~IdentityCredentialRequestManager() = default;
+  ~IdentityCredentialRequestManager();
 
   using TokenPromise =
       MozPromise<std::tuple<nsCString, Maybe<nsCString>>, nsresult, true>;

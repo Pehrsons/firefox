@@ -23,6 +23,12 @@ IdentityCredentialRequestManager::GetInstance() {
   return sSingleton;
 }
 
+IdentityCredentialRequestManager::~IdentityCredentialRequestManager() {
+  for (auto iter = mPendingTokenRequests.Iter(); !iter.Done(); iter.Next()) {
+    iter.Data().Reject(NS_ERROR_DOM_NETWORK_ERR, __func__);
+  }
+}
+
 RefPtr<MozPromise<std::tuple<nsCString, Maybe<nsCString>>, nsresult, true>>
 IdentityCredentialRequestManager::GetTokenFromPopup(
     dom::WebIdentityParent* aRelyingPartyWindow, nsIURI* aURLToOpen) {
