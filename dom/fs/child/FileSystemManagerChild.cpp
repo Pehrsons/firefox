@@ -9,6 +9,7 @@
 #include "FileSystemWritableFileStreamChild.h"
 #include "mozilla/dom/FileSystemSyncAccessHandle.h"
 #include "mozilla/dom/FileSystemWritableFileStream.h"
+#include "mozilla/dom/WorkerRef.h"
 
 namespace mozilla::dom {
 
@@ -94,6 +95,11 @@ FileSystemManagerChild::AllocPFileSystemWritableFileStreamChild() {
 
   nsTArray<RefPtr<BoolPromise>> promises;
 
+  // The closing handles release their own worker refs as they settle, so share
+  // one of them (they all refer to the same worker) to keep the worker alive
+  // for the dispatch of the final Then().
+  RefPtr<StrongWorkerRef> workerRef;
+
   // NOTE: getFile() creates blobs that read the data from the child;
   // we'll need to abort any reads and resolve this call only when all
   // blobs are closed.
@@ -102,6 +108,10 @@ FileSystemManagerChild::AllocPFileSystemWritableFileStreamChild() {
     auto* child = static_cast<FileSystemAccessHandleChild*>(item);
     auto* handle = child->MutableAccessHandlePtr();
 
+    if (!workerRef) {
+      workerRef = handle->GetWorkerRef();
+    }
+
     if (handle->IsOpen()) {
       promises.AppendElement(handle->BeginClose());
     } else if (handle->IsClosing()) {
@@ -109,13 +119,14 @@ FileSystemManagerChild::AllocPFileSystemWritableFileStreamChild() {
     }
   }
 
-  CloseAllWritablesImpl(promises);
+  CloseAllWritablesImpl(promises, &workerRef);
 
   BoolPromise::AllSettled(GetCurrentSerialEventTarget(), promises)
-      ->Then(GetCurrentSerialEventTarget(), __func__,
-             [resolver = std::move(aResolver)](
-                 const BoolPromise::AllSettledPromiseType::ResolveOrRejectValue&
-                 /* aValues */) { resolver(NS_OK); });
+      ->Then(
+          GetCurrentSerialEventTarget(), __func__,
+          [resolver = std::move(aResolver), workerRef = std::move(workerRef)](
+              const BoolPromise::AllSettledPromiseType::ResolveOrRejectValue&
+              /* aValues */) { resolver(NS_OK); });
 
   return IPC_OK();
 }
@@ -128,12 +139,17 @@ void FileSystemManagerChild::ActorDestroy(ActorDestroyReason aWhy) {
 }
 
 template <class T>
-void FileSystemManagerChild::CloseAllWritablesImpl(T& aPromises) {
+void FileSystemManagerChild::CloseAllWritablesImpl(
+    T& aPromises, RefPtr<StrongWorkerRef>* aWorkerRef) {
   for (const auto& item : ManagedPFileSystemWritableFileStreamChild()) {
     auto* const child = static_cast<FileSystemWritableFileStreamChild*>(item);
     auto* const handle = child->MutableWritableFileStreamPtr();
 
     if (handle) {
+      if (aWorkerRef && !*aWorkerRef) {
+        *aWorkerRef = handle->GetWorkerRef();
+      }
+
       if (handle->IsOpen()) {
         aPromises.AppendElement(handle->BeginAbort());
       } else if (handle->IsFinishing()) {

@@ -57,6 +57,8 @@ class FileSystemSyncAccessHandle final : public nsISupports,
 
   bool IsClosed() const;
 
+  already_AddRefed<StrongWorkerRef> GetWorkerRef() const;
+
   [[nodiscard]] RefPtr<BoolPromise> BeginClose();
 
   [[nodiscard]] RefPtr<BoolPromise> OnClose();

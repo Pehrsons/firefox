@@ -71,6 +71,8 @@ class FileSystemWritableFileStream final : public WritableStream {
 
   bool IsDone() const;
 
+  already_AddRefed<StrongWorkerRef> GetWorkerRef() const;
+
   [[nodiscard]] RefPtr<BoolPromise> BeginAbort();
 
   [[nodiscard]] RefPtr<BoolPromise> BeginClose();

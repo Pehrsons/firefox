@@ -225,6 +225,11 @@ bool FileSystemSyncAccessHandle::IsClosed() const {
   return mState == State::Closed;
 }
 
+already_AddRefed<StrongWorkerRef> FileSystemSyncAccessHandle::GetWorkerRef()
+    const {
+  return do_AddRef(mWorkerRef);
+}
+
 RefPtr<BoolPromise> FileSystemSyncAccessHandle::BeginClose() {
   MOZ_ASSERT(IsOpen());
 

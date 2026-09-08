@@ -12,6 +12,7 @@
 namespace mozilla::dom {
 
 class FileSystemBackgroundRequestHandler;
+class StrongWorkerRef;
 
 class FileSystemManagerChild : public PFileSystemManagerChild {
  public:
@@ -57,7 +58,8 @@ class FileSystemManagerChild : public PFileSystemManagerChild {
 
  private:
   template <class T>
-  void CloseAllWritablesImpl(T& aPromises);
+  void CloseAllWritablesImpl(T& aPromises,
+                             RefPtr<StrongWorkerRef>* aWorkerRef = nullptr);
 
   bool mCloseAllReceived = false;
 };

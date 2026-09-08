@@ -407,6 +407,11 @@ bool FileSystemWritableFileStream::IsDone() const {
   return mCloseHandler->IsClosed();
 }
 
+already_AddRefed<StrongWorkerRef> FileSystemWritableFileStream::GetWorkerRef()
+    const {
+  return do_AddRef(mWorkerRef);
+}
+
 RefPtr<BoolPromise> FileSystemWritableFileStream::BeginFinishing(
     bool aShouldAbort) {
   using ClosePromise = PFileSystemWritableFileStreamChild::ClosePromise;
