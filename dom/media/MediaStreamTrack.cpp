@@ -106,6 +106,12 @@ class MediaStreamTrack::TrackSink : public MediaStreamTrackSource::Sink {
     }
   }
 
+  void GraphTrackAvailable(ProcessedMediaTrack* aTrack) override {
+    if (mTrack) {
+      mTrack->SetGraphTrack(aTrack);
+    }
+  }
+
  private:
   WeakPtr<MediaStreamTrack> mTrack;
 };
@@ -159,8 +165,8 @@ MediaStreamTrack::MediaStreamTrack(nsIGlobalObject* aGlobal,
   GetSource().RegisterSink(mSink.get());
 
   if (!NS_IsMainThread()) {
-    // TODO(Bug 1991619): Tracks transferred to a worker have no
-    // MediaTrackGraph representation yet.
+    // We borrow our graph track from the GraphTrackHolder owned by our
+    // source's handle. It arrives through SetGraphTrack().
     MOZ_ASSERT(!aInputTrack);
     return;
   }
@@ -180,14 +186,22 @@ MediaStreamTrack::MediaStreamTrack(nsIGlobalObject* aGlobal,
 }
 
 void MediaStreamTrack::SetGraphTrack(ProcessedMediaTrack* aTrack) {
+  NS_ASSERT_OWNINGTHREAD(MediaStreamTrack);
   MOZ_ASSERT(aTrack);
-  MOZ_ASSERT(!mTrack);
+  MOZ_ASSERT(!mTrack || mTrack == aTrack);
+  if (Ended() || mTrack == aTrack) {
+    return;
+  }
+  LOG(LogLevel::Debug, ("MediaStreamTrack {} borrowing graph track {}",
+                        fmt::ptr(this), fmt::ptr(aTrack)));
   mTrack = aTrack;
   mTrackEnded.Connect(&mTrack->CanonicalEnded());
   mWatchManager.Watch(mTrackEnded, &MediaStreamTrack::OnTrackEnded);
-  mTrackPrincipalHandle.Connect(&mTrack->CanonicalPrincipalHandle());
-  mWatchManager.Watch(mTrackPrincipalHandle,
-                      &MediaStreamTrack::OnPrincipalHandleChanged);
+  if (NS_IsMainThread()) {
+    mTrackPrincipalHandle.Connect(&mTrack->CanonicalPrincipalHandle());
+    mWatchManager.Watch(mTrackPrincipalHandle,
+                        &MediaStreamTrack::OnPrincipalHandleChanged);
+  }
 }
 
 mozilla::MediaTrack* MediaStreamTrack::InputTrack() const {
@@ -259,7 +273,8 @@ MediaStreamTrack::TransferredData::TransferredData(
     const MediaStreamTrackSourceCapabilities& aCapabilities,
     const nsAString& aDeviceId, const nsAString& aGroupId,
     MediaSourceEnum aMediaSource, bool aHasAlpha,
-    RefPtr<MediaStreamTrackSourceHandle> aSource)
+    RefPtr<MediaStreamTrackSourceHandle> aSource,
+    RefPtr<ProcessedMediaTrack> aTrack)
     : mId(aId),
       mKind(aKind),
       mLabel(aLabel),
@@ -273,7 +288,8 @@ MediaStreamTrack::TransferredData::TransferredData(
       mGroupId(aGroupId),
       mMediaSource(aMediaSource),
       mHasAlpha(aHasAlpha),
-      mSource(std::move(aSource)) {}
+      mSource(std::move(aSource)),
+      mTrack(std::move(aTrack)) {}
 
 MediaStreamTrack::TransferredData::~TransferredData() = default;
 
@@ -318,12 +334,14 @@ UniquePtr<MediaStreamTrack::TransferredData> MediaStreamTrack::Transfer() {
     sourceHandle = MediaStreamTrackSourceHandle::Create(
         holder.forget(), mSource, mEnabled, mMuted);
   }
+  // The transferred track keeps borrowing our graph track.
+  RefPtr<ProcessedMediaTrack> graphTrack = mTrack;
   auto data = MakeUnique<TransferredData>(
       mID, AsAudioStreamTrack() ? MediaSegment::AUDIO : MediaSegment::VIDEO,
       label, mReadyState, mEnabled, mMuted, mConstraints,
       GetSource().Settings(), GetSource().Capabilities(), GetSource().mDeviceId,
       GetSource().mGroupId, GetSource().GetMediaSource(),
-      GetSource().HasAlpha(), std::move(sourceHandle));
+      GetSource().HasAlpha(), std::move(sourceHandle), std::move(graphTrack));
 
   LOG(LogLevel::Info, ("MediaStreamTrack {} transferred", fmt::ptr(this)));
 
@@ -358,7 +376,10 @@ already_AddRefed<MediaStreamTrack> MediaStreamTrack::FromTransferred(
   RefPtr<MediaStreamTrackSource> source;
   RefPtr<mozilla::MediaTrack> inputTrack;
   if (NS_IsMainThread()) {
+    // A clone's holder is created by a runnable dispatched to the main thread
+    // before any message carrying the clone, so it exists by now.
     GraphTrackHolder* holder = aData.mSource->Holder();
+    MOZ_RELEASE_ASSERT(holder, "The holder of a clone is created first");
     source = &holder->Source();
     inputTrack = holder->InputTrack();
   } else {
@@ -388,6 +409,9 @@ already_AddRefed<MediaStreamTrack> MediaStreamTrack::FromTransferred(
   }
   track->AssignId(aData.mId);
   track->SetEnabled(aData.mEnabled);
+  if (!NS_IsMainThread() && aData.mTrack && !track->Ended()) {
+    track->SetGraphTrack(aData.mTrack);
+  }
 
   LOG(LogLevel::Info,
       ("MediaStreamTrack {} created from transfer, {}", fmt::ptr(track.get()),
@@ -412,8 +436,10 @@ void MediaStreamTrack::SetEnabled(bool aEnabled) {
     return;
   }
 
-  if (mTrack) {
-    // TODO(Bug 1991619): mTrack is null for tracks transferred to a worker.
+  if (mTrack && NS_IsMainThread()) {
+    // TODO(Bug 1991619): A track borrowing its graph track from another
+    // thread's holder cannot talk to it yet. The holder applies the enabled
+    // state instead.
     mTrack->SetDisabledTrackMode(mEnabled ? DisabledTrackMode::ENABLED
                                           : DisabledTrackMode::SILENCE_BLACK);
   }
@@ -488,14 +514,6 @@ already_AddRefed<Promise> MediaStreamTrack::ApplyConstraints(
     return nullptr;
   }
 
-  if (!GetOwnerWindow()) {
-    // TODO(Bug 1991619): Proxy applyConstraints() to the main thread for
-    // tracks transferred to a worker. MediaStreamError also needs a window.
-    promise->MaybeRejectWithNotSupportedError(
-        "applyConstraints() is not supported in workers yet");
-    return promise.forget();
-  }
-
   // Forward constraints to the source.
   //
   // After GetSource().ApplyConstraints succeeds (after it's been to
@@ -513,25 +531,37 @@ already_AddRefed<Promise> MediaStreamTrack::ApplyConstraints(
       ->Then(
           mAbstractThread, __func__,
           [this, self, promise, aConstraints](bool aDummy) {
-            nsGlobalWindowInner* window = GetOwnerWindow();
-            if (!window || !window->IsCurrentInnerWindow()) {
+            mConstraints = aConstraints;
+            if (!IsGlobalCurrent()) {
               return;  // Leave Promise pending after navigation by design.
             }
             promise->MaybeResolve(false);
           },
           [this, self, promise](const RefPtr<MediaMgrError>& aError) {
-            nsGlobalWindowInner* window = GetOwnerWindow();
-            if (!window || !window->IsCurrentInnerWindow()) {
+            if (!IsGlobalCurrent()) {
               return;  // Leave Promise pending after navigation by design.
             }
-            promise->MaybeReject(MakeRefPtr<MediaStreamError>(window, *aError));
+            promise->MaybeReject(
+                MakeRefPtr<MediaStreamError>(GetParentObject(), *aError));
           });
   return promise.forget();
 }
 
+bool MediaStreamTrack::IsGlobalCurrent() const {
+  nsIGlobalObject* global = GetParentObject();
+  if (!global) {
+    return false;
+  }
+  if (nsGlobalWindowInner* window = GetOwnerWindow()) {
+    return window->IsCurrentInnerWindow();
+  }
+  return !global->IsDying();
+}
+
 ProcessedMediaTrack* MediaStreamTrack::GetTrack() const {
   MOZ_DIAGNOSTIC_ASSERT(!Ended());
-  // TODO(Bug 1991619): Null for tracks transferred to a worker.
+  // Null for a track on another thread until its holder's graph track is
+  // available, see SetGraphTrack().
   return mTrack;
 }
 
@@ -565,9 +595,10 @@ void MediaStreamTrack::SetPrincipal(nsIPrincipal* aPrincipal) {
 
 void MediaStreamTrack::PrincipalChanged() {
   if (!NS_IsMainThread()) {
-    // TODO(Bug 1991619): Principals are main-thread objects. Tracks
-    // transferred to a worker will mirror the PrincipalHandle of their graph
-    // track's data instead.
+    // Tracks on other threads have no principal and no principal change
+    // observers, and their source does not notify of principal changes.
+    // Consumers exposing their data to script, like MediaStreamTrackProcessor,
+    // check the PrincipalHandle of the data in the MediaTrackGraph instead.
     return;
   }
   mPendingPrincipal = GetSource().GetPrincipal();
@@ -753,7 +784,7 @@ void MediaStreamTrack::SetReadyState(MediaStreamTrackState aState) {
 }
 
 void MediaStreamTrack::OnTrackEnded() {
-  MOZ_ASSERT(NS_IsMainThread());
+  NS_ASSERT_OWNINGTHREAD(MediaStreamTrack);
   if (!mTrackEnded) {
     // The mirror was seeded with the track's initial state.
     return;
@@ -790,8 +821,9 @@ void MediaStreamTrack::AddListener(MediaTrackListener* aListener) {
                         fmt::ptr(this), fmt::ptr(aListener)));
   mTrackListeners.AppendElement(aListener);
 
-  if (Ended() || !mTrack) {
-    // TODO(Bug 1991619): mTrack is null for tracks transferred to a worker.
+  if (Ended() || !mTrack || !NS_IsMainThread()) {
+    // TODO(Bug 1991619): A track borrowing its graph track from another
+    // thread's holder cannot talk to it yet.
     return;
   }
   mTrack->AddListener(aListener);
@@ -802,8 +834,7 @@ void MediaStreamTrack::RemoveListener(MediaTrackListener* aListener) {
                         fmt::ptr(this), fmt::ptr(aListener)));
   mTrackListeners.RemoveElement(aListener);
 
-  if (Ended() || !mTrack) {
-    // TODO(Bug 1991619): mTrack is null for tracks transferred to a worker.
+  if (Ended() || !mTrack || !NS_IsMainThread()) {
     return;
   }
   mTrack->RemoveListener(aListener);
@@ -817,8 +848,9 @@ void MediaStreamTrack::AddDirectListener(DirectMediaTrackListener* aListener) {
        fmt::ptr(aListener), fmt::ptr(mTrack.get())));
   mDirectTrackListeners.AppendElement(aListener);
 
-  if (Ended() || !mTrack) {
-    // TODO(Bug 1991619): mTrack is null for tracks transferred to a worker.
+  if (Ended() || !mTrack || !NS_IsMainThread()) {
+    // TODO(Bug 1991619): A track borrowing its graph track from another
+    // thread's holder cannot talk to it yet.
     return;
   }
   mTrack->AddDirectListener(aListener);
@@ -831,8 +863,7 @@ void MediaStreamTrack::RemoveDirectListener(
        fmt::ptr(this), fmt::ptr(aListener), fmt::ptr(mTrack.get())));
   mDirectTrackListeners.RemoveElement(aListener);
 
-  if (Ended() || !mTrack) {
-    // TODO(Bug 1991619): mTrack is null for tracks transferred to a worker.
+  if (Ended() || !mTrack || !NS_IsMainThread()) {
     return;
   }
   mTrack->RemoveDirectListener(aListener);

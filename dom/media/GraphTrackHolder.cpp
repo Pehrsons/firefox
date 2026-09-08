@@ -73,7 +73,30 @@ void GraphTrackHolder::Attach(MediaStreamTrackSourceHandle* aHandle,
     return;
   }
   mSource->RegisterSink(this);
+  mTrack->SetDisabledTrackMode(mEnabled ? DisabledTrackMode::ENABLED
+                                        : DisabledTrackMode::SILENCE_BLACK);
   mSource->SinkEnabledStateChanged();
+}
+
+already_AddRefed<GraphTrackHolder> GraphTrackHolder::Clone(
+    bool aEnabled, RefPtr<MediaStreamTrackSource>* aSource) const {
+  MOZ_ASSERT(NS_IsMainThread());
+  MOZ_ASSERT(mAttached);
+  MOZ_ASSERT(aSource);
+  if (mEnded || mInputTrack->IsDestroyed()) {
+    // The producer has stopped and the source will not notify a sink
+    // registering now, so the clone starts out ended.
+    *aSource = mSource;
+    return Create(nullptr, nullptr, aEnabled);
+  }
+  MediaStreamTrackSource::CloneResult cloneRes = mSource->Clone();
+  if (!cloneRes.mSource) {
+    // The source does not support independent clones. Share it.
+    cloneRes.mSource = mSource;
+    cloneRes.mInputTrack = mInputTrack;
+  }
+  *aSource = cloneRes.mSource;
+  return Create(cloneRes.mInputTrack, mTrack->Graph(), aEnabled);
 }
 
 void GraphTrackHolder::SetEnabled(bool aEnabled) {
@@ -85,6 +108,8 @@ void GraphTrackHolder::SetEnabled(bool aEnabled) {
   if (mEnded || !mAttached) {
     return;
   }
+  mTrack->SetDisabledTrackMode(mEnabled ? DisabledTrackMode::ENABLED
+                                        : DisabledTrackMode::SILENCE_BLACK);
   mSource->SinkEnabledStateChanged();
 }
 

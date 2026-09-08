@@ -69,6 +69,15 @@ class GraphTrackHolder final : public MediaStreamTrackSource::Sink {
               MediaStreamTrackSource* aSource);
 
   /**
+   * Creates a holder for a clone of this holder's source, with an independent
+   * source where the source supports that. An ended holder clones into an
+   * ended holder. The clone is not attached; aSource is set to the source to
+   * attach it to. Only for an attached holder.
+   */
+  already_AddRefed<GraphTrackHolder> Clone(
+      bool aEnabled, RefPtr<MediaStreamTrackSource>* aSource) const;
+
+  /**
    * Ends the holder if live, and destroys the graph track.
    */
   void Shutdown();
@@ -95,8 +104,9 @@ class GraphTrackHolder final : public MediaStreamTrackSource::Sink {
   }
 
   /**
-   * Sets the enabled state of the track on the other thread. Applies to the
-   * source like MediaStreamTrack::SetEnabled does once attached.
+   * Sets the enabled state of the track on the other thread. Once attached,
+   * applies to the graph track and the source like MediaStreamTrack::SetEnabled
+   * does.
    */
   void SetEnabled(bool aEnabled);
 

@@ -1,0 +1,122 @@
+<!doctype html>
+<meta charset=utf-8>
+<title>A MediaStreamTrack cloned in a dedicated worker has independent settings. Assumes Mozilla's fake camera source with 480p and 720p capabilities.</title>
+<link rel="help" href="https://w3c.github.io/mediacapture-extensions/#transferable-mediastreamtrack">
+<link rel="help" href="https://w3c.github.io/mediacapture-main/#dom-mediastreamtrack-clone">
+<script src=/resources/testharness.js></script>
+<script src=/resources/testharnessreport.js></script>
+<script src=/resources/testdriver.js></script>
+<script src=/resources/testdriver-vendor.js></script>
+<script src=/mediacapture-streams/permission-helper.js></script>
+<script src=/mediacapture-extensions/support/transfer-helper.js></script>
+<script>
+"use strict";
+
+promise_setup(() => setMediaPermission());
+
+// The fake camera's two capabilities, and a crop-and-scale of the first.
+const low = {width: 640, height: 480, frameRate: 30};
+const high = {width: 1280, height: 720, frameRate: 10};
+const scaled = {width: 320, height: 240, frameRate: 30};
+
+const workerScript = TRACK_WORKER_SCRIPT + `
+  handlers.clone = () => {
+    self.clone = self.track.clone();
+    logEvents(self.clone, ["ended", "mute", "unmute"]);
+    return describeTrack(self.clone);
+  };
+  handlers.cloneState = () => describeTrack(self.clone);
+  handlers.cloneEvents = () => takeEvents(self.clone);
+  handlers.stopClone = () => {
+    self.clone.stop();
+    return describeTrack(self.clone);
+  };
+  handlers.applyConstraints = async ({target, constraints}) => {
+    await self[target].applyConstraints(constraints);
+    return describeTrack(self[target]);
+  };
+`;
+
+function assert_resolution(settings, expected, description) {
+  assert_equals(settings.width, expected.width, `${description} width`);
+  assert_equals(settings.height, expected.height, `${description} height`);
+  assert_equals(settings.frameRate, expected.frameRate,
+                `${description} frameRate`);
+}
+
+async function getLowResTrack(t) {
+  const stream = await navigator.mediaDevices.getUserMedia(
+      {video: {resizeMode: "none", width: 500}});
+  t.add_cleanup(() => stream.getTracks().forEach(track => track.stop()));
+  const [track] = stream.getVideoTracks();
+  assert_resolution(track.getSettings(), low, "before transfer");
+  return track;
+}
+
+promise_test(async t => {
+  const worker = await createWorker(t, workerScript);
+  const track = await getLowResTrack(t);
+  const original = await callWorker(worker, {type: "receive", track}, [track]);
+  assert_resolution(original.settings, low, "transferred");
+
+  const clone = await callWorker(worker, {type: "clone"});
+  assert_not_equals(clone.id, original.id, "clone id");
+  assert_equals(clone.readyState, "live", "clone readyState");
+  assert_resolution(clone.settings, low, "clone");
+
+  const cloneHigh = await callWorker(worker, {
+    type: "applyConstraints", target: "clone",
+    constraints: {resizeMode: "none", width: 1000},
+  });
+  assert_resolution(cloneHigh.settings, high, "clone after applyConstraints");
+  assert_equals(cloneHigh.constraints.width, 1000, "clone constraints");
+  assert_resolution((await callWorker(worker, {type: "state"})).settings, low,
+                    "original after clone applyConstraints");
+
+  const originalScaled = await callWorker(worker, {
+    type: "applyConstraints", target: "track",
+    constraints: {resizeMode: "crop-and-scale", width: 320, height: 240},
+  });
+  assert_resolution(originalScaled.settings, scaled,
+                    "original after applyConstraints");
+  assert_equals(originalScaled.settings.resizeMode, "crop-and-scale",
+                "original resizeMode");
+  assert_resolution((await callWorker(worker, {type: "cloneState"})).settings,
+                    high, "clone after original applyConstraints");
+}, "A track cloned in a worker has settings independent of the original");
+
+promise_test(async t => {
+  const worker = await createWorker(t, workerScript);
+  const track = await getLowResTrack(t);
+  await callWorker(worker, {type: "receive", track}, [track]);
+  await callWorker(worker, {type: "clone"});
+
+  const stoppedClone = await callWorker(worker, {type: "stopClone"});
+  assert_equals(stoppedClone.readyState, "ended", "stopped clone");
+  const original = await callWorker(worker, {type: "state"});
+  assert_equals(original.readyState, "live", "original after clone.stop()");
+  assert_array_equals(await callWorker(worker, {type: "events"}), [],
+                      "original events after clone.stop()");
+
+  const stopped = await callWorker(worker, {type: "stop"});
+  assert_equals(stopped.readyState, "ended", "stopped original");
+  assert_array_equals(await callWorker(worker, {type: "cloneEvents"}), [],
+                      "clone events after track.stop()");
+}, "Stopping a track cloned in a worker does not affect the original");
+
+promise_test(async t => {
+  const worker = await createWorker(t, workerScript);
+  const track = await getLowResTrack(t);
+  await callWorker(worker, {type: "receive", track}, [track]);
+  await callWorker(worker, {type: "clone"});
+  await promise_rejects_js(t, Error, callWorker(worker, {
+    type: "applyConstraints", target: "clone",
+    constraints: {width: {exact: 10000}},
+  }).catch(e => {
+    assert_true(e.message.includes("OverconstrainedError"), e.message);
+    throw e;
+  }), "applyConstraints rejects");
+  assert_resolution((await callWorker(worker, {type: "cloneState"})).settings,
+                    low, "clone after failed applyConstraints");
+}, "applyConstraints on a track cloned in a worker rejects with OverconstrainedError");
+</script>

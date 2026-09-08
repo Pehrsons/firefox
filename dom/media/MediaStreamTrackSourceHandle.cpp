@@ -28,6 +28,23 @@ MediaStreamTrackSourceHandle::Create(already_AddRefed<GraphTrackHolder> aHolder,
   return handle.forget();
 }
 
+/* static */
+already_AddRefed<MediaStreamTrackSourceHandle>
+MediaStreamTrackSourceHandle::CreateClone(
+    MediaStreamTrackSourceHandle* aOriginal, bool aEnabled, bool aMuted) {
+  MOZ_ASSERT(aOriginal);
+  RefPtr<MediaStreamTrackSourceHandle> handle =
+      new MediaStreamTrackSourceHandle(aEnabled, aMuted);
+  LOG(LogLevel::Debug,
+      ("MediaStreamTrackSourceHandle {} created as pending clone of {}",
+       fmt::ptr(handle.get()), fmt::ptr(aOriginal)));
+  DispatchToMainThread("MediaStreamTrackSourceHandle::InitializeClone",
+                       [handle, original = RefPtr(aOriginal)] {
+                         handle->InitializeClone(original);
+                       });
+  return handle.forget();
+}
+
 MediaStreamTrackSourceHandle::MediaStreamTrackSourceHandle(bool aEnabled,
                                                            bool aMuted)
     : mMuted(AbstractThread::MainThread(), aMuted,
@@ -44,8 +61,11 @@ MediaStreamTrackSourceHandle::MediaStreamTrackSourceHandle(bool aEnabled,
 MediaStreamTrackSourceHandle::~MediaStreamTrackSourceHandle() {
   LOG(LogLevel::Debug,
       ("MediaStreamTrackSourceHandle {} destroyed", fmt::ptr(this)));
-  // Nothing depends on the holder anymore, so it can be shut down and
-  // destroyed. Only on the main thread though.
+  if (!mHolder) {
+    return;
+  }
+  // Nothing depends on the graph track anymore, so the holder can be shut
+  // down and destroyed. Only on the main thread though.
   if (NS_IsMainThread()) {
     mHolder->Shutdown();
     return;
@@ -88,8 +108,32 @@ void MediaStreamTrackSourceHandle::SetHolder(
   mHolder->SetEnabled(mEnabled);
 
   MediaStreamTrackSource& source = mHolder->Source();
-  mHolderState = HolderState{.mSettings = &source.CanonicalSettings(),
+  MOZ_ASSERT(mHolder->GraphTrack());
+  mHolderState = HolderState{.mGraphTrack = mHolder->GraphTrack(),
+                             .mSettings = &source.CanonicalSettings(),
                              .mCapabilities = &source.CanonicalCapabilities()};
+}
+
+void MediaStreamTrackSourceHandle::InitializeClone(
+    MediaStreamTrackSourceHandle* aOriginal) {
+  MOZ_ASSERT(NS_IsMainThread());
+  MOZ_ASSERT(!mHolder);
+
+  GraphTrackHolder* originalHolder = aOriginal->Holder();
+  if (!originalHolder) {
+    LOG(LogLevel::Info,
+        ("MediaStreamTrackSourceHandle {} cannot clone {}: its holder is "
+         "still pending",
+         fmt::ptr(this), fmt::ptr(aOriginal)));
+    HolderEnded();
+    return;
+  }
+
+  LOG(LogLevel::Debug, ("MediaStreamTrackSourceHandle {} cloning holder {}",
+                        fmt::ptr(this), fmt::ptr(originalHolder)));
+  RefPtr<MediaStreamTrackSource> source;
+  RefPtr<GraphTrackHolder> holder = originalHolder->Clone(mEnabled, &source);
+  SetHolder(holder.forget(), source);
 }
 
 void MediaStreamTrackSourceHandle::SetEnabled(bool aEnabled) {
@@ -102,7 +146,9 @@ void MediaStreamTrackSourceHandle::SetEnabled(bool aEnabled) {
 void MediaStreamTrackSourceHandle::ApplyEnabled(bool aEnabled) {
   MOZ_ASSERT(NS_IsMainThread());
   mEnabled = aEnabled;
-  mHolder->SetEnabled(mEnabled);
+  if (mHolder) {
+    mHolder->SetEnabled(mEnabled);
+  }
 }
 
 void MediaStreamTrackSourceHandle::HolderEnded() {

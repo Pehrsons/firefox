@@ -14,6 +14,7 @@
 namespace mozilla {
 
 class MediaTrack;
+class ProcessedMediaTrack;
 
 namespace dom {
 
@@ -28,11 +29,15 @@ class MediaStreamTrackSource;
  *
  * The handle is dataHolder.[[source]] in those steps. The holder keeps the
  * source alive, applies the enabled state of the track on the other thread to
- * it, and owns the graph track of the transferred track. The holder, and thus
- * that graph track, lives for as long as the handle does. The handle is held
+ * it, and owns the graph track that track borrows. The holder, and thus that
+ * graph track, lives for as long as the handle does. The handle is held
  * by a MediaStreamTrack::TransferredData in flight and then by the
  * TransferredTrackSource on the receiving thread. When the last reference goes
  * away the holder is destroyed, which lets the source stop.
+ *
+ * A handle created with CreateClone() starts out pending: its holder is
+ * created on the main thread by cloning the original handle's holder, which
+ * gives it an independent source where the source supports that.
  *
  * The holder's state is published through Canonicals owned by the main
  * thread, for the receiving thread to mirror. Settings and capabilities are
@@ -50,10 +55,13 @@ class MediaStreamTrackSourceHandle final
   MOZ_DECLARE_REFCOUNTED_TYPENAME(MediaStreamTrackSourceHandle)
 
   /**
-   * What the holder provides to the track on the receiving thread: the
-   * Canonicals of the holder's source. Null if the holder was created ended.
+   * What the holder provides to the track on the receiving thread: the graph
+   * track it borrows for as long as it holds the handle, and the Canonicals
+   * of the holder's source. All null while a clone is pending or if the holder
+   * was created ended.
    */
   struct HolderState {
+    RefPtr<ProcessedMediaTrack> mGraphTrack;
     RefPtr<AbstractCanonical<MediaStreamTrackSourceSettings>> mSettings;
     RefPtr<AbstractCanonical<MediaStreamTrackSourceCapabilities>> mCapabilities;
     bool operator==(const HolderState&) const = default;
@@ -69,7 +77,15 @@ class MediaStreamTrackSourceHandle final
       already_AddRefed<GraphTrackHolder> aHolder,
       MediaStreamTrackSource* aSource, bool aEnabled, bool aMuted);
 
-  // Main thread only.
+  /**
+   * Creates a pending handle whose holder is a clone of aOriginal's holder,
+   * made on the main thread. Any thread. aMuted is the original's current
+   * state, which CanonicalMuted() reports until the holder exists.
+   */
+  static already_AddRefed<MediaStreamTrackSourceHandle> CreateClone(
+      MediaStreamTrackSourceHandle* aOriginal, bool aEnabled, bool aMuted);
+
+  // Main thread only. Null while a clone is pending.
   GraphTrackHolder* Holder() const;
 
   /**
@@ -98,13 +114,15 @@ class MediaStreamTrackSourceHandle final
   // Main thread only.
   void SetHolder(already_AddRefed<GraphTrackHolder> aHolder,
                  MediaStreamTrackSource* aSource);
+  void InitializeClone(MediaStreamTrackSourceHandle* aOriginal);
   void ApplyEnabled(bool aEnabled);
 
   // Any thread.
   template <typename Function>
   static void DispatchToMainThread(const char* aName, Function&& aFunction);
 
-  // Main thread only. Shut down and released on the main thread.
+  // Main thread only. Null while a clone is pending. Shut down and released
+  // on the main thread.
   RefPtr<GraphTrackHolder> mHolder;
   // Main thread only.
   Canonical<bool> mMuted;
