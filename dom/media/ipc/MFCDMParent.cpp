@@ -1565,28 +1565,50 @@ RefPtr<MFCDMParent::HDCPSupportPromise> MFCDMParent::QueryHDCPSupport(
     MFCDM_PARENT_SLOG("Failed to create background task queue for HDCP query");
     return HDCPSupportPromise::CreateAndReject(NS_ERROR_FAILURE, __func__);
   }
-  RefPtr<HDCPSupportPromise::Private> p =
-      new HDCPSupportPromise::Private(__func__);
-  nsAutoString keySystem(aKeySystem);
-  RefPtr<nsISerialEventTarget> managerThread = aManagerThread;
-  nsresult rv = backgroundTaskQueue->Dispatch(
-      NS_NewRunnableFunction(__func__, [keySystem, aVersion, managerThread, p] {
-        nsresult result =
-            IsHDCPVersionSupported(keySystem, aVersion, managerThread);
-        nsFmtCString msg("HDCP version={}, supported={}",
-                         static_cast<uint32_t>(aVersion),
-                         result == NS_OK ? "true" : "false");
-        MFCDM_PARENT_SLOG("{}", msg.get());
-        PROFILER_MARKER_TEXT("MFCDMParent::QueryHDCPSupport", MEDIA_PLAYBACK,
-                             {}, msg);
-        p->Resolve(result, __func__);
-      }));
+  // Rejects the promise if destroyed without having run, which happens if
+  // the dispatch fails.
+  class HDCPQuery final : public Runnable {
+   public:
+    HDCPQuery(const nsAString& aKeySystem, dom::HDCPVersion aVersion,
+              nsISerialEventTarget* aManagerThread)
+        : Runnable("MFCDMParent::QueryHDCPSupport"),
+          mPromise(mHolder.Ensure(__func__)),
+          mKeySystem(aKeySystem),
+          mVersion(aVersion),
+          mManagerThread(aManagerThread) {}
+
+    RefPtr<HDCPSupportPromise> Promise() const { return mPromise; }
+
+    NS_IMETHOD Run() override {
+      nsresult result =
+          IsHDCPVersionSupported(mKeySystem, mVersion, mManagerThread);
+      nsFmtCString msg("HDCP version={}, supported={}",
+                       static_cast<uint32_t>(mVersion),
+                       result == NS_OK ? "true" : "false");
+      MFCDM_PARENT_SLOG("{}", msg.get());
+      PROFILER_MARKER_TEXT("MFCDMParent::QueryHDCPSupport", MEDIA_PLAYBACK, {},
+                           msg);
+      mHolder.Resolve(result, __func__);
+      return NS_OK;
+    }
+
+   private:
+    ~HDCPQuery() { mHolder.RejectIfExists(NS_ERROR_FAILURE, __func__); }
+
+    MozPromiseHolder<HDCPSupportPromise> mHolder;
+    const RefPtr<HDCPSupportPromise> mPromise;
+    const nsString mKeySystem;
+    const dom::HDCPVersion mVersion;
+    const RefPtr<nsISerialEventTarget> mManagerThread;
+  };
+
+  auto query = MakeRefPtr<HDCPQuery>(aKeySystem, aVersion, aManagerThread);
+  nsresult rv = backgroundTaskQueue->Dispatch(do_AddRef(query));
   if (NS_FAILED(rv)) {
     MFCDM_PARENT_SLOG("Failed to dispatch HDCP query, rv={:x}",
                       static_cast<uint32_t>(rv));
-    p->Reject(rv, __func__);
   }
-  return p;
+  return query->Promise();
 }
 
 mozilla::ipc::IPCResult MFCDMParent::RecvGetStatusForPolicy(
