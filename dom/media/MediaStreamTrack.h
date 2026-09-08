@@ -123,6 +123,13 @@ class MediaStreamTrackSource : public nsISupports {
      */
     virtual void OverrideEnded() = 0;
 
+    /**
+     * Called by a WorkerTrackSourceProxy when the MediaTrackGraph track its
+     * track borrows from its main-thread GraphTrackHolder becomes available.
+     * See MediaStreamTrack::SetGraphTrack.
+     */
+    virtual void GraphTrackAvailable(ProcessedMediaTrack* aTrack) {}
+
    protected:
     virtual ~Sink() = default;
   };
@@ -497,9 +504,10 @@ class MediaStreamTrackConsumer : public SupportsWeakPtr {
  *
  *   (*) is a copy of A's input track
  *
- * Only the main thread creates and destroys graph objects. When a track is
- * transferred, its holder moves with it, to the main-thread owner of the track
- * on the other thread, or to a dedicated worker's WorkerTrackSourceProxy.
+ * Only the main thread creates and destroys graph objects, so a main-thread
+ * track owns its holder while a track on another thread (transferred to a
+ * dedicated worker) borrows mTrack from the holder owned by its
+ * WorkerTrackSourceProxy. When a track is transferred its holder moves with it.
  */
 // clang-format on
 class MediaStreamTrack : public DOMEventTargetHelper, public SupportsWeakPtr {
@@ -528,7 +536,8 @@ class MediaStreamTrack : public DOMEventTargetHelper, public SupportsWeakPtr {
                     const MediaStreamTrackSourceCapabilities& aCapabilities,
                     const nsAString& aDeviceId, const nsAString& aGroupId,
                     MediaSourceEnum aMediaSource, bool aHasAlpha,
-                    RefPtr<GraphTrackHolder> aSource);
+                    RefPtr<GraphTrackHolder> aSource,
+                    RefPtr<ProcessedMediaTrack> aTrack);
     ~TransferredData();
 
     // [[id]]
@@ -558,6 +567,11 @@ class MediaStreamTrack : public DOMEventTargetHelper, public SupportsWeakPtr {
 
     // [[source]]. The track's holder, attached to the underlying source.
     const RefPtr<GraphTrackHolder> mSource;
+    // The holder's graph track, for a receiving track on another thread to
+    // borrow. Null if the track had already ended, or if the holder is still
+    // being created, in which case the receiving track gets it through its
+    // WorkerTrackSourceProxy.
+    const RefPtr<ProcessedMediaTrack> mTrack;
   };
 
   /**
@@ -657,6 +671,12 @@ class MediaStreamTrack : public DOMEventTargetHelper, public SupportsWeakPtr {
    * Convenience (and legacy) method for when ready state is "ended".
    */
   bool Ended() const { return mReadyState == MediaStreamTrackState::Ended; }
+
+  /**
+   * True if our global is still the current one, i.e., a window that is the
+   * current inner window or a worker global that is not dying.
+   */
+  bool IsGlobalCurrent() const;
 
   /**
    * Get this track's principal.
@@ -777,13 +797,17 @@ class MediaStreamTrack : public DOMEventTargetHelper, public SupportsWeakPtr {
   void OnPrincipalHandleChanged();
 
   /**
-   * Called on the main thread when mTrackEnded changes, i.e., when mTrack has
-   * ended in the MediaTrackGraph. Queues a task to end this track.
+   * Called on the owning thread when mTrackEnded changes, i.e., when mTrack
+   * has ended in the MediaTrackGraph. Queues a task to end this track.
    */
   void OnTrackEnded();
 
   /**
-   * Starts borrowing aTrack as mTrack and mirroring its state.
+   * Sets mTrack for a live track borrowing it from another thread's holder,
+   * once that holder has made it available.
+   * TODO(Bug 1991619): Let such tracks add listeners to it and disable it, for
+   * consumers on their thread. Until then their holder applies the enabled
+   * state.
    */
   void SetGraphTrack(ProcessedMediaTrack* aTrack);
 
@@ -841,8 +865,10 @@ class MediaStreamTrack : public DOMEventTargetHelper, public SupportsWeakPtr {
   template <typename TrackType>
   already_AddRefed<MediaStreamTrack> CloneInternal(nsIGlobalObject* aGlobal) {
     auto cloneRes = mSource->Clone();
-    MOZ_ASSERT(!!cloneRes.mSource == !!cloneRes.mInputTrack);
-    if (!cloneRes.mSource || !cloneRes.mInputTrack) {
+    // Tracks on other threads have no input track, and neither do their
+    // clones. Their WorkerTrackSourceProxy provides the graph track.
+    MOZ_ASSERT_IF(cloneRes.mSource && NS_IsMainThread(), cloneRes.mInputTrack);
+    if (!cloneRes.mSource) {
       cloneRes.mSource = mSource;
       cloneRes.mInputTrack = InputTrack();
     }
@@ -863,12 +889,13 @@ class MediaStreamTrack : public DOMEventTargetHelper, public SupportsWeakPtr {
 
   // Holds the input track assigned us by the data producer and owns mTrack.
   // Always set on the main thread, where it is shut down when we end. Handed
-  // off to the TransferredData when we are transferred. Tracks on other threads
-  // reach their holder through their WorkerTrackSourceProxy.
+  // off to the TransferredData when we are transferred. Null for tracks on
+  // other threads, whose holder is owned by their WorkerTrackSourceProxy.
   RefPtr<GraphTrackHolder> mHolder;
   // The MediaTrack representing this MediaStreamTrack in the MediaTrackGraph.
-  // Borrowed from mHolder, which guarantees it is not destroyed while we
-  // borrow it. Set on construction if we're live. Valid until we end.
+  // Borrowed from a GraphTrackHolder, which guarantees it is not destroyed
+  // while we borrow it. Set on construction if we're live and on the main
+  // thread, otherwise through SetGraphTrack(). Valid until we end.
   // TODO(Bug 1991619): Null for tracks transferred to a worker, which have no
   // MediaTrackGraph representation yet.
   RefPtr<ProcessedMediaTrack> mTrack;
@@ -894,6 +921,7 @@ class MediaStreamTrack : public DOMEventTargetHelper, public SupportsWeakPtr {
   // Mirrors mTrack's ended state from the MediaTrackGraph while we're live.
   Mirror<bool> mTrackEnded;
   // Mirrors the PrincipalHandle of mTrack's most recent data while we're live.
+  // Main thread only; tracks on other threads have no principal.
   Mirror<PrincipalHandle> mTrackPrincipalHandle;
 };
 

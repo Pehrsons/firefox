@@ -2688,7 +2688,7 @@ void MediaTrack::SetDisabledTrackModeImpl(DisabledTrackMode aMode) {
   AssertOnGraphThread();
   MOZ_DIAGNOSTIC_ASSERT(
       aMode == DisabledTrackMode::ENABLED ||
-          mDisabledMode == DisabledTrackMode::ENABLED,
+          mDisabledMode == DisabledTrackMode::ENABLED || mDisabledMode == aMode,
       "Changing disabled track mode for a track is not allowed");
   DisabledTrackMode oldMode = CombinedDisabledMode();
   mDisabledMode = aMode;
