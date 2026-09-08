@@ -686,6 +686,12 @@ void ServiceWorkerManager::MaybeStartShutdown() {
 
   mShuttingDown = true;
 
+  for (auto& prd : mPendingReadyList) {
+    prd->mPromiseHolder.Reject(CopyableErrorResult(NS_ERROR_DOM_ABORT_ERR),
+                               __func__);
+  }
+  mPendingReadyList.Clear();
+
   for (const auto& dataPtr : mRegistrationInfos.Values()) {
     for (const auto& timerEntry : dataPtr->mUpdateTimers.Values()) {
       timerEntry->Cancel();
@@ -1264,6 +1270,11 @@ ServiceWorkerManager::SendNotificationCloseEvent(
 RefPtr<ServiceWorkerRegistrationPromise> ServiceWorkerManager::WhenReady(
     const ClientInfo& aClientInfo) {
   AssertIsOnMainThread();
+
+  if (mShuttingDown) {
+    return ServiceWorkerRegistrationPromise::CreateAndReject(
+        CopyableErrorResult(NS_ERROR_DOM_ABORT_ERR), __func__);
+  }
 
   for (auto& prd : mPendingReadyList) {
     if (prd->mClientHandle->Info().Id() == aClientInfo.Id() &&
@@ -2725,6 +2736,12 @@ void ServiceWorkerManager::UpdateInternal(
   nsAutoCString scopeKey;
   nsresult rv = PrincipalToScopeKey(aPrincipal, scopeKey);
   if (NS_WARN_IF(NS_FAILED(rv))) {
+    ErrorResult error;
+    error.Throw(rv);
+    aCallback->UpdateFailed(error);
+
+    // In case the callback does not consume the exception
+    error.SuppressException();
     return;
   }
 
