@@ -1460,7 +1460,7 @@ void Navigator::MozGetUserMedia(const MediaStreamConstraints& aConstraints,
             window->GetOuterWindow()->GetCurrentInnerWindow() != window) {
           return;  // Leave Promise pending after navigation by design.
         }
-        auto error = MakeRefPtr<MediaStreamError>(window, *aError);
+        auto error = MakeRefPtr<MediaStreamError>(window->AsGlobal(), *aError);
         MediaManager::CallOnError(*onerror, *error);
       });
 }
