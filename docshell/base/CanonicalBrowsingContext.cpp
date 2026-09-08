@@ -978,7 +978,7 @@ class PrintListenerAdapter final : public nsIWebProgressListener {
   }
 
  private:
-  ~PrintListenerAdapter() = default;
+  ~PrintListenerAdapter() { mHolder.RejectIfExists(NS_ERROR_ABORT, __func__); }
 
   MozPromiseHolder<PrintPromise> mHolder;
   const RefPtr<PrintPromise> mPromise;
