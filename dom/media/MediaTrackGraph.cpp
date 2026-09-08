@@ -313,6 +313,9 @@ void MediaTrackGraphImpl::ProcessChunkMetadataForInterval(MediaTrack* aTrack,
     const PrincipalHandle& principalHandle = chunk->GetPrincipalHandle();
     if (principalHandle != aSegment.GetLastPrincipalHandle()) {
       aSegment.SetLastPrincipalHandle(principalHandle);
+      if (aTrack->mCanonicals) {
+        aTrack->mCanonicals->mPrincipalHandle.Set(principalHandle);
+      }
       LOG(LogLevel::Debug,
           ("{}: MediaTrack {}, principalHandle "
            "changed in {}Chunk with duration {}",
@@ -2249,7 +2252,9 @@ void MediaTrack::SetGraphImpl(MediaTrackGraphImpl* aGraph,
   MOZ_ASSERT(mSampleRate == aGraph->GraphRate());
   mGraph = aGraph;
   if (aFlags.contains(MediaTrack::Flag::EnableCanonicals)) {
-    mCanonicals.emplace(aGraph, mStartTime);
+    mCanonicals.emplace(aGraph, mStartTime,
+                        mSegment ? mSegment->GetLastPrincipalHandle()
+                                 : PRINCIPAL_HANDLE_NONE);
   }
 }
 
@@ -2309,6 +2314,7 @@ void MediaTrack::DisconnectCanonicals() {
   }
   mCanonicals->mCurrentTime.DisconnectAll();
   mCanonicals->mEnded.DisconnectAll();
+  mCanonicals->mPrincipalHandle.DisconnectAll();
   mCanonicals.reset();
 }
 
@@ -2322,6 +2328,12 @@ AbstractCanonical<bool>& MediaTrack::CanonicalEnded() {
   MOZ_ASSERT(!mDestroyed);
   MOZ_ASSERT(mCanonicals, "Track was not created with EnableCanonicals");
   return mCanonicals->mEnded;
+}
+
+AbstractCanonical<PrincipalHandle>& MediaTrack::CanonicalPrincipalHandle() {
+  MOZ_ASSERT(!mDestroyed);
+  MOZ_ASSERT(mCanonicals, "Track was not created with EnableCanonicals");
+  return mCanonicals->mPrincipalHandle;
 }
 
 void MediaTrack::Destroy() {
