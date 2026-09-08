@@ -10,6 +10,7 @@
 #include "MediaTrackGraph.h"
 #include "MediaTrackGraphImpl.h"
 #include "MediaTrackListener.h"
+#include "mozilla/AbstractThread.h"
 #include "mozilla/BasePrincipal.h"
 #include "mozilla/dom/Promise.h"
 #include "nsContentUtils.h"
@@ -56,9 +57,8 @@ auto MediaStreamTrackSource::ApplyConstraints(
 }
 
 /**
- * MTGListener monitors state changes of the media flowing through the
- * MediaTrackGraph.
- *
+ * MTGListener monitors PrincipalHandle changes of the media flowing through
+ * the MediaTrackGraph.
  *
  * For changes to PrincipalHandle the following applies:
  *
@@ -110,28 +110,6 @@ class MediaStreamTrack::MTGListener : public MediaTrackListener {
     aGraph->DispatchToMainThreadStableState(
         NS_NewRunnableFunction("MediaStreamTrack::MTGListener::mTrackReleaser",
                                [self = RefPtr<MTGListener>(this)]() {}));
-  }
-
-  void DoNotifyEnded() {
-    MOZ_ASSERT(NS_IsMainThread());
-
-    if (!mTrack) {
-      return;
-    }
-
-    if (!mTrack->GetParentObject()) {
-      return;
-    }
-
-    AbstractThread::MainThread()->Dispatch(
-        NewRunnableMethod("MediaStreamTrack::OverrideEnded", mTrack.get(),
-                          &MediaStreamTrack::OverrideEnded));
-  }
-
-  void NotifyEnded(MediaTrackGraph* aGraph) override {
-    aGraph->DispatchToMainThreadStableState(
-        NewRunnableMethod("MediaStreamTrack::MTGListener::DoNotifyEnded", this,
-                          &MTGListener::DoNotifyEnded));
   }
 
  protected:
@@ -198,7 +176,10 @@ MediaStreamTrack::MediaStreamTrack(nsPIDOMWindowInner* aWindow,
       mReadyState(aReadyState),
       mEnabled(true),
       mMuted(aMuted),
-      mConstraints(aConstraints) {
+      mConstraints(aConstraints),
+      mWatchManager(this, AbstractThread::MainThread()),
+      mTrackEnded(AbstractThread::MainThread(), false,
+                  "MediaStreamTrack::mTrackEnded") {
   if (!Ended()) {
     GetSource().RegisterSink(mSink.get());
 
@@ -216,10 +197,13 @@ MediaStreamTrack::MediaStreamTrack(nsPIDOMWindowInner* aWindow,
                           "cloning, but since we're live there must be another "
                           "live track that is keeping the graph alive");
 
-    mTrack = graph->CreateForwardedInputTrack(mInputTrack->mType);
+    mTrack = graph->CreateForwardedInputTrack(
+        mInputTrack->mType, mozilla::MediaTrack::Flag::EnableCanonicals);
     mPort = mTrack->AllocateInputPort(mInputTrack);
     mMTGListener = new MTGListener(this);
     AddListener(mMTGListener);
+    mTrackEnded.Connect(&mTrack->CanonicalEnded());
+    mWatchManager.Watch(mTrackEnded, &MediaStreamTrack::OnTrackEnded);
   }
 
   nsresult rv;
@@ -559,6 +543,8 @@ void MediaStreamTrack::SetReadyState(MediaStreamTrackState aState) {
     if (mMTGListener) {
       RemoveListener(mMTGListener);
     }
+    mWatchManager.Shutdown();
+    mTrackEnded.DisconnectIfConnected();
     if (mPort) {
       mPort->Destroy();
     }
@@ -571,6 +557,23 @@ void MediaStreamTrack::SetReadyState(MediaStreamTrackState aState) {
   }
 
   mReadyState = aState;
+}
+
+void MediaStreamTrack::OnTrackEnded() {
+  MOZ_ASSERT(NS_IsMainThread());
+  if (!mTrackEnded) {
+    // The mirror was seeded with the track's initial state.
+    return;
+  }
+  if (!GetParentObject()) {
+    return;
+  }
+  // Watch callbacks run as direct tasks of the task that updated the mirror.
+  // Ending from a task of our own keeps the "ended" event where the previous
+  // graph listener fired it, after the task that learned of the end.
+  AbstractThread::MainThread()->Dispatch(
+      NewRunnableMethod("MediaStreamTrack::OverrideEnded", this,
+                        &MediaStreamTrack::OverrideEnded));
 }
 
 void MediaStreamTrack::OverrideEnded() {
