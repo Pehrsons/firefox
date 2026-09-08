@@ -141,13 +141,12 @@ class RemoteMediaManagerChild final
       const mozilla::ipc::ResponseRejectReason& aReason,
       std::function<void(const MediaResult&)>&& aCallback);
 
-  // Run aTask (on the manager thread) when we next attempt to create a new
-  // manager (even if creation fails). Intended to be called from ActorDestroy
-  // when we get notified that the old manager is being destroyed. Can only be
-  // called from the manager thread.
-  static void RunWhenGPUProcessRecreated(
-      const RemoteMediaManagerChild* aDyingManager,
-      already_AddRefed<Runnable> aTask);
+  // Returns a promise that resolves (on the manager thread) when we next
+  // attempt to create a new manager (even if creation fails), and rejects if
+  // we shut down first. Intended to be called when we get notified that the old
+  // manager is being destroyed. Can only be called from the manager thread.
+  static RefPtr<GenericPromise> WhenGPUProcessRecreated(
+      const RemoteMediaManagerChild* aDyingManager);
 
   RemoteMediaIn Location() const { return mLocation; }
 

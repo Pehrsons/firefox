@@ -74,7 +74,10 @@ static EnumeratedArray<RemoteMediaIn, StaticRefPtr<RemoteMediaManagerChild>,
                        size_t(RemoteMediaIn::SENTINEL)>
     sRemoteMediaManagerChildForProcesses;
 
-static StaticAutoPtr<nsTArray<RefPtr<Runnable>>> sRecreateTasks;
+// Settled when the GPU process manager is recreated (resolved) or when we shut
+// down (rejected). Only accessed from sRemoteMediaManagerChildThread
+static StaticAutoPtr<nsTArray<MozPromiseHolder<GenericPromise>>>
+    sRecreateWaiters;
 
 // Per-location codec support state collected from the remote processes.
 // mSupported holds the snapshot delivered over IPC (Nothing until the remote
@@ -137,7 +140,7 @@ void RemoteMediaManagerChild::Init() {
 
     NS_ENSURE_SUCCESS_VOID(rv);
     *remoteDecoderManagerThread = childThread;
-    sRecreateTasks = new nsTArray<RefPtr<Runnable>>();
+    sRecreateWaiters = new nsTArray<MozPromiseHolder<GenericPromise>>();
     sObserver = new ShutdownObserver();
     nsContentUtils::RegisterShutdownObserver(sObserver);
   }
@@ -184,6 +187,10 @@ void RemoteMediaManagerChild::Shutdown() {
   if (childThread) {
     MOZ_ALWAYS_SUCCEEDS(childThread->Dispatch(
         NS_NewRunnableFunction("dom::RemoteMediaManagerChild::Shutdown", []() {
+          for (auto& waiter : *sRecreateWaiters) {
+            waiter.RejectIfExists(NS_ERROR_ABORT, __func__);
+          }
+          sRecreateWaiters->Clear();
           for (auto& p : sRemoteMediaManagerChildForProcesses) {
             if (p && p->CanSend()) {
               p->Close();
@@ -199,28 +206,31 @@ void RemoteMediaManagerChild::Shutdown() {
           ipc::BackgroundChild::CloseForCurrentThread();
         })));
     childThread->Shutdown();
-    sRecreateTasks = nullptr;
+    sRecreateWaiters = nullptr;
   }
 }
 
-/* static */ void RemoteMediaManagerChild::RunWhenGPUProcessRecreated(
-    const RemoteMediaManagerChild* aDyingManager,
-    already_AddRefed<Runnable> aTask) {
+/* static */ RefPtr<GenericPromise>
+RemoteMediaManagerChild::WhenGPUProcessRecreated(
+    const RemoteMediaManagerChild* aDyingManager) {
   nsCOMPtr<nsISerialEventTarget> managerThread = GetManagerThread();
   if (!managerThread) {
-    // We've been shutdown, bail.
-    return;
+    // We've been shutdown, so the GPU process will not be recreated.
+    return GenericPromise::CreateAndReject(NS_ERROR_ABORT, __func__);
   }
   MOZ_ASSERT(managerThread->IsOnCurrentThread());
 
-  // If we've already been recreated, then run the task immediately.
+  // If we've already been recreated, then resolve immediately.
   auto* manager = GetSingleton(RemoteMediaIn::GpuProcess);
   if (manager && manager != aDyingManager && manager->CanSend()) {
-    RefPtr<Runnable> task = aTask;
-    task->Run();
-  } else {
-    sRecreateTasks->AppendElement(aTask);
+    return GenericPromise::CreateAndResolve(true, __func__);
   }
+
+  MozPromiseHolder<GenericPromise> waiter;
+  RefPtr<GenericPromise> promise = waiter.Ensure(__func__);
+  waiter.UseSynchronousTaskDispatch(__func__);
+  sRecreateWaiters->AppendElement(std::move(waiter));
+  return promise;
 }
 
 /* static */
@@ -987,15 +997,15 @@ void RemoteMediaManagerChild::OpenRemoteMediaManagerChildForProcess(
   }
   MOZ_ASSERT(managerThread->IsOnCurrentThread());
 
-  // For GPU process, make sure we always dispatch everything in sRecreateTasks,
-  // even if we fail since this is as close to being recreated as we will ever
-  // be.
-  auto runRecreateTasksIfNeeded = MakeScopeExit([aLocation]() {
+  // For GPU process, make sure we always settle everything in
+  // sRecreateWaiters, even if we fail since this is as close to being recreated
+  // as we will ever be.
+  auto settleRecreateWaitersIfNeeded = MakeScopeExit([aLocation]() {
     if (aLocation == RemoteMediaIn::GpuProcess) {
-      for (Runnable* task : *sRecreateTasks) {
-        task->Run();
+      for (auto& waiter : *sRecreateWaiters) {
+        waiter.ResolveIfExists(true, __func__);
       }
-      sRecreateTasks->Clear();
+      sRecreateWaiters->Clear();
     }
   });
 
@@ -1191,15 +1201,16 @@ void RemoteMediaManagerChild::OnSetCurrent(
     // will call GetManager()->InitForGPUProcess.
     // We defer reporting an error until we've recreated the RemoteDecoder
     // manager so that it'll be safe for MediaFormatReader to recreate decoders
-    RunWhenGPUProcessRecreated(
-        aDyingManager,
-        NS_NewRunnableFunction(
-            "RemoteMediaManagerChild::HandleRejectionError",
-            [callback = std::move(aCallback)]() {
-              MediaResult error(
-                  NS_ERROR_DOM_MEDIA_REMOTE_CRASHED_RDD_OR_GPU_ERR, __func__);
-              callback(error);
-            }));
+    WhenGPUProcessRecreated(aDyingManager)
+        ->Then(GetCurrentSerialEventTarget(), __func__,
+               [callback = std::move(aCallback)](
+                   const GenericPromise::ResolveOrRejectValue& aValue) {
+                 callback(MediaResult(
+                     aValue.IsResolve()
+                         ? NS_ERROR_DOM_MEDIA_REMOTE_CRASHED_RDD_OR_GPU_ERR
+                         : NS_ERROR_DOM_MEDIA_CANCELED,
+                     __func__));
+               });
     return;
   }
 
