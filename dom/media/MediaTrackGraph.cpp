@@ -43,6 +43,7 @@
 #include "mozilla/TaskDispatcher.h"
 #include "mozilla/dom/BaseAudioContextBinding.h"
 #include "mozilla/dom/Document.h"
+#include "mozilla/dom/WorkerCommon.h"
 #include "mozilla/dom/WorkletThread.h"
 #include "mozilla/ipc/IOThread.h"
 #include "mozilla/media/MediaUtils.h"
@@ -2134,7 +2135,6 @@ void MediaTrackGraphImpl::SignalMainThreadCleanup() {
 
 void MediaTrackGraphImpl::AppendMessage(
     UniquePtr<ControlMessageInterface> aMessage) {
-  MOZ_ASSERT(NS_IsMainThread(), "main thread only");
   MOZ_ASSERT(mMainThreadTrackCount > 0 || mMainThreadPortCount > 0);
 
   MOZ_ALWAYS_SUCCEEDS(QueueMessageForTailDispatch(
@@ -2577,6 +2577,7 @@ void MediaTrack::AddListenerImpl(
 
 void MediaTrack::AddListener(MediaTrackListener* aListener) {
   MOZ_ASSERT(mSegment, "Segment-less tracks do not support listeners");
+  MOZ_DIAGNOSTIC_ASSERT_IF(!NS_IsMainThread(), !mDestroyed);
   if (mDestroyed) {
     return;
   }
@@ -2602,6 +2603,7 @@ RefPtr<GenericPromise> MediaTrack::RemoveListener(
   MozPromiseHolder<GenericPromise> promiseHolder;
   RefPtr<GenericPromise> p = promiseHolder.Ensure(__func__);
   promiseHolder.RequireTailDispatch(__func__);
+  MOZ_DIAGNOSTIC_ASSERT_IF(!NS_IsMainThread(), !mDestroyed);
   if (mDestroyed) {
     promiseHolder.Reject(NS_ERROR_FAILURE, __func__);
     return p;
@@ -2628,6 +2630,7 @@ void MediaTrack::AddDirectListenerImpl(
 }
 
 void MediaTrack::AddDirectListener(DirectMediaTrackListener* aListener) {
+  MOZ_DIAGNOSTIC_ASSERT_IF(!NS_IsMainThread(), !mDestroyed);
   if (mDestroyed) {
     return;
   }
@@ -2643,6 +2646,7 @@ void MediaTrack::RemoveDirectListenerImpl(DirectMediaTrackListener* aListener) {
 }
 
 void MediaTrack::RemoveDirectListener(DirectMediaTrackListener* aListener) {
+  MOZ_DIAGNOSTIC_ASSERT_IF(!NS_IsMainThread(), !mDestroyed);
   if (mDestroyed) {
     return;
   }
@@ -2690,6 +2694,7 @@ void MediaTrack::SetDisabledTrackModeImpl(DisabledTrackMode aMode) {
 }
 
 void MediaTrack::SetDisabledTrackMode(DisabledTrackMode aMode) {
+  MOZ_DIAGNOSTIC_ASSERT_IF(!NS_IsMainThread(), !mDestroyed);
   if (mDestroyed) {
     return;
   }
@@ -2745,8 +2750,10 @@ void MediaTrack::NotifyIfDisabledModeChangedFrom(DisabledTrackMode aOldMode) {
 }
 
 void MediaTrack::QueueMessage(UniquePtr<ControlMessageInterface> aMessage) {
-  MOZ_ASSERT(NS_IsMainThread(), "Main thread only");
-  MOZ_RELEASE_ASSERT(!IsDestroyed());
+  MOZ_ASSERT(NS_IsMainThread() || dom::IsCurrentThreadRunningWorker(),
+             "Only threads hosting MediaStreamTracks drive tracks");
+  MOZ_ASSERT(AbstractThread::GetCurrent(), "Tail dispatch is required");
+  MOZ_RELEASE_ASSERT(!mDestroyed);
   GraphImpl()->AppendMessage(std::move(aMessage));
 }
 

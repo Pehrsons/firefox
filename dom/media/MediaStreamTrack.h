@@ -608,13 +608,11 @@ class MediaStreamTrack : public DOMEventTargetHelper, public SupportsWeakPtr {
   bool Ended() const { return mReadyState == MediaStreamTrackState::Ended; }
 
   /**
-   * Whether this track owns its graph track, mTrack. Main-thread tracks do.
-   * Tracks on other threads borrow mTrack from their main-thread
-   * GraphTrackHolder and must not destroy it. They mirror its state from the
-   * MediaTrackGraph like owning tracks do, but leave changing it (enabled
-   * state, listeners) to the holder.
-   * TODO(Bug 1991619): Let tracks not owning mTrack add listeners to it, for
-   * consumers on their thread.
+   * Whether this track owns its graph track, mTrack. Main-thread tracks
+   * created with an input track do. Tracks on other threads, and main-thread
+   * tracks created from a pending clone, borrow mTrack from their main-thread
+   * GraphTrackHolder and must not destroy it. They otherwise use it like
+   * owning tracks do, and remove their listeners from it when they end.
    */
   bool OwnsGraphTrack() const { return !!mInputTrack; }
 

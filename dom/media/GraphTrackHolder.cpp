@@ -53,8 +53,6 @@ GraphTrackHolder::GraphTrackHolder(Owner* aOwner,
   mPort = mTrack->AllocateInputPort(mInputTrack);
   mTrackEnded.Connect(&mTrack->CanonicalEnded());
   mWatchManager.Watch(mTrackEnded, &GraphTrackHolder::OnTrackEnded);
-  mTrack->SetDisabledTrackMode(mEnabled ? DisabledTrackMode::ENABLED
-                                        : DisabledTrackMode::SILENCE_BLACK);
   mSource->SinkEnabledStateChanged();
   LOG(LogLevel::Info,
       ("GraphTrackHolder {} created for source {} with graph track {}",
@@ -98,8 +96,6 @@ void GraphTrackHolder::SetEnabled(bool aEnabled) {
   if (mEnded) {
     return;
   }
-  mTrack->SetDisabledTrackMode(mEnabled ? DisabledTrackMode::ENABLED
-                                        : DisabledTrackMode::SILENCE_BLACK);
   mSource->SinkEnabledStateChanged();
 }
 

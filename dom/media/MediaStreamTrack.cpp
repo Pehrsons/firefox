@@ -370,9 +370,9 @@ already_AddRefed<MediaStreamTrack> MediaStreamTrack::FromTransferred(
     source = &holder->Source();
     inputTrack = holder->InputTrack();
   } else {
-    // Off the main thread, or the holder is a clone still being created.
-    // TODO(Bug 1991619): The latter yields a main-thread track borrowing its
-    // graph track like a worker track does.
+    // Off the main thread, or the holder is a clone still being created. The
+    // latter yields a main-thread track borrowing its graph track like a
+    // worker track does.
     source = TransferredTrackSource::Create(aData);
     if (!source) {
       return nullptr;
@@ -420,6 +420,15 @@ void MediaStreamTrack::SetGraphTrack(ProcessedMediaTrack* aTrack) {
                         fmt::ptr(this), fmt::ptr(aTrack)));
   mTrack = aTrack;
   MirrorGraphTrackState();
+  if (!mEnabled) {
+    mTrack->SetDisabledTrackMode(DisabledTrackMode::SILENCE_BLACK);
+  }
+  for (const auto& listener : mTrackListeners) {
+    mTrack->AddListener(listener);
+  }
+  for (const auto& listener : mDirectTrackListeners) {
+    mTrack->AddDirectListener(listener);
+  }
 }
 
 void MediaStreamTrack::MirrorGraphTrackState() {
@@ -450,9 +459,7 @@ void MediaStreamTrack::SetEnabled(bool aEnabled) {
     return;
   }
 
-  if (mTrack && OwnsGraphTrack()) {
-    // TODO(Bug 1991619): A track borrowing its graph track cannot talk to it
-    // yet. Its GraphTrackHolder applies the enabled state instead.
+  if (mTrack) {
     mTrack->SetDisabledTrackMode(mEnabled ? DisabledTrackMode::ENABLED
                                           : DisabledTrackMode::SILENCE_BLACK);
   }
@@ -746,14 +753,23 @@ void MediaStreamTrack::SetReadyState(MediaStreamTrackState aState) {
 
   if (mReadyState == MediaStreamTrackState::Live &&
       aState == MediaStreamTrackState::Ended) {
-    // Disconnecting the mirrors before unregistering from the source matters
-    // for a track borrowing its graph track: unregistering may let the track's
-    // GraphTrackHolder destroy the graph track, which must happen after the
-    // mirrors have been removed from it on the graph thread. See
-    // TransferredTrackSource::Detach.
+    // Disconnecting the mirrors and removing our listeners before
+    // unregistering from the source matters for a track borrowing its graph
+    // track: unregistering may let the track's GraphTrackHolder destroy the
+    // graph track, which must happen after they have been removed from it on
+    // the graph thread. See TransferredTrackSource::Detach. An owned graph
+    // track is destroyed below, which removes its listeners.
     mWatchManager.Shutdown();
     mTrackEnded.DisconnectIfConnected();
     mTrackPrincipalHandle.DisconnectIfConnected();
+    if (mTrack && !OwnsGraphTrack()) {
+      for (const auto& listener : mTrackListeners) {
+        mTrack->RemoveListener(listener);
+      }
+      for (const auto& listener : mDirectTrackListeners) {
+        mTrack->RemoveDirectListener(listener);
+      }
+    }
     if (mSource) {
       mSource->UnregisterSink(mSink.get());
     }
@@ -813,9 +829,7 @@ void MediaStreamTrack::AddListener(MediaTrackListener* aListener) {
                         fmt::ptr(this), fmt::ptr(aListener)));
   mTrackListeners.AppendElement(aListener);
 
-  if (Ended() || !mTrack || !OwnsGraphTrack()) {
-    // TODO(Bug 1991619): A track borrowing its graph track cannot talk to it
-    // yet.
+  if (Ended() || !mTrack) {
     return;
   }
   mTrack->AddListener(aListener);
@@ -826,7 +840,7 @@ void MediaStreamTrack::RemoveListener(MediaTrackListener* aListener) {
                         fmt::ptr(this), fmt::ptr(aListener)));
   mTrackListeners.RemoveElement(aListener);
 
-  if (Ended() || !mTrack || !OwnsGraphTrack()) {
+  if (Ended() || !mTrack) {
     return;
   }
   mTrack->RemoveListener(aListener);
@@ -840,9 +854,7 @@ void MediaStreamTrack::AddDirectListener(DirectMediaTrackListener* aListener) {
        fmt::ptr(aListener), fmt::ptr(mTrack.get())));
   mDirectTrackListeners.AppendElement(aListener);
 
-  if (Ended() || !mTrack || !OwnsGraphTrack()) {
-    // TODO(Bug 1991619): A track borrowing its graph track cannot talk to it
-    // yet.
+  if (Ended() || !mTrack) {
     return;
   }
   mTrack->AddDirectListener(aListener);
@@ -855,7 +867,7 @@ void MediaStreamTrack::RemoveDirectListener(
        fmt::ptr(this), fmt::ptr(aListener), fmt::ptr(mTrack.get())));
   mDirectTrackListeners.RemoveElement(aListener);
 
-  if (Ended() || !mTrack || !OwnsGraphTrack()) {
+  if (Ended() || !mTrack) {
     return;
   }
   mTrack->RemoveDirectListener(aListener);

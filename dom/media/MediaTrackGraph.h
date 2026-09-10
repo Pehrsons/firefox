@@ -555,6 +555,9 @@ class MediaTrack : public mozilla::LinkedListElement<MediaTrack> {
   class ControlOrShutdownMessage;
   class ControlMessageWrapper;
 
+  // Queues aMessage for the graph thread. Main thread, or for a track borrowed
+  // by a MediaStreamTrack in a worker, the worker thread. The main-thread owner
+  // of a borrowed track guarantees it is not destroyed while borrowed.
   void QueueMessage(UniquePtr<ControlMessageInterface> aMessage);
   void RunMessageAfterProcessing(already_AddRefed<nsIRunnable> aMessage);
 

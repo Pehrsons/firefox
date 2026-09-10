@@ -84,8 +84,9 @@ class GraphTrackHolder final : public MediaStreamTrackSource::Sink {
   bool Ended() const { return mEnded; }
 
   /**
-   * Sets the aggregate enabled state of the tracks held for. Applies to the
-   * graph track and the source like MediaStreamTrack::SetEnabled does.
+   * Sets the aggregate enabled state of the tracks held for, which the
+   * source follows. The tracks apply their enabled state to the graph track
+   * themselves.
    */
   void SetEnabled(bool aEnabled);
 
