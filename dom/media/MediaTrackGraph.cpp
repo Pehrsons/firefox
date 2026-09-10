@@ -4514,7 +4514,8 @@ NS_IMETHODIMP MediaTrackGraphImpl::UnregisterShutdownTask(
 }
 
 nsIEventTarget::FeatureFlags MediaTrackGraphImpl::GetFeatures() {
-  return SUPPORTS_SHUTDOWN_TASKS;
+  MOZ_ASSERT(SupportsTailDispatch());
+  return SUPPORTS_SHUTDOWN_TASKS | SUPPORTS_TAIL_DISPATCH;
 }
 
 nsresult MediaTrackGraphImpl::TailDispatchMessage(
