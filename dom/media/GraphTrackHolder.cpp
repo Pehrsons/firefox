@@ -168,8 +168,6 @@ void GraphTrackHolder::Attach(MediaStreamTrackSource* aSource, bool aMuted) {
     return;
   }
   mSource->RegisterSink(this);
-  mTrack->SetDisabledTrackMode(mEnabled ? DisabledTrackMode::ENABLED
-                                        : DisabledTrackMode::SILENCE_BLACK);
   mHolderState =
       HolderState{.mGraphTrack = mTrack,
                   .mSettings = &mSource->CanonicalSettings(),
@@ -198,8 +196,6 @@ void GraphTrackHolder::SetEnabled(bool aEnabled) {
   if (mEnded.Ref() || !mSource) {
     return;
   }
-  mTrack->SetDisabledTrackMode(mEnabled ? DisabledTrackMode::ENABLED
-                                        : DisabledTrackMode::SILENCE_BLACK);
   mSource->SinkEnabledStateChanged();
 }
 
