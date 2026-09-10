@@ -146,8 +146,6 @@ class AudioContext final : public DOMEventTargetHelper,
 
   nsIGlobalObject* GetParentObject() const { return GetRelevantGlobal(); }
 
-  nsISerialEventTarget* GetMainThread() const;
-
   void DisconnectFromOwner() override;
 
   void OnWindowDestroy();  // idempotent

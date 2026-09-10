@@ -763,13 +763,6 @@ double AudioContext::CurrentTime() {
       rawTime, GetRandomTimelineSeed(), mRTPCallerType);
 }
 
-nsISerialEventTarget* AudioContext::GetMainThread() const {
-  if (nsIGlobalObject* global = GetRelevantGlobal()) {
-    return global->SerialEventTarget();
-  }
-  return GetCurrentSerialEventTarget();
-}
-
 void AudioContext::DisconnectFromOwner() {
   mIsDisconnecting = true;
   MaybeClearPageAwakeRequest();
@@ -1070,7 +1063,7 @@ void AudioContext::SuspendInternal(void* aPromise,
       DestinationTrack(), std::move(tracks), AudioContextOperation::Suspend);
   if ((aFlags & AudioContextOperationFlags::SendStateChange)) {
     promise->Then(
-        GetMainThread(), "AudioContext::OnStateChanged",
+        GetMainThreadSerialEventTarget(), "AudioContext::OnStateChanged",
         [self = RefPtr<AudioContext>(this),
          aPromise](AudioContextState aNewState) {
           self->OnStateChanged(aPromise, aNewState);
@@ -1157,7 +1150,7 @@ void AudioContext::ResumeInternal() {
       ->ApplyAudioContextOperation(DestinationTrack(), std::move(tracks),
                                    AudioContextOperation::Resume)
       ->Then(
-          GetMainThread(), "AudioContext::OnStateChanged",
+          GetMainThreadSerialEventTarget(), "AudioContext::OnStateChanged",
           [self = RefPtr<AudioContext>(this)](AudioContextState aNewState) {
             self->OnStateChanged(nullptr, aNewState);
           },
@@ -1253,7 +1246,7 @@ void AudioContext::CloseInternal(void* aPromise,
         ds, std::move(tracks), AudioContextOperation::Close);
     if ((aFlags & AudioContextOperationFlags::SendStateChange)) {
       promise->Then(
-          GetMainThread(), "AudioContext::OnStateChanged",
+          GetMainThreadSerialEventTarget(), "AudioContext::OnStateChanged",
           [self = RefPtr<AudioContext>(this),
            aPromise](AudioContextState aNewState) {
             self->OnStateChanged(aPromise, aNewState);
