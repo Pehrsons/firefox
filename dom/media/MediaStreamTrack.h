@@ -827,16 +827,14 @@ class MediaStreamTrack : public DOMEventTargetHelper, public SupportsWeakPtr {
    * once it has resolved, as the graph track was used by the track that this
    * one was transferred from. Until then what we would do to mTrack is only
    * recorded.
-   * TODO(Bug 1991619): Let tracks on other threads add listeners to it and
-   * disable it, for consumers on their thread. Until then their holder applies
-   * the enabled state.
    */
   void SetGraphTrack(ProcessedMediaTrack* aTrack,
                      TransferFencePromise* aFence = nullptr);
 
   /**
    * Starts doing things to mTrack that are queued for the MediaTrackGraph:
-   * mirroring its state and applying our enabled state and listeners. Once.
+   * mirroring its state and applying our enabled state and listeners, from this
+   * thread. Once.
    * aInherited is whether another track used mTrack before, which may have
    * left it disabled.
    */
