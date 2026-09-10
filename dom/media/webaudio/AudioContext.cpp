@@ -1063,7 +1063,7 @@ void AudioContext::SuspendInternal(void* aPromise,
       DestinationTrack(), std::move(tracks), AudioContextOperation::Suspend);
   if ((aFlags & AudioContextOperationFlags::SendStateChange)) {
     promise->Then(
-        GetMainThreadSerialEventTarget(), "AudioContext::OnStateChanged",
+        AbstractThread::MainThread(), "AudioContext::OnStateChanged",
         [self = RefPtr<AudioContext>(this),
          aPromise](AudioContextState aNewState) {
           self->OnStateChanged(aPromise, aNewState);
@@ -1150,7 +1150,7 @@ void AudioContext::ResumeInternal() {
       ->ApplyAudioContextOperation(DestinationTrack(), std::move(tracks),
                                    AudioContextOperation::Resume)
       ->Then(
-          GetMainThreadSerialEventTarget(), "AudioContext::OnStateChanged",
+          AbstractThread::MainThread(), "AudioContext::OnStateChanged",
           [self = RefPtr<AudioContext>(this)](AudioContextState aNewState) {
             self->OnStateChanged(nullptr, aNewState);
           },
@@ -1246,7 +1246,7 @@ void AudioContext::CloseInternal(void* aPromise,
         ds, std::move(tracks), AudioContextOperation::Close);
     if ((aFlags & AudioContextOperationFlags::SendStateChange)) {
       promise->Then(
-          GetMainThreadSerialEventTarget(), "AudioContext::OnStateChanged",
+          AbstractThread::MainThread(), "AudioContext::OnStateChanged",
           [self = RefPtr<AudioContext>(this),
            aPromise](AudioContextState aNewState) {
             self->OnStateChanged(aPromise, aNewState);
