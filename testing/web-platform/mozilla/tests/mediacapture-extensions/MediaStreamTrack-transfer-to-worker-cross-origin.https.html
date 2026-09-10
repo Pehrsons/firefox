@@ -1,0 +1,127 @@
+<!doctype html>
+<meta charset=utf-8>
+<title>Cross-origin media captured into a MediaStreamTrack is not exposed to a dedicated worker</title>
+<link rel="help" href="https://w3c.github.io/mediacapture-fromelement/#security-considerations">
+<link rel="help" href="https://w3c.github.io/mediacapture-extensions/#transferable-mediastreamtrack">
+<script src=/resources/testharness.js></script>
+<script src=/resources/testharnessreport.js></script>
+<script src=/common/get-host-info.sub.js></script>
+<script src=/common/media.js></script>
+<script src=/mediacapture-extensions/support/transfer-helper.js></script>
+<script>
+"use strict";
+
+// The video is green, so any real frame has a non-zero channel.
+const PIXEL_WORKER_SCRIPT = TRACK_WORKER_SCRIPT + `
+  handlers.readPixels = async () => {
+    const reader =
+      new MediaStreamTrackProcessor({track: self.track}).readable.getReader();
+    const {value: frame, done} = await reader.read();
+    if (done) {
+      throw new Error("Stream ended before a frame was produced");
+    }
+    const canvas = new OffscreenCanvas(frame.displayWidth, frame.displayHeight);
+    const ctx = canvas.getContext("2d");
+    ctx.drawImage(frame, 0, 0);
+    frame.close();
+    await reader.cancel();
+    const {data} = ctx.getImageData(0, 0, canvas.width, canvas.height);
+    let maxChannel = 0;
+    for (let i = 0; i < data.length; i += 4) {
+      maxChannel = Math.max(maxChannel, data[i], data[i + 1], data[i + 2]);
+    }
+    return {width: canvas.width, height: canvas.height, maxChannel};
+  };
+`;
+
+const SAME_ORIGIN = location.origin;
+const CROSS_ORIGIN = get_host_info().HTTPS_REMOTE_ORIGIN;
+
+function videoURL(origin, {cors = false} = {}) {
+  let url = origin + getVideoURI("/media/2x2-green");
+  if (cors) {
+    url += "?pipe=header(Access-Control-Allow-Origin,*)";
+  }
+  return url;
+}
+
+async function playVideo(t, url, crossOrigin = null) {
+  const video = document.createElement("video");
+  if (crossOrigin !== null) {
+    video.crossOrigin = crossOrigin;
+  }
+  video.muted = true;
+  video.loop = true;
+  video.src = url;
+  document.body.appendChild(video);
+  t.add_cleanup(() => {
+    video.src = "";
+    video.remove();
+  });
+  await video.play();
+  await new Promise(r => video.requestVideoFrameCallback(r));
+  return video;
+}
+
+async function transferCapture(t, worker, video) {
+  const stream = video.mozCaptureStream();
+  const [track] = stream.getVideoTracks();
+  t.add_cleanup(() => stream.getTracks().forEach(track => track.stop()));
+  await callWorker(worker, {type: "receive", track}, [track]);
+}
+
+async function readUntil(worker, predicate, attempts = 100) {
+  let pixels;
+  for (let i = 0; i < attempts; ++i) {
+    pixels = await callWorker(worker, {type: "readPixels"});
+    if (predicate(pixels)) {
+      return pixels;
+    }
+  }
+  return pixels;
+}
+
+promise_test(async t => {
+  const worker = await createWorker(t, PIXEL_WORKER_SCRIPT);
+  const video = await playVideo(t, videoURL(SAME_ORIGIN));
+  await transferCapture(t, worker, video);
+  const pixels = await readUntil(worker, p => p.maxChannel > 0);
+  assert_greater_than(pixels.maxChannel, 0, "same-origin frames are visible");
+}, "Frames of same-origin media reach a worker");
+
+promise_test(async t => {
+  const worker = await createWorker(t, PIXEL_WORKER_SCRIPT);
+  const video = await playVideo(t, videoURL(CROSS_ORIGIN));
+  await transferCapture(t, worker, video);
+  for (let i = 0; i < 10; ++i) {
+    const pixels = await callWorker(worker, {type: "readPixels"});
+    assert_equals(pixels.maxChannel, 0, `frame ${i} is black`);
+  }
+}, "Frames of cross-origin media are black in a worker");
+
+promise_test(async t => {
+  const worker = await createWorker(t, PIXEL_WORKER_SCRIPT);
+  const video =
+    await playVideo(t, videoURL(CROSS_ORIGIN, {cors: true}), "anonymous");
+  await transferCapture(t, worker, video);
+  const pixels = await readUntil(worker, p => p.maxChannel > 0);
+  assert_greater_than(pixels.maxChannel, 0, "CORS frames are visible");
+}, "Frames of cross-origin media loaded with CORS reach a worker");
+
+promise_test(async t => {
+  const worker = await createWorker(t, PIXEL_WORKER_SCRIPT);
+  const video = await playVideo(t, videoURL(SAME_ORIGIN));
+  await transferCapture(t, worker, video);
+  let pixels = await readUntil(worker, p => p.maxChannel > 0);
+  assert_greater_than(pixels.maxChannel, 0, "same-origin frames are visible");
+
+  video.src = videoURL(CROSS_ORIGIN);
+  await video.play();
+  pixels = await readUntil(worker, p => p.maxChannel == 0);
+  assert_equals(pixels.maxChannel, 0, "frames turn black after the switch");
+  for (let i = 0; i < 10; ++i) {
+    pixels = await callWorker(worker, {type: "readPixels"});
+    assert_equals(pixels.maxChannel, 0, `frame ${i} after the switch is black`);
+  }
+}, "Frames turn black in a worker when the media switches to a cross-origin source");
+</script>
