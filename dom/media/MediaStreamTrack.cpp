@@ -202,6 +202,15 @@ void MediaStreamTrack::SetGraphTrack(ProcessedMediaTrack* aTrack) {
     mWatchManager.Watch(mTrackPrincipalHandle,
                         &MediaStreamTrack::OnPrincipalHandleChanged);
   }
+  if (!mEnabled) {
+    mTrack->SetDisabledTrackMode(DisabledTrackMode::SILENCE_BLACK);
+  }
+  for (const auto& listener : mTrackListeners) {
+    mTrack->AddListener(listener);
+  }
+  for (const auto& listener : mDirectTrackListeners) {
+    mTrack->AddDirectListener(listener);
+  }
 }
 
 mozilla::MediaTrack* MediaStreamTrack::InputTrack() const {
@@ -436,10 +445,7 @@ void MediaStreamTrack::SetEnabled(bool aEnabled) {
     return;
   }
 
-  if (mTrack && NS_IsMainThread()) {
-    // TODO(Bug 1991619): A track borrowing its graph track from another
-    // thread's holder cannot talk to it yet. The holder applies the enabled
-    // state instead.
+  if (mTrack) {
     mTrack->SetDisabledTrackMode(mEnabled ? DisabledTrackMode::ENABLED
                                           : DisabledTrackMode::SILENCE_BLACK);
   }
@@ -821,9 +827,7 @@ void MediaStreamTrack::AddListener(MediaTrackListener* aListener) {
                         fmt::ptr(this), fmt::ptr(aListener)));
   mTrackListeners.AppendElement(aListener);
 
-  if (Ended() || !mTrack || !NS_IsMainThread()) {
-    // TODO(Bug 1991619): A track borrowing its graph track from another
-    // thread's holder cannot talk to it yet.
+  if (Ended() || !mTrack) {
     return;
   }
   mTrack->AddListener(aListener);
@@ -834,7 +838,7 @@ void MediaStreamTrack::RemoveListener(MediaTrackListener* aListener) {
                         fmt::ptr(this), fmt::ptr(aListener)));
   mTrackListeners.RemoveElement(aListener);
 
-  if (Ended() || !mTrack || !NS_IsMainThread()) {
+  if (Ended() || !mTrack) {
     return;
   }
   mTrack->RemoveListener(aListener);
@@ -848,9 +852,7 @@ void MediaStreamTrack::AddDirectListener(DirectMediaTrackListener* aListener) {
        fmt::ptr(aListener), fmt::ptr(mTrack.get())));
   mDirectTrackListeners.AppendElement(aListener);
 
-  if (Ended() || !mTrack || !NS_IsMainThread()) {
-    // TODO(Bug 1991619): A track borrowing its graph track from another
-    // thread's holder cannot talk to it yet.
+  if (Ended() || !mTrack) {
     return;
   }
   mTrack->AddDirectListener(aListener);
@@ -863,7 +865,7 @@ void MediaStreamTrack::RemoveDirectListener(
        fmt::ptr(this), fmt::ptr(aListener), fmt::ptr(mTrack.get())));
   mDirectTrackListeners.RemoveElement(aListener);
 
-  if (Ended() || !mTrack || !NS_IsMainThread()) {
+  if (Ended() || !mTrack) {
     return;
   }
   mTrack->RemoveDirectListener(aListener);

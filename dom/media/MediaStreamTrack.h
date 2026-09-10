@@ -778,10 +778,8 @@ class MediaStreamTrack : public DOMEventTargetHelper, public SupportsWeakPtr {
 
   /**
    * Sets mTrack for a live track borrowing it from another thread's holder,
-   * once that holder has made it available.
-   * TODO(Bug 1991619): Let such tracks add listeners to it and disable it, for
-   * consumers on their thread. Until then their holder applies the enabled
-   * state.
+   * once that holder has made it available. Applies the track's enabled state
+   * and listeners to it.
    */
   void SetGraphTrack(ProcessedMediaTrack* aTrack);
 

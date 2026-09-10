@@ -555,6 +555,9 @@ class MediaTrack : public mozilla::LinkedListElement<MediaTrack> {
   class ControlOrShutdownMessage;
   class ControlMessageWrapper;
 
+  // Queues aMessage for the graph thread. Main thread or a worker thread. Off
+  // the main thread the caller must guarantee that the track is not destroyed
+  // meanwhile, as only the main thread destroys tracks.
   void QueueMessage(UniquePtr<ControlMessageInterface> aMessage);
   void RunMessageAfterProcessing(already_AddRefed<nsIRunnable> aMessage);
 

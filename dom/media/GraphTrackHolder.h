@@ -104,9 +104,9 @@ class GraphTrackHolder final : public MediaStreamTrackSource::Sink {
   }
 
   /**
-   * Sets the enabled state of the track on the other thread. Once attached,
-   * applies to the graph track and the source like MediaStreamTrack::SetEnabled
-   * does.
+   * Sets the enabled state of the track on the other thread, which the source
+   * follows once attached. The track applies its enabled state to the graph
+   * track itself.
    */
   void SetEnabled(bool aEnabled);
 

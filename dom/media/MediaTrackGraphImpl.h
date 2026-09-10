@@ -173,8 +173,8 @@ class MediaTrackGraphImpl : public MediaTrackGraph,
    */
   void EnsureRunInStableState();
   /**
-   * Append a control message to the message queue. This queue is drained
-   * during RunInStableState; the messages will run on the graph thread.
+   * Append a control message to the message queue, to run on the graph
+   * thread. Main thread or a worker thread, see MediaTrack::QueueMessage.
    */
   virtual void AppendMessage(UniquePtr<ControlMessageInterface> aMessage);
   /**
