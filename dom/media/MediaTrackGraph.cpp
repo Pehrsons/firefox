@@ -43,6 +43,7 @@
 #include "mozilla/TaskDispatcher.h"
 #include "mozilla/dom/BaseAudioContextBinding.h"
 #include "mozilla/dom/Document.h"
+#include "mozilla/dom/WorkerCommon.h"
 #include "mozilla/dom/WorkletThread.h"
 #include "mozilla/ipc/IOThread.h"
 #include "mozilla/media/MediaUtils.h"
@@ -2133,8 +2134,8 @@ void MediaTrackGraphImpl::SignalMainThreadCleanup() {
 
 void MediaTrackGraphImpl::AppendMessage(
     UniquePtr<ControlMessageInterface> aMessage) {
-  MOZ_ASSERT(NS_IsMainThread(), "main thread only");
-  MOZ_ASSERT(mMainThreadTrackCount > 0 || mMainThreadPortCount > 0);
+  MOZ_ASSERT_IF(NS_IsMainThread(),
+                mMainThreadTrackCount > 0 || mMainThreadPortCount > 0);
 
   MOZ_ALWAYS_SUCCEEDS(QueueMessageForTailDispatch(
       MakeAndAddRef<ControlMessageWrapper>(std::move(aMessage))));
@@ -2744,8 +2745,10 @@ void MediaTrack::NotifyIfDisabledModeChangedFrom(DisabledTrackMode aOldMode) {
 }
 
 void MediaTrack::QueueMessage(UniquePtr<ControlMessageInterface> aMessage) {
-  MOZ_ASSERT(NS_IsMainThread(), "Main thread only");
-  MOZ_RELEASE_ASSERT(!IsDestroyed());
+  MOZ_ASSERT(NS_IsMainThread() || dom::IsCurrentThreadRunningWorker(),
+             "Only the main thread and workers control tracks");
+  // Authoritative on the main thread only, see the declaration.
+  MOZ_RELEASE_ASSERT(!mDestroyed);
   GraphImpl()->AppendMessage(std::move(aMessage));
 }
 
@@ -3262,6 +3265,7 @@ void MediaInputPort::Resumed() {
 }
 
 void MediaInputPort::Destroy() {
+  MOZ_ASSERT(NS_IsMainThread());
   class Message : public ControlMessage {
    public:
     explicit Message(MediaInputPort* aPort)
@@ -3299,6 +3303,7 @@ void MediaInputPort::SetGraphImpl(MediaTrackGraphImpl* aGraph) {
 
 already_AddRefed<MediaInputPort> ProcessedMediaTrack::AllocateInputPort(
     MediaTrack* aTrack, uint16_t aInputNumber, uint16_t aOutputNumber) {
+  MOZ_ASSERT(NS_IsMainThread());
   // This method creates two references to the MediaInputPort: one for
   // the main thread, and one for the MediaTrackGraph.
   class Message : public ControlMessage {
