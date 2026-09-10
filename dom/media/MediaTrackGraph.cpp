@@ -2617,6 +2617,7 @@ RefPtr<GenericPromise> MediaTrack::RemoveListener(
     MediaTrackListener* aListener) {
   MozPromiseHolder<GenericPromise> promiseHolder;
   RefPtr<GenericPromise> p = promiseHolder.Ensure(__func__);
+  promiseHolder.RequireTailDispatch(__func__);
   if (mMainThreadDestroyed) {
     promiseHolder.Reject(NS_ERROR_FAILURE, __func__);
     return p;
@@ -3871,6 +3872,7 @@ auto MediaTrackGraphImpl::NotifyWhenDeviceStarted(AudioDeviceID aDeviceID)
 
   MozPromiseHolder<GraphStartedPromise> h;
   RefPtr<GraphStartedPromise> p = h.Ensure(__func__);
+  h.RequireTailDispatch(__func__);
 
   if (CrossGraphReceiver* receiver = mOutputDeviceRefCnts[index].mReceiver) {
     receiver->GraphImpl()->NotifyWhenPrimaryDeviceStarted(std::move(h));
@@ -4034,6 +4036,7 @@ auto MediaTrackGraph::ApplyAudioContextOperation(
     AudioContextOperation aOperation) -> RefPtr<AudioContextOperationPromise> {
   MozPromiseHolder<AudioContextOperationPromise> holder;
   RefPtr<AudioContextOperationPromise> p = holder.Ensure(__func__);
+  holder.RequireTailDispatch(__func__);
   MediaTrackGraphImpl* graphImpl = static_cast<MediaTrackGraphImpl*>(this);
   graphImpl->AppendMessage(MakeUnique<AudioContextOperationControlMessage>(
       aDestinationTrack, std::move(aTracks), aOperation, std::move(holder)));
