@@ -3909,12 +3909,7 @@ void MediaTrackGraphImpl::NotifyWhenPrimaryDeviceStarted(
         if (CurrentDriver()->AsAudioCallbackDriver() &&
             CurrentDriver()->ThreadRunning() &&
             !CurrentDriver()->AsAudioCallbackDriver()->OnFallback()) {
-          // Avoid Resolve's locking on the graph thread by doing it on main.
-          DispatchToMainThread(NS_NewRunnableFunction(
-              "MediaTrackGraphImpl::NotifyWhenPrimaryDeviceStarted::Resolver",
-              [holder = std::move(holder)]() mutable {
-                holder.Resolve(true, __func__);
-              }));
+          holder.Resolve(true, __func__);
         } else {
           DispatchToMainThreadStableState(
               NewRunnableMethod<
