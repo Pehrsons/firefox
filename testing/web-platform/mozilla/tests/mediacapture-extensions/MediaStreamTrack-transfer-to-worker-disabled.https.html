@@ -1,0 +1,143 @@
+<!doctype html>
+<meta charset=utf-8>
+<title>A disabled MediaStreamTrack produces black frames in a dedicated worker</title>
+<link rel="help" href="https://w3c.github.io/mediacapture-main/#dom-mediastreamtrack-enabled">
+<link rel="help" href="https://w3c.github.io/mediacapture-transform/#track-processor">
+<script src=/resources/testharness.js></script>
+<script src=/resources/testharnessreport.js></script>
+<script src=/common/media.js></script>
+<script src=/mediacapture-extensions/support/transfer-helper.js></script>
+<script>
+"use strict";
+
+// The video is green, so any frame that was not blacked has a non-zero channel.
+const PIXEL_WORKER_SCRIPT = TRACK_WORKER_SCRIPT + `
+  async function pixels(frame) {
+    const canvas = new OffscreenCanvas(frame.displayWidth, frame.displayHeight);
+    const ctx = canvas.getContext("2d");
+    ctx.drawImage(frame, 0, 0);
+    const {data} = ctx.getImageData(0, 0, canvas.width, canvas.height);
+    let maxChannel = 0;
+    for (let i = 0; i < data.length; i += 4) {
+      maxChannel = Math.max(maxChannel, data[i], data[i + 1], data[i + 2]);
+    }
+    return {width: canvas.width, height: canvas.height, maxChannel};
+  }
+
+  handlers.setEnabled = ({enabled}) => {
+    self.track.enabled = enabled;
+    return self.track.enabled;
+  };
+
+  // A processor per read, so this covers one attaching to a track that is
+  // already disabled.
+  handlers.readPixels = async () => {
+    const reader =
+      new MediaStreamTrackProcessor({track: self.track}).readable.getReader();
+    const {value: frame, done} = await reader.read();
+    if (done) {
+      throw new Error("Stream ended before a frame was produced");
+    }
+    const result = await pixels(frame);
+    frame.close();
+    await reader.cancel();
+    return result;
+  };
+
+  // One processor kept open, so this covers the track being disabled while it
+  // is already reading.
+  handlers.openReader = () => {
+    self.reader =
+      new MediaStreamTrackProcessor({track: self.track}).readable.getReader();
+  };
+  handlers.readOpenPixels = async () => {
+    const {value: frame, done} = await self.reader.read();
+    if (done) {
+      throw new Error("Stream ended before a frame was produced");
+    }
+    const result = await pixels(frame);
+    frame.close();
+    return result;
+  };
+`;
+
+async function playVideo(t) {
+  const video = document.createElement("video");
+  video.muted = true;
+  video.loop = true;
+  video.src = getVideoURI("/media/2x2-green");
+  document.body.appendChild(video);
+  t.add_cleanup(() => {
+    video.src = "";
+    video.remove();
+  });
+  await video.play();
+  await new Promise(r => video.requestVideoFrameCallback(r));
+  return video;
+}
+
+async function transferCapture(t, worker) {
+  const video = await playVideo(t);
+  const stream = video.mozCaptureStream();
+  const [track] = stream.getVideoTracks();
+  t.add_cleanup(() => stream.getTracks().forEach(track => track.stop()));
+  await callWorker(worker, {type: "receive", track}, [track]);
+}
+
+async function readUntil(worker, type, predicate, attempts = 100) {
+  let pixels;
+  for (let i = 0; i < attempts; ++i) {
+    pixels = await callWorker(worker, {type});
+    if (predicate(pixels)) {
+      return pixels;
+    }
+  }
+  return pixels;
+}
+
+promise_test(async t => {
+  const worker = await createWorker(t, PIXEL_WORKER_SCRIPT);
+  await transferCapture(t, worker);
+  let pixels = await readUntil(worker, "readPixels", p => p.maxChannel > 0);
+  assert_greater_than(pixels.maxChannel, 0, "frames start out visible");
+
+  assert_false(await callWorker(worker, {type: "setEnabled", enabled: false}),
+               "track is disabled");
+  pixels = await readUntil(worker, "readPixels", p => p.maxChannel == 0);
+  assert_equals(pixels.maxChannel, 0, "frames turn black once disabled");
+  for (let i = 0; i < 10; ++i) {
+    pixels = await callWorker(worker, {type: "readPixels"});
+    assert_equals(pixels.maxChannel, 0, `frame ${i} of a disabled track`);
+  }
+}, "Frames of a disabled track are black in a worker");
+
+promise_test(async t => {
+  const worker = await createWorker(t, PIXEL_WORKER_SCRIPT);
+  await transferCapture(t, worker);
+  await callWorker(worker, {type: "openReader"});
+  let pixels =
+    await readUntil(worker, "readOpenPixels", p => p.maxChannel > 0);
+  assert_greater_than(pixels.maxChannel, 0, "frames start out visible");
+
+  await callWorker(worker, {type: "setEnabled", enabled: false});
+  pixels = await readUntil(worker, "readOpenPixels", p => p.maxChannel == 0);
+  assert_equals(pixels.maxChannel, 0, "frames turn black once disabled");
+  for (let i = 0; i < 10; ++i) {
+    pixels = await callWorker(worker, {type: "readOpenPixels"});
+    assert_equals(pixels.maxChannel, 0, `frame ${i} after disabling`);
+  }
+}, "Frames turn black in a worker while a processor reads a track being disabled");
+
+promise_test(async t => {
+  const worker = await createWorker(t, PIXEL_WORKER_SCRIPT);
+  await transferCapture(t, worker);
+  await callWorker(worker, {type: "setEnabled", enabled: false});
+  let pixels = await readUntil(worker, "readPixels", p => p.maxChannel == 0);
+  assert_equals(pixels.maxChannel, 0, "frames are black while disabled");
+
+  assert_true(await callWorker(worker, {type: "setEnabled", enabled: true}),
+              "track is enabled again");
+  pixels = await readUntil(worker, "readPixels", p => p.maxChannel > 0);
+  assert_greater_than(pixels.maxChannel, 0, "frames are visible again");
+}, "Frames of a re-enabled track are visible in a worker");
+</script>

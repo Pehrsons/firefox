@@ -1,0 +1,255 @@
+<!doctype html>
+<html>
+<head>
+  <title>MediaStreamTrackProcessor keeps the most recent frame when reads stall</title>
+  <link rel="help" href="https://w3c.github.io/mediacapture-transform/#track-processor">
+</head>
+<body>
+<h1 class="instructions">Description</h1>
+<p class="instructions">The specification says that when the queue is full the oldest frame is
+removed, so "for the particular case of a queue with a maximum size of 1, if there is a queued
+frame, it will always be the most recent one". These tests stall the reader and check that what
+comes back afterwards is a fresh frame rather than one buffered when the stall began, both while
+the worker's event loop stays free and while it is blocked, which are different paths into the
+queue. They are here rather than upstream because they need a track transferred to a worker,
+which only Gecko supports so far.</p>
+<script src=/resources/testharness.js></script>
+<script src=/resources/testharnessreport.js></script>
+<script>
+"use strict";
+
+const WORKER_SCRIPT = `
+  let processor;
+  let reader;
+
+  async function readTimestamp() {
+    const {value: frame, done} = await reader.read();
+    if (done) {
+      throw new Error("readable closed before a frame was produced");
+    }
+    const timestamp = frame.timestamp;
+    frame.close();
+    return timestamp;
+  }
+
+  const handlers = {
+    open({track, maxBufferSize}) {
+      processor = new MediaStreamTrackProcessor({track, maxBufferSize});
+      reader = processor.readable.getReader();
+    },
+    read: () => readTimestamp(),
+    // Issues every read before awaiting any of them, so that the stream sees
+    // several read requests at once.
+    async readTogether({count}) {
+      const reads = [];
+      for (let i = 0; i < count; ++i) {
+        reads.push(reader.read());
+      }
+      const timestamps = [];
+      for (const read of reads) {
+        const {value: frame, done} = await read;
+        if (done) {
+          throw new Error("readable closed before a frame was produced");
+        }
+        timestamps.push(frame.timestamp);
+        frame.close();
+      }
+      return timestamps;
+    },
+    // Occupies the event loop rather than yielding, so that frames pile up
+    // wherever the processor holds them before reaching the queue, then reads
+    // before yielding. Counters are sampled either side of the block, so the
+    // deltas cover only what happened while it could not run.
+    async blockThenRead({ms}) {
+      const discardedBefore = processor.discardedFrames;
+      const totalBefore = processor.totalFrames;
+      const deadline = performance.now() + ms;
+      while (performance.now() < deadline) {}
+      return {
+        timestamp: await readTimestamp(),
+        discarded: processor.discardedFrames - discardedBefore,
+        total: processor.totalFrames - totalBefore,
+      };
+    },
+    // Issues the read before occupying the event loop rather than after, so
+    // that the read's own task is queued ahead of the one that hands over the
+    // frames arriving during the block.
+    async readThenBlock({ms}) {
+      const read = reader.read();
+      const deadline = performance.now() + ms;
+      while (performance.now() < deadline) {}
+      const {value: frame, done} = await read;
+      if (done) {
+        throw new Error("readable closed before a frame was produced");
+      }
+      const timestamp = frame.timestamp;
+      frame.close();
+      return timestamp;
+    },
+    // As above, but cancels instead of reading, so that nothing ever drains
+    // the frames that piled up.
+    async blockThenCancel({ms}) {
+      const discardedBefore = processor.discardedFrames;
+      const totalBefore = processor.totalFrames;
+      const deadline = performance.now() + ms;
+      while (performance.now() < deadline) {}
+      await reader.cancel();
+      return {
+        discarded: processor.discardedFrames - discardedBefore,
+        total: processor.totalFrames - totalBefore,
+      };
+    },
+    counters: () => ({
+      discardedFrames: processor.discardedFrames,
+      totalFrames: processor.totalFrames,
+    }),
+  };
+
+  onmessage = async e => {
+    try {
+      postMessage({result: await handlers[e.data.type](e.data)});
+    } catch (err) {
+      postMessage({error: err.name + ": " + err.message});
+    }
+  };
+`;
+
+const STALL_MS = 500;
+const BLOCK_MS = 1000;
+
+function call(worker, message, transfer = []) {
+  const reply = new Promise(resolve => {
+    worker.addEventListener("message", e => resolve(e.data), {once: true});
+  });
+  worker.postMessage(message, transfer);
+  return reply.then(({result, error}) => {
+    if (error !== undefined) {
+      throw new Error(`Worker: ${error}`);
+    }
+    return result;
+  });
+}
+
+async function openProcessor(t, maxBufferSize) {
+  const url = URL.createObjectURL(
+      new Blob([WORKER_SCRIPT], {type: "text/javascript"}));
+  const worker = new Worker(url);
+  URL.revokeObjectURL(url);
+  t.add_cleanup(() => worker.terminate());
+
+  const stream = await navigator.mediaDevices.getUserMedia({video: true});
+  const [track] = stream.getVideoTracks();
+  t.add_cleanup(() => stream.getTracks().forEach(track => track.stop()));
+  await call(worker, {type: "open", track, maxBufferSize}, [track]);
+  return worker;
+}
+
+function stall(t) {
+  return new Promise(r => t.step_timeout(r, STALL_MS));
+}
+
+promise_test(async t => {
+  const worker = await openProcessor(t, 1);
+  const before = await call(worker, {type: "read"});
+  await stall(t);
+  const after = await call(worker, {type: "read"});
+  const counters = await call(worker, {type: "counters"});
+
+  assert_greater_than(after, before, "timestamps advance");
+  assert_greater_than(after - before, STALL_MS * 500,
+                      "the frame read after the stall is a recent one rather " +
+                      "than one buffered when the stall began");
+  assert_greater_than(counters.discardedFrames, 0,
+                      "frames dropped during the stall are counted");
+  assert_greater_than_equal(counters.totalFrames, counters.discardedFrames + 2,
+                            "the frames that were read are counted too");
+}, "A processor with maxBufferSize 1 yields the most recent frame after a stall");
+
+promise_test(async t => {
+  const worker = await openProcessor(t, 1);
+  const burst = await call(worker, {type: "readTogether", count: 4});
+  assert_equals(burst.length, 4, "every read settles");
+
+  await stall(t);
+  const after = await call(worker, {type: "read"});
+  assert_greater_than(after - burst[burst.length - 1], STALL_MS * 500,
+                      "the frame read after the stall is a recent one rather " +
+                      "than one left buffered when the burst drained");
+}, "A processor with maxBufferSize 1 yields the most recent frame after concurrent reads and a stall");
+
+promise_test(async t => {
+  const worker = await openProcessor(t, 1);
+  const before = await call(worker, {type: "read"});
+  // Leaves a frame queued, so that a read answered from the queue alone would
+  // get a frame from here rather than from the end of the block.
+  await stall(t);
+  const after = await call(worker, {type: "blockThenRead", ms: BLOCK_MS});
+
+  assert_greater_than(after.timestamp - before,
+                      (STALL_MS + BLOCK_MS / 2) * 1000,
+                      "the frame read after the block is one produced during " +
+                      "it rather than the one queued before it began");
+  assert_greater_than(after.discarded, 0,
+                      "frames dropped while the event loop was blocked are " +
+                      "counted");
+  // Every frame discarded over the block either arrived during it or is the
+  // one frame the queue held when it began, and one of those that arrived is
+  // the frame that was read, so the two counts can be equal but received can
+  // never fall behind.
+  assert_greater_than_equal(after.total, after.discarded,
+                            "the frames dropped while the event loop was " +
+                            "blocked are counted as received as well");
+}, "A processor with maxBufferSize 1 yields the most recent frame to a read issued from a blocked event loop");
+
+// The read issued before the block rather than after it, which is the order
+// that puts the read's own task in front of the handover.
+promise_test(async t => {
+  const worker = await openProcessor(t, 1);
+  const before = await call(worker, {type: "read"});
+  // Leaves a frame queued, which is the one a read answered too early gets.
+  await stall(t);
+  const after = await call(worker, {type: "readThenBlock", ms: BLOCK_MS});
+
+  assert_greater_than(after - before, (STALL_MS + BLOCK_MS / 2) * 1000,
+                      "the read is answered with a frame produced during the " +
+                      "block rather than the one queued before it began");
+}, "A processor with maxBufferSize 1 yields the most recent frame to a read issued before the event loop blocks");
+
+// A queue deeper than one, so that more than one frame is waiting when the
+// block ends. That is what tells a read served part way through the handover
+// from one served once every waiting frame has landed.
+promise_test(async t => {
+  const worker = await openProcessor(t, 2);
+  const before = await call(worker, {type: "read"});
+  // Fills the queue, so that a read served part way through the handover that
+  // follows would get one of these rather than a frame from the block.
+  await stall(t);
+  const after = await call(worker, {type: "blockThenRead", ms: BLOCK_MS});
+
+  assert_greater_than(after.timestamp - before,
+                      (STALL_MS + BLOCK_MS / 2) * 1000,
+                      "the frame read after the block is one produced during " +
+                      "it rather than one the queue held when it began");
+}, "A processor with maxBufferSize 2 yields a frame from the end of a blocked event loop");
+
+promise_test(async t => {
+  const worker = await openProcessor(t, 1);
+  await call(worker, {type: "read"});
+  // Fills the queue, so that from here on every frame received displaces
+  // another one and the two counts have to move together.
+  await stall(t);
+  const {discarded, total} =
+      await call(worker, {type: "blockThenCancel", ms: BLOCK_MS});
+
+  assert_greater_than(discarded, 0,
+                      "frames dropped while the event loop was blocked are " +
+                      "still counted when the readable is cancelled before " +
+                      "they can be drained");
+  assert_equals(discarded, total,
+                "every frame received over a full queue displaced another, " +
+                "wherever the one it displaced was waiting");
+}, "A processor counts frames dropped before a cancel");
+
+</script>
+</body>
+</html>
