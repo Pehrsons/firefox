@@ -9,11 +9,13 @@
 
 #include "js/TypeDecls.h"
 #include "mozilla/AlreadyAddRefed.h"
+#include "mozilla/Atomics.h"
 #include "mozilla/RefPtr.h"
 #include "mozilla/dom/BindingDeclarations.h"
 #include "nsCOMPtr.h"
 #include "nsCycleCollectionParticipant.h"
 #include "nsISupports.h"
+#include "nsISupportsImpl.h"
 #include "nsTArray.h"
 #include "nsWrapperCache.h"
 
@@ -25,11 +27,28 @@ class ErrorResult;
 namespace dom {
 
 class MediaStreamTrack;
+class MediaStreamTrackProcessorListener;
 class MediaStreamTrackProcessorSource;
 class ReadableStream;
 class StrongWorkerRef;
 class VideoFrame;
 struct MediaStreamTrackProcessorInit;
+
+// The frame counts the processor exposes, shared with its listener. A frame
+// counts as received once it reaches the listener, which is what lets frames
+// the listener drops before the worker ever sees them count too. Refcounted
+// because the listener can outlive the processor.
+struct MediaStreamTrackProcessorCounters final {
+  NS_INLINE_DECL_THREADSAFE_REFCOUNTING(MediaStreamTrackProcessorCounters)
+
+  // [[numTotalFrames]]
+  Atomic<uint64_t> mTotalFrames{0};
+  // [[numDiscardedFrames]]
+  Atomic<uint64_t> mDiscardedFrames{0};
+
+ private:
+  ~MediaStreamTrackProcessorCounters() = default;
+};
 
 // https://w3c.github.io/mediacapture-transform/#track-processor
 //
@@ -55,8 +74,8 @@ class MediaStreamTrackProcessor final : public nsISupports,
 
   already_AddRefed<ReadableStream> Readable() const;
 
-  uint64_t DiscardedFrames() const { return mNumDiscardedFrames; }
-  uint64_t TotalFrames() const { return mNumTotalFrames; }
+  uint64_t DiscardedFrames() const { return mCounters->mDiscardedFrames; }
+  uint64_t TotalFrames() const { return mCounters->mTotalFrames; }
 
   // https://w3c.github.io/mediacapture-transform/#handle-new-frame
   // Called for each frame produced by [[track]]. Takes a reference to aFrame.
@@ -85,14 +104,15 @@ class MediaStreamTrackProcessor final : public nsISupports,
   const uint16_t mMaxBufferSize;
   RefPtr<ReadableStream> mReadable;
   RefPtr<MediaStreamTrackProcessorSource> mSource;
+  // Registered with mTrack for the processor's lifetime. Disconnected and
+  // removed by Close() per processorClose step 2.
+  RefPtr<MediaStreamTrackProcessorListener> mListener;
   // Keeps the worker alive while frames can still be delivered.
   RefPtr<StrongWorkerRef> mWorkerRef;
   // [[queue]], oldest frame first.
   nsTArray<RefPtr<VideoFrame>> mQueue;
-  // [[numDiscardedFrames]]
-  uint64_t mNumDiscardedFrames = 0;
-  // [[numTotalFrames]]
-  uint64_t mNumTotalFrames = 0;
+  const RefPtr<MediaStreamTrackProcessorCounters> mCounters =
+      MakeRefPtr<MediaStreamTrackProcessorCounters>();
   // [[isClosed]]
   bool mIsClosed = false;
 };
