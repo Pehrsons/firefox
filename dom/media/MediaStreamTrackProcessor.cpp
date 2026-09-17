@@ -10,6 +10,7 @@
 #include "MediaStreamTrack.h"
 #include "MediaTrackGraph.h"
 #include "MediaTrackListener.h"
+#include "PrincipalHandle.h"
 #include "VideoSegment.h"
 #include "mozilla/ErrorResult.h"
 #include "mozilla/Maybe.h"
@@ -28,7 +29,10 @@
 #include "mozilla/dom/WorkerCommon.h"
 #include "mozilla/dom/WorkerPrivate.h"
 #include "mozilla/dom/WorkerRef.h"
+#include "mozilla/ipc/BackgroundUtils.h"
+#include "mozilla/ipc/PBackgroundSharedTypes.h"
 #include "nsIGlobalObject.h"
+#include "nsIPrincipal.h"
 #include "nsThreadUtils.h"
 
 namespace mozilla::dom {
@@ -112,16 +116,19 @@ class MediaStreamTrackProcessorListener final
     TimeStamp mTimeStamp;
     Maybe<uint64_t> mDuration;
     bool mForceBlack;
+    PrincipalHandle mPrincipalHandle;
   };
 
  public:
   MediaStreamTrackProcessorListener(
       MediaStreamTrackProcessor* aProcessor,
-      MediaStreamTrackProcessorCounters* aCounters, uint16_t aMaxBufferSize)
+      MediaStreamTrackProcessorCounters* aCounters, uint16_t aMaxBufferSize,
+      const mozilla::ipc::PrincipalInfo& aWorkerPrincipalInfo)
       : mProcessor(aProcessor),
         mCounters(aCounters),
         mWorkerThread(GetCurrentSerialEventTarget()),
         mMaxBufferSize(aMaxBufferSize),
+        mWorkerPrincipalInfo(aWorkerPrincipalInfo),
         mMutex("MediaStreamTrackProcessorListener::mMutex") {
     MOZ_ASSERT(mProcessor);
     MOZ_ASSERT(mWorkerThread);
@@ -201,13 +208,15 @@ class MediaStreamTrackProcessorListener final
     }
 
     PendingFrame frame{
-        RefPtr<layers::Image>(aChunk.mFrame.GetImage()), size,
+        RefPtr<layers::Image>(aChunk.mFrame.GetImage()),
+        size,
         aChunk.mTimeStamp,
         aChunk.mDuration > 0
             ? Some(static_cast<uint64_t>(
                   media::TimeUnit(aChunk.mDuration, aRate).ToMicroseconds()))
             : Nothing(),
-        aChunk.mFrame.GetForceBlack()};
+        aChunk.mFrame.GetForceBlack(),
+        aChunk.GetPrincipalHandle()};
 
     bool dispatch;
     {
@@ -255,40 +264,110 @@ class MediaStreamTrackProcessorListener final
     // stopped QueueFrame, so mDraining no longer matters.
     while (mProcessor) {
       Maybe<PendingFrame> frame;
+      bool allowed = false;
+      Maybe<PrincipalHandle> unanswered;
       {
         MutexAutoLock lock(mMutex);
         if (mPending.IsEmpty()) {
           mDraining = false;
-        } else {
+        } else if (const Maybe<bool> answer =
+                       PrincipalAnswer(mPending[0].mPrincipalHandle)) {
+          allowed = *answer;
           frame = Some(std::move(mPending[0]));
           mPending.RemoveElementAt(0);
+        } else {
+          // Leave a frame whose principal has no answer yet where it is, so
+          // that it is delivered as it is rather than blacked for want of an
+          // answer, and so that a newer frame can still evict it in the
+          // meantime. The answer arriving drains again, so stay marked
+          // draining: QueueFrame must not dispatch a drain that would only
+          // wait again.
+          unanswered = Some(mPending[0].mPrincipalHandle);
         }
       }
 
+      if (unanswered) {
+        AskAboutPrincipal(*unanswered);
+        return;
+      }
       if (!frame) {
         return;
       }
 
       const RefPtr<MediaStreamTrackProcessor> processor = mProcessor;
-      DeliverFrame(*processor, *frame);
+      DeliverFrame(*processor, *frame, allowed);
     }
+  }
+
+  // Worker thread. Whether the worker may access data under aHandle, or
+  // Nothing if only the main thread can say, which is where a PrincipalHandle
+  // converts back to an nsIPrincipal. The answer is kept for the handle it was
+  // given for, since a track's data principal rarely changes, and a change has
+  // to be asked about again. PRINCIPAL_HANDLE_NONE starts out answered as not
+  // allowed, which is also the right answer for data carrying no principal.
+  Maybe<bool> PrincipalAnswer(const PrincipalHandle& aHandle) const {
+    if (aHandle == mCheckedPrincipal) {
+      return Some(mCheckedPrincipalAllowed);
+    }
+    return Nothing();
+  }
+
+  // Worker thread. Asks the main thread about aHandle, at most once until it
+  // answers. Answering drains again, which is what gets the frames waiting on
+  // the answer moving. A failed dispatch leaves them waiting, which only
+  // happens when the worker is going away and they are moot anyway.
+  void AskAboutPrincipal(const PrincipalHandle& aHandle) {
+    MOZ_ASSERT(mWorkerThread->IsOnCurrentThread());
+    if (mQueriedPrincipal && *mQueriedPrincipal == aHandle) {
+      return;
+    }
+    mQueriedPrincipal = Some(aHandle);
+
+    (void)NS_DispatchToMainThread(NS_NewRunnableFunction(
+        __func__, [self = RefPtr(this), handle = aHandle] {
+          bool allowed = false;
+          // The worker's principal, not that of the context the track was
+          // captured in: a track can be transferred to a worker that may not
+          // access what its source produces.
+          auto principalOrErr = mozilla::ipc::PrincipalInfoToPrincipal(
+              self->mWorkerPrincipalInfo);
+          if (principalOrErr.isOk()) {
+            const nsCOMPtr<nsIPrincipal> principal = principalOrErr.unwrap();
+            nsIPrincipal* const data = GetPrincipalFromHandle(handle);
+            allowed = data && principal->Subsumes(data);
+          }
+          (void)self->mWorkerThread->Dispatch(
+              NS_NewRunnableFunction(__func__, [self, handle, allowed] {
+                self->mCheckedPrincipal = handle;
+                self->mCheckedPrincipalAllowed = allowed;
+                if (self->mQueriedPrincipal &&
+                    *self->mQueriedPrincipal == handle) {
+                  // Answered, so the handle can be asked about again if the
+                  // source goes back to it after a change.
+                  self->mQueriedPrincipal = Nothing();
+                }
+                self->Drain();
+              }));
+        }));
   }
 
   // Worker thread.
   void DeliverFrame(MediaStreamTrackProcessor& aProcessor,
-                    const PendingFrame& aFrame) {
+                    const PendingFrame& aFrame, bool aPrincipalAllowed) {
     // A disabled track is delivered as chunks flagged force-black that still
     // carry the source image, as MirrorAndDisableSegment leaves it in place.
-    // Honouring the flag is the consumer's job, as in CaptureTask.
+    // Honouring the flag is the consumer's job, as in CaptureTask. Data the
+    // worker may not access is blacked the same way, since a worker has no
+    // consumer that can render a frame without exposing it to script.
     RefPtr<layers::Image> image = aFrame.mImage;
-    if (aFrame.mForceBlack) {
+    if (aFrame.mForceBlack || !aPrincipalAllowed) {
       if (!mBlackImage || mBlackImage->GetSize() != aFrame.mIntrinsicSize) {
         mBlackImage =
             mozilla::VideoFrame::CloneAsBlackImage(aFrame.mIntrinsicSize);
       }
       if (!mBlackImage) {
-        // Never hand out the image of a disabled track. Dropping it counts as
-        // discarded, as any other drop does.
+        // Never hand out an image that should have been blacked. Dropping it
+        // counts as discarded, as any other drop does.
         ++mCounters->mDiscardedFrames;
         return;
       }
@@ -359,6 +438,10 @@ class MediaStreamTrackProcessorListener final
   const RefPtr<MediaStreamTrackProcessorCounters> mCounters;
   const nsCOMPtr<nsISerialEventTarget> mWorkerThread;
   const uint16_t mMaxBufferSize;
+  // The principal of the worker frames are delivered to, as a value rather
+  // than an nsIPrincipal so that it can be carried off the main thread and
+  // released anywhere.
+  const mozilla::ipc::PrincipalInfo mWorkerPrincipalInfo;
   Mutex mMutex;
   // Frames waiting for the worker to pick them up, oldest first.
   nsTArray<PendingFrame> mPending MOZ_GUARDED_BY(mMutex);
@@ -373,6 +456,15 @@ class MediaStreamTrackProcessorListener final
   // because rebuilding it per frame would allocate for the whole time the
   // track stays disabled.
   RefPtr<layers::Image> mBlackImage;
+  // Worker thread only. The handle the main thread last answered for, and its
+  // answer. PRINCIPAL_HANDLE_NONE starts out answered as not allowed, which is
+  // also the right answer for a frame carrying no principal at all.
+  PrincipalHandle mCheckedPrincipal = PRINCIPAL_HANDLE_NONE;
+  bool mCheckedPrincipalAllowed = false;
+  // Worker thread only. The handle an answer is outstanding for, so that each
+  // handle is only asked about once. Nothing rather than PRINCIPAL_HANDLE_NONE
+  // for "none outstanding", since that is itself a handle a frame can carry.
+  Maybe<PrincipalHandle> mQueriedPrincipal;
 };
 
 NS_IMPL_CYCLE_COLLECTION_WRAPPERCACHE(MediaStreamTrackProcessor, mGlobal,
@@ -488,8 +580,8 @@ void MediaStreamTrackProcessor::Init(JSContext* aCx, ErrorResult& aRv) {
 
   // Steps 5-12 do not cover connecting to the track; that is left to the UA,
   // as is disconnecting in processorClose step 2.
-  mListener =
-      new MediaStreamTrackProcessorListener(this, mCounters, mMaxBufferSize);
+  mListener = new MediaStreamTrackProcessorListener(
+      this, mCounters, mMaxBufferSize, workerPrivate->GetPrincipalInfo());
   mTrack->AddDirectListener(mListener);
   mTrack->AddListener(mListener);
 }
