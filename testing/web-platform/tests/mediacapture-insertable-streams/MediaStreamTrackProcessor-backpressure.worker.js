@@ -25,7 +25,7 @@ promise_test(async t => {
   let timestamp = 0;
   const intervalId = setInterval(
     t.step_func(async () => {
-      if (generator.readyState === 'live') {
+      if (generator.track.readyState === 'live') {
         timestamp++;
         await writer.write(makeUniformVideoFrame(timestamp));
       }
