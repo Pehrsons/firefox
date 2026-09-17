@@ -1,0 +1,62 @@
+<!doctype html>
+<html>
+<head>
+  <title>MediaStreamTrackProcessor rejects tracks Gecko cannot process</title>
+  <link rel="help" href="https://w3c.github.io/mediacapture-transform/#track-processor">
+</head>
+<body>
+<h1 class="instructions">Description</h1>
+<p class="instructions">Neither of these cases is required by the specification, so they are not
+upstreamable. The specification does not define when a track "is not valid" for the
+MediaStreamTrackProcessor constructor, and it records that there is no working group consensus on
+whether tracks of kind "audio" should be supported at all. Gecko treats both as a TypeError.</p>
+<script src=/resources/testharness.js></script>
+<script src=/resources/testharnessreport.js></script>
+<script>
+
+const WORKER_SCRIPT = `
+  function classify(fn) {
+    try {
+      fn();
+    } catch (e) {
+      return e.constructor.name;
+    }
+    return 'no-throw';
+  }
+
+  onmessage = msg => {
+    const {check, track} = msg.data;
+    if (check === 'ended') {
+      track.stop();
+    }
+    postMessage(classify(() => new MediaStreamTrackProcessor({track})));
+  };
+`;
+
+async function runCheck(t, check, constraints) {
+  const url = URL.createObjectURL(
+      new Blob([WORKER_SCRIPT], {type: 'text/javascript'}));
+  const worker = new Worker(url);
+  URL.revokeObjectURL(url);
+  t.add_cleanup(() => worker.terminate());
+
+  const stream = await navigator.mediaDevices.getUserMedia(constraints);
+  const track = stream.getTracks()[0];
+  t.add_cleanup(() => track.stop());
+
+  const result = new Promise(resolve => worker.onmessage = e => resolve(e.data));
+  worker.postMessage({check, track}, [track]);
+  return result;
+}
+
+promise_test(async t => {
+  assert_equals(await runCheck(t, 'ended', {video: true}), 'TypeError');
+}, 'MediaStreamTrackProcessor constructor throws TypeError for an ended track');
+
+promise_test(async t => {
+  assert_equals(await runCheck(t, 'audio', {audio: true}), 'TypeError');
+}, 'MediaStreamTrackProcessor constructor throws TypeError for an audio track');
+
+</script>
+</body>
+</html>
