@@ -1,0 +1,95 @@
+<!doctype html>
+<html>
+<head>
+  <title>MediaStreamTrackProcessor constructor</title>
+  <link rel="help" href="https://w3c.github.io/mediacapture-transform/#track-processor">
+</head>
+<body>
+<p class="instructions">When prompted, use the accept button to give permission to use your video device.</p>
+<h1 class="instructions">Description</h1>
+<p class="instructions">This test checks that the MediaStreamTrackProcessor constructor validates its
+init dictionary and initializes the processor, using a track transferred to a dedicated worker.</p>
+<script src=/resources/testharness.js></script>
+<script src=/resources/testharnessreport.js></script>
+<script src=/resources/testdriver.js></script>
+<script src=/resources/testdriver-vendor.js></script>
+<script src='/mediacapture-streams/permission-helper.js'></script>
+<script>
+
+// MediaStreamTrackProcessor is only exposed in dedicated workers, so each check
+// runs in a worker against a track transferred to it. The worker reports the
+// name of the constructor's exception, or 'no-throw', so that the assertions
+// stay on this side.
+const WORKER_SCRIPT = `
+  function classify(fn) {
+    try {
+      fn();
+    } catch (e) {
+      return e.constructor.name;
+    }
+    return 'no-throw';
+  }
+
+  onmessage = msg => {
+    const {check, track} = msg.data;
+    switch (check) {
+      case 'missing-track':
+        postMessage(classify(() => new MediaStreamTrackProcessor({})));
+        break;
+
+      case 'max-buffer-size':
+        postMessage(classify(
+            () => new MediaStreamTrackProcessor({track, maxBufferSize: 10})));
+        break;
+
+      case 'initial-state': {
+        const processor = new MediaStreamTrackProcessor({track});
+        postMessage({
+          readableIsReadableStream:
+              processor.readable instanceof ReadableStream,
+          discardedFrames: processor.discardedFrames,
+          totalFrames: processor.totalFrames,
+        });
+        break;
+      }
+    }
+  };
+`;
+
+// Transfers a fresh video track into a worker running WORKER_SCRIPT and
+// resolves with what the worker posts back.
+async function runCheck(t, check) {
+  const url = URL.createObjectURL(
+      new Blob([WORKER_SCRIPT], {type: 'text/javascript'}));
+  const worker = new Worker(url);
+  URL.revokeObjectURL(url);
+  t.add_cleanup(() => worker.terminate());
+
+  await setMediaPermission("granted", ["camera"]);
+  const stream = await navigator.mediaDevices.getUserMedia({video: true});
+  const track = stream.getVideoTracks()[0];
+  t.add_cleanup(() => track.stop());
+
+  const result = new Promise(resolve => worker.onmessage = e => resolve(e.data));
+  worker.postMessage({check, track}, [track]);
+  return result;
+}
+
+promise_test(async t => {
+  assert_equals(await runCheck(t, 'missing-track'), 'TypeError');
+}, 'MediaStreamTrackProcessor constructor throws TypeError when init.track is missing');
+
+promise_test(async t => {
+  const result = await runCheck(t, 'initial-state');
+  assert_true(result.readableIsReadableStream, 'readable is a ReadableStream');
+  assert_equals(result.discardedFrames, 0, 'discardedFrames starts at 0');
+  assert_equals(result.totalFrames, 0, 'totalFrames starts at 0');
+}, 'MediaStreamTrackProcessor constructor initializes readable and the frame counters');
+
+promise_test(async t => {
+  assert_equals(await runCheck(t, 'max-buffer-size'), 'no-throw');
+}, 'MediaStreamTrackProcessor constructor accepts maxBufferSize');
+
+</script>
+</body>
+</html>
