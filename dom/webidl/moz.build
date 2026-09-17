@@ -368,6 +368,9 @@ with Files("VRDisplay.webidl"):
 with Files("Video*"):
     BUG_COMPONENT = ("Core", "Audio/Video")
 
+with Files("VideoTrackGenerator.webidl"):
+    BUG_COMPONENT = ("Core", "WebRTC: Audio/Video")
+
 with Files("ViewTimeline.webidl"):
     BUG_COMPONENT = ("Core", "DOM: Animation")
 
@@ -1100,6 +1103,7 @@ WEBIDL_FILES = [
     "VideoFrame.webidl",
     "VideoPlaybackQuality.webidl",
     "VideoTrack.webidl",
+    "VideoTrackGenerator.webidl",
     "VideoTrackList.webidl",
     "ViewTimeline.webidl",
     "ViewTransition.webidl",
