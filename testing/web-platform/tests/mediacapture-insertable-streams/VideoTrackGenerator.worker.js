@@ -106,8 +106,9 @@ promise_test(async t => {
   };
   const audioData = make_audio_data(defaultInit.timestamp, defaultInit.channels, defaultInit.sampleRate,
       defaultInit.frames);
+  t.add_cleanup(() => audioData.close());
 
-  await promise_rejects_js(t, TypeError, writer.write("test"));
+  await promise_rejects_js(t, TypeError, writer.write(audioData));
 }, "Generator writer rejects on mismatched media input");
 
 promise_test(async t => {
