@@ -260,6 +260,7 @@ EXPORTS.mozilla.dom += [
     "VideoPlaybackQuality.h",
     "VideoStreamTrack.h",
     "VideoTrack.h",
+    "VideoTrackGenerator.h",
     "VideoTrackList.h",
 ]
 
@@ -343,6 +344,7 @@ UNIFIED_SOURCES += [
     "VideoSegment.cpp",
     "VideoStreamTrack.cpp",
     "VideoTrack.cpp",
+    "VideoTrackGenerator.cpp",
     "VideoTrackList.cpp",
     "VideoUtils.cpp",
     "WorkerTrackSourceProxy.cpp",
