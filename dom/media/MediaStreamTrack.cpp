@@ -101,13 +101,13 @@ class MediaStreamTrack::TrackSink : public MediaStreamTrackSource::Sink {
   WeakPtr<MediaStreamTrack> mTrack;
 };
 
-MediaStreamTrack::MediaStreamTrack(nsPIDOMWindowInner* aWindow,
+MediaStreamTrack::MediaStreamTrack(nsIGlobalObject* aGlobal,
                                    mozilla::MediaTrack* aInputTrack,
                                    MediaStreamTrackSource* aSource,
                                    MediaStreamTrackState aReadyState,
                                    bool aMuted,
                                    const MediaTrackConstraints& aConstraints)
-    : mWindow(aWindow),
+    : mGlobal(aGlobal),
       mInputTrack(aInputTrack),
       mSource(aSource),
       mSink(MakeUnique<TrackSink>(this)),
@@ -130,7 +130,7 @@ MediaStreamTrack::MediaStreamTrack(nsPIDOMWindowInner* aWindow,
     // MediaStreamTrackSource soon enough.
     auto graph = mInputTrack->IsDestroyed()
                      ? MediaTrackGraph::GetInstanceIfExists(
-                           mWindow, mInputTrack->mSampleRate,
+                           GetOwnerWindow(), mInputTrack->mSampleRate,
                            MediaTrackGraph::DEFAULT_OUTPUT_DEVICE)
                      : mInputTrack->Graph();
     MOZ_DIAGNOSTIC_ASSERT(graph,
@@ -165,6 +165,11 @@ MediaStreamTrack::MediaStreamTrack(nsPIDOMWindowInner* aWindow,
 
 MediaStreamTrack::~MediaStreamTrack() { Destroy(); }
 
+nsGlobalWindowInner* MediaStreamTrack::GetOwnerWindow() const {
+  return mGlobal ? nsGlobalWindowInner::Cast(mGlobal->GetAsInnerWindow())
+                 : nullptr;
+}
+
 void MediaStreamTrack::Destroy() {
   SetReadyState(MediaStreamTrackState::Ended);
   // Remove all listeners -- avoid iterating over the list we're removing from
@@ -182,7 +187,7 @@ NS_IMPL_CYCLE_COLLECTION_CLASS(MediaStreamTrack)
 NS_IMPL_CYCLE_COLLECTION_UNLINK_BEGIN_INHERITED(MediaStreamTrack,
                                                 DOMEventTargetHelper)
   tmp->Destroy();
-  NS_IMPL_CYCLE_COLLECTION_UNLINK(mWindow)
+  NS_IMPL_CYCLE_COLLECTION_UNLINK(mGlobal)
   NS_IMPL_CYCLE_COLLECTION_UNLINK(mSource)
   NS_IMPL_CYCLE_COLLECTION_UNLINK(mPrincipal)
   NS_IMPL_CYCLE_COLLECTION_UNLINK(mPendingPrincipal)
@@ -191,7 +196,7 @@ NS_IMPL_CYCLE_COLLECTION_UNLINK_END
 
 NS_IMPL_CYCLE_COLLECTION_TRAVERSE_BEGIN_INHERITED(MediaStreamTrack,
                                                   DOMEventTargetHelper)
-  NS_IMPL_CYCLE_COLLECTION_TRAVERSE(mWindow)
+  NS_IMPL_CYCLE_COLLECTION_TRAVERSE(mGlobal)
   NS_IMPL_CYCLE_COLLECTION_TRAVERSE(mSource)
   NS_IMPL_CYCLE_COLLECTION_TRAVERSE(mPrincipal)
   NS_IMPL_CYCLE_COLLECTION_TRAVERSE(mPendingPrincipal)
@@ -256,9 +261,8 @@ void MediaStreamTrack::GetSettings(dom::MediaTrackSettings& aResult,
   GetSource().GetSettings(aResult);
 
   // Spoof values when privacy.resistFingerprinting is true.
-  nsIGlobalObject* global = mWindow ? mWindow->AsGlobal() : nullptr;
   if (!nsContentUtils::ShouldResistFingerprinting(
-          aCallerType, global, RFPTarget::StreamVideoFacingMode)) {
+          aCallerType, GetParentObject(), RFPTarget::StreamVideoFacingMode)) {
     return;
   }
   if (aResult.mFacingMode.WasPassed()) {
@@ -279,9 +283,7 @@ already_AddRefed<Promise> MediaStreamTrack::ApplyConstraints(
                          fmt::ptr(this), NS_ConvertUTF16toUTF8(str).get()));
   }
 
-  nsIGlobalObject* go = mWindow ? mWindow->AsGlobal() : nullptr;
-
-  RefPtr<Promise> promise = Promise::Create(go, aRv);
+  RefPtr<Promise> promise = Promise::Create(GetParentObject(), aRv);
   if (aRv.Failed()) {
     return nullptr;
   }
@@ -299,17 +301,18 @@ already_AddRefed<Promise> MediaStreamTrack::ApplyConstraints(
       ->Then(
           GetCurrentSerialEventTarget(), __func__,
           [this, self, promise, aConstraints](bool aDummy) {
-            if (!mWindow || !mWindow->IsCurrentInnerWindow()) {
+            nsGlobalWindowInner* window = GetOwnerWindow();
+            if (!window || !window->IsCurrentInnerWindow()) {
               return;  // Leave Promise pending after navigation by design.
             }
             promise->MaybeResolve(false);
           },
           [this, self, promise](const RefPtr<MediaMgrError>& aError) {
-            if (!mWindow || !mWindow->IsCurrentInnerWindow()) {
+            nsGlobalWindowInner* window = GetOwnerWindow();
+            if (!window || !window->IsCurrentInnerWindow()) {
               return;  // Leave Promise pending after navigation by design.
             }
-            promise->MaybeReject(
-                MakeRefPtr<MediaStreamError>(mWindow, *aError));
+            promise->MaybeReject(MakeRefPtr<MediaStreamError>(window, *aError));
           });
   return promise.forget();
 }

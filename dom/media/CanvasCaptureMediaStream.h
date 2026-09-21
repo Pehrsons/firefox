@@ -92,7 +92,7 @@ class OutputStreamDriver : public FrameCaptureListener {
 
 class CanvasCaptureMediaStream : public DOMMediaStream {
  public:
-  CanvasCaptureMediaStream(nsPIDOMWindowInner* aWindow,
+  CanvasCaptureMediaStream(nsIGlobalObject* aGlobal,
                            HTMLCanvasElement* aCanvas);
 
   NS_DECL_ISUPPORTS_INHERITED

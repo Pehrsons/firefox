@@ -446,7 +446,7 @@ class MediaStreamTrack : public DOMEventTargetHelper, public SupportsWeakPtr {
 
  public:
   MediaStreamTrack(
-      nsPIDOMWindowInner* aWindow, mozilla::MediaTrack* aInputTrack,
+      nsIGlobalObject* aGlobal, mozilla::MediaTrack* aInputTrack,
       MediaStreamTrackSource* aSource,
       MediaStreamTrackState aReadyState = MediaStreamTrackState::Live,
       bool aMuted = false,
@@ -456,9 +456,12 @@ class MediaStreamTrack : public DOMEventTargetHelper, public SupportsWeakPtr {
   NS_DECL_CYCLE_COLLECTION_CLASS_INHERITED(MediaStreamTrack,
                                            DOMEventTargetHelper)
 
-  nsPIDOMWindowInner* GetParentObject() const { return mWindow; }
   JSObject* WrapObject(JSContext* aCx,
                        JS::Handle<JSObject*> aGivenProto) override;
+
+  nsIGlobalObject* GetParentObject() const { return mGlobal; }
+  // The window of mGlobal, or null for other globals.
+  nsGlobalWindowInner* GetOwnerWindow() const;
 
   virtual AudioStreamTrack* AsAudioStreamTrack() { return nullptr; }
   virtual VideoStreamTrack* AsVideoStreamTrack() { return nullptr; }
@@ -672,9 +675,9 @@ class MediaStreamTrack : public DOMEventTargetHelper, public SupportsWeakPtr {
       cloneRes.mSource = mSource;
       cloneRes.mInputTrack = mInputTrack;
     }
-    auto newTrack =
-        MakeRefPtr<TrackType>(mWindow, cloneRes.mInputTrack, cloneRes.mSource,
-                              ReadyState(), Muted(), mConstraints);
+    auto newTrack = MakeRefPtr<TrackType>(
+        GetParentObject(), cloneRes.mInputTrack, cloneRes.mSource, ReadyState(),
+        Muted(), mConstraints);
     newTrack->SetEnabled(Enabled());
     newTrack->SetMuted(Muted());
     return newTrack.forget();
@@ -685,9 +688,10 @@ class MediaStreamTrack : public DOMEventTargetHelper, public SupportsWeakPtr {
 
   nsTArray<WeakPtr<MediaStreamTrackConsumer>> mConsumers;
 
-  // We need this to track our parent object.
-  nsCOMPtr<nsPIDOMWindowInner> mWindow;
-
+  // Our global. Held directly rather than as DOMEventTargetHelper's owner, so
+  // that tearing down the global does not disconnect us from it: a track
+  // keeps ending and firing events after its window has navigated away.
+  nsCOMPtr<nsIGlobalObject> mGlobal;
   // The input MediaTrack assigned us by the data producer.
   // Owned by the producer.
   const RefPtr<mozilla::MediaTrack> mInputTrack;
