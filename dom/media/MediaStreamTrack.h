@@ -446,7 +446,7 @@ class MediaStreamTrack : public DOMEventTargetHelper, public SupportsWeakPtr {
 
  public:
   MediaStreamTrack(
-      nsPIDOMWindowInner* aWindow, mozilla::MediaTrack* aInputTrack,
+      nsIGlobalObject* aGlobal, mozilla::MediaTrack* aInputTrack,
       MediaStreamTrackSource* aSource,
       MediaStreamTrackState aReadyState = MediaStreamTrackState::Live,
       bool aMuted = false,
@@ -458,6 +458,9 @@ class MediaStreamTrack : public DOMEventTargetHelper, public SupportsWeakPtr {
 
   JSObject* WrapObject(JSContext* aCx,
                        JS::Handle<JSObject*> aGivenProto) override;
+
+  // The window of our global, or null for other globals.
+  nsGlobalWindowInner* GetOwnerWindow() const;
 
   virtual AudioStreamTrack* AsAudioStreamTrack() { return nullptr; }
   virtual VideoStreamTrack* AsVideoStreamTrack() { return nullptr; }
@@ -484,9 +487,9 @@ class MediaStreamTrack : public DOMEventTargetHelper, public SupportsWeakPtr {
       ErrorResult& aRv);
   // The WebIDL clone(). The clone lives in the relevant global of this.
   already_AddRefed<MediaStreamTrack> Clone();
-  // Like Clone() but the clone lives in aWindow.
+  // Like Clone() but the clone lives in aGlobal.
   virtual already_AddRefed<MediaStreamTrack> Clone(
-      nsPIDOMWindowInner* aWindow) = 0;
+      nsIGlobalObject* aGlobal) = 0;
   MediaStreamTrackState ReadyState() { return mReadyState; }
 
   IMPL_EVENT_HANDLER(mute)
@@ -668,8 +671,7 @@ class MediaStreamTrack : public DOMEventTargetHelper, public SupportsWeakPtr {
    */
 
   template <typename TrackType>
-  already_AddRefed<MediaStreamTrack> CloneInternal(
-      nsPIDOMWindowInner* aWindow) {
+  already_AddRefed<MediaStreamTrack> CloneInternal(nsIGlobalObject* aGlobal) {
     auto cloneRes = mSource->Clone();
     MOZ_ASSERT(!!cloneRes.mSource == !!cloneRes.mInputTrack);
     if (!cloneRes.mSource || !cloneRes.mInputTrack) {
@@ -677,7 +679,7 @@ class MediaStreamTrack : public DOMEventTargetHelper, public SupportsWeakPtr {
       cloneRes.mInputTrack = mInputTrack;
     }
     auto newTrack =
-        MakeRefPtr<TrackType>(aWindow, cloneRes.mInputTrack, cloneRes.mSource,
+        MakeRefPtr<TrackType>(aGlobal, cloneRes.mInputTrack, cloneRes.mSource,
                               ReadyState(), Muted(), mConstraints);
     newTrack->SetEnabled(Enabled());
     newTrack->SetMuted(Muted());

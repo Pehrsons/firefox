@@ -102,13 +102,13 @@ class MediaStreamTrack::TrackSink : public MediaStreamTrackSource::Sink {
   WeakPtr<MediaStreamTrack> mTrack;
 };
 
-MediaStreamTrack::MediaStreamTrack(nsPIDOMWindowInner* aWindow,
+MediaStreamTrack::MediaStreamTrack(nsIGlobalObject* aGlobal,
                                    mozilla::MediaTrack* aInputTrack,
                                    MediaStreamTrackSource* aSource,
                                    MediaStreamTrackState aReadyState,
                                    bool aMuted,
                                    const MediaTrackConstraints& aConstraints)
-    : DOMEventTargetHelper(aWindow),
+    : DOMEventTargetHelper(aGlobal),
       mInputTrack(aInputTrack),
       mSource(aSource),
       mSink(std::make_unique<TrackSink>(this)),
@@ -165,6 +165,12 @@ MediaStreamTrack::MediaStreamTrack(nsPIDOMWindowInner* aWindow,
 }
 
 MediaStreamTrack::~MediaStreamTrack() { Destroy(); }
+
+nsGlobalWindowInner* MediaStreamTrack::GetOwnerWindow() const {
+  nsIGlobalObject* global = GetRelevantGlobal();
+  return global ? nsGlobalWindowInner::Cast(global->GetAsInnerWindow())
+                : nullptr;
+}
 
 void MediaStreamTrack::Destroy() {
   SetReadyState(MediaStreamTrackState::Ended);
@@ -234,12 +240,12 @@ already_AddRefed<MediaStreamTrack> MediaStreamTrack::Clone() {
   // https://html.spec.whatwg.org/multipage/webappapis.html#realms-settings-objects-global-objects
   // recommends. The owner is gone once its global is torn down, but the
   // reflector that `this` is called through is still in that realm.
-  nsCOMPtr<nsPIDOMWindowInner> window = GetOwnerWindow();
-  if (!window) {
+  nsCOMPtr<nsIGlobalObject> global = GetRelevantGlobal();
+  if (!global) {
     MOZ_ASSERT(GetWrapper());
-    window = xpc::NativeGlobal(GetWrapper())->GetAsInnerWindow();
+    global = xpc::NativeGlobal(GetWrapper());
   }
-  return Clone(window);
+  return Clone(global);
 }
 
 void MediaStreamTrack::Stop() {

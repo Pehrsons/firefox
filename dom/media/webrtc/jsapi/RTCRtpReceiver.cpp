@@ -157,7 +157,8 @@ RTCRtpReceiver::RTCRtpReceiver(
     mTrackSource = MakeAndAddRef<RemoteTrackSource>(
         source, this, GetPrincipalFromHandle(principalHandle),
         u"remote audio"_ns, aTrackingId);
-    mTrack = MakeAndAddRef<AudioStreamTrack>(aWindow, source, mTrackSource);
+    mTrack = MakeAndAddRef<AudioStreamTrack>(aWindow->AsGlobal(), source,
+                                             mTrackSource);
     mPipeline = MakeAndAddRef<MediaPipelineReceiveAudio>(
         mPc->GetHandle(), aTransportHandler, aCallThread, mStsThread.get(),
         *aConduit->AsAudioSessionConduit(), mTrackSource->Stream(), aTrackingId,
@@ -167,7 +168,8 @@ RTCRtpReceiver::RTCRtpReceiver(
     mTrackSource = MakeAndAddRef<RemoteTrackSource>(
         source, this, GetPrincipalFromHandle(principalHandle),
         u"remote video"_ns, aTrackingId);
-    mTrack = MakeAndAddRef<VideoStreamTrack>(aWindow, source, mTrackSource);
+    mTrack = MakeAndAddRef<VideoStreamTrack>(aWindow->AsGlobal(), source,
+                                             mTrackSource);
     mPipeline = MakeAndAddRef<MediaPipelineReceiveVideo>(
         mPc->GetHandle(), aTransportHandler, aCallThread, mStsThread.get(),
         *aConduit->AsVideoSessionConduit(), mTrackSource->Stream(), aTrackingId,

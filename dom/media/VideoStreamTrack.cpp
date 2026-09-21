@@ -12,13 +12,13 @@
 
 namespace mozilla::dom {
 
-VideoStreamTrack::VideoStreamTrack(nsPIDOMWindowInner* aWindow,
+VideoStreamTrack::VideoStreamTrack(nsIGlobalObject* aGlobal,
                                    mozilla::MediaTrack* aInputTrack,
                                    MediaStreamTrackSource* aSource,
                                    MediaStreamTrackState aReadyState,
                                    bool aMuted,
                                    const MediaTrackConstraints& aConstraints)
-    : MediaStreamTrack(aWindow, aInputTrack, aSource, aReadyState, aMuted,
+    : MediaStreamTrack(aGlobal, aInputTrack, aSource, aReadyState, aMuted,
                        aConstraints) {}
 
 void VideoStreamTrack::Destroy() {
@@ -70,8 +70,8 @@ void VideoStreamTrack::GetLabel(nsAString& aLabel, CallerType aCallerType) {
 }
 
 already_AddRefed<MediaStreamTrack> VideoStreamTrack::Clone(
-    nsPIDOMWindowInner* aWindow) {
-  return MediaStreamTrack::CloneInternal<VideoStreamTrack>(aWindow);
+    nsIGlobalObject* aGlobal) {
+  return MediaStreamTrack::CloneInternal<VideoStreamTrack>(aGlobal);
 }
 
 }  // namespace mozilla::dom

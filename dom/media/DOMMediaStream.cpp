@@ -126,8 +126,8 @@ NS_INTERFACE_MAP_BEGIN_CYCLE_COLLECTION(DOMMediaStream::TrackListener)
   NS_INTERFACE_MAP_ENTRY(nsISupports)
 NS_INTERFACE_MAP_END
 
-DOMMediaStream::DOMMediaStream(nsPIDOMWindowInner* aWindow)
-    : DOMEventTargetHelper(aWindow),
+DOMMediaStream::DOMMediaStream(nsIGlobalObject* aGlobal)
+    : DOMEventTargetHelper(aGlobal),
       mPlaybackTrackListener(MakeAndAddRef<PlaybackTrackListener>(this)) {
   nsresult rv;
   nsCOMPtr<nsIUUIDGenerator> uuidgen =
@@ -197,14 +197,13 @@ already_AddRefed<DOMMediaStream> DOMMediaStream::Constructor(
     const GlobalObject& aGlobal,
     const Sequence<OwningNonNull<MediaStreamTrack>>& aTracks,
     ErrorResult& aRv) {
-  nsCOMPtr<nsPIDOMWindowInner> ownerWindow =
-      do_QueryInterface(aGlobal.GetAsSupports());
-  if (!ownerWindow) {
+  nsCOMPtr<nsIGlobalObject> global = do_QueryInterface(aGlobal.GetAsSupports());
+  if (!global) {
     aRv.Throw(NS_ERROR_FAILURE);
     return nullptr;
   }
 
-  auto newStream = MakeRefPtr<DOMMediaStream>(ownerWindow);
+  auto newStream = MakeRefPtr<DOMMediaStream>(global);
   for (MediaStreamTrack& track : aTracks) {
     newStream->AddTrack(track);
   }
@@ -381,12 +380,12 @@ already_AddRefed<DOMMediaStream> DOMMediaStream::Clone() {
   // recommends. The track clones are created in the same realm. The owner is
   // gone once its global is torn down, but the reflector that `this` is called
   // through is still in that realm.
-  nsCOMPtr<nsPIDOMWindowInner> window = GetOwnerWindow();
-  if (!window) {
+  nsCOMPtr<nsIGlobalObject> global = GetParentObject();
+  if (!global) {
     MOZ_ASSERT(GetWrapper());
-    window = xpc::NativeGlobal(GetWrapper())->GetAsInnerWindow();
+    global = xpc::NativeGlobal(GetWrapper());
   }
-  auto newStream = MakeRefPtr<DOMMediaStream>(window);
+  auto newStream = MakeRefPtr<DOMMediaStream>(global);
 
   LOG(LogLevel::Info, ("DOMMediaStream {} created clone {}", fmt::ptr(this),
                        fmt::ptr(newStream.get())));
@@ -395,7 +394,7 @@ already_AddRefed<DOMMediaStream> DOMMediaStream::Clone() {
     LOG(LogLevel::Debug,
         ("DOMMediaStream {} forwarding external track {} to clone {}",
          fmt::ptr(this), fmt::ptr(track.get()), fmt::ptr(newStream.get())));
-    RefPtr<MediaStreamTrack> clone = track->Clone(window);
+    RefPtr<MediaStreamTrack> clone = track->Clone(global);
     newStream->AddTrack(*clone);
   }
 

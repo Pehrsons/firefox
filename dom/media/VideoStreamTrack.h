@@ -18,14 +18,13 @@ namespace dom {
 class VideoStreamTrack : public MediaStreamTrack {
  public:
   VideoStreamTrack(
-      nsPIDOMWindowInner* aWindow, mozilla::MediaTrack* aInputTrack,
+      nsIGlobalObject* aGlobal, mozilla::MediaTrack* aInputTrack,
       MediaStreamTrackSource* aSource,
       MediaStreamTrackState aState = MediaStreamTrackState::Live,
       bool aMuted = false,
       const MediaTrackConstraints& aConstraints = MediaTrackConstraints());
 
-  already_AddRefed<MediaStreamTrack> Clone(
-      nsPIDOMWindowInner* aWindow) override;
+  already_AddRefed<MediaStreamTrack> Clone(nsIGlobalObject* aGlobal) override;
 
   void Destroy() override;
 
