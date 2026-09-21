@@ -66,4 +66,62 @@ nsresult MediaEngineSource::TakePhoto(MediaEnginePhotoCallback* aCallback) {
 
 MediaEngineSource::~MediaEngineSource() = default;
 
+dom::MediaTrackSettings MediaEngineSourceSettings::ToMediaTrackSettings()
+    const {
+  dom::MediaTrackSettings settings;
+  auto construct = [](auto& aOptional, const auto& aMaybe) {
+    if (aMaybe) {
+      aOptional.Construct(*aMaybe);
+    }
+  };
+  construct(settings.mWidth, mWidth);
+  construct(settings.mHeight, mHeight);
+  construct(settings.mFrameRate, mFrameRate);
+  construct(settings.mFacingMode, mFacingMode);
+  construct(settings.mResizeMode, mResizeMode);
+  construct(settings.mEchoCancellation, mEchoCancellation);
+  construct(settings.mAutoGainControl, mAutoGainControl);
+  construct(settings.mNoiseSuppression, mNoiseSuppression);
+  construct(settings.mChannelCount, mChannelCount);
+  return settings;
+}
+
+dom::MediaTrackCapabilities
+MediaEngineSourceCapabilities::ToMediaTrackCapabilities() const {
+  dom::MediaTrackCapabilities capabilities;
+  auto construct = [](auto& aOptional, const auto& aRange) {
+    auto& range = aOptional.Construct();
+    range.mMin.Construct(aRange.mMin);
+    range.mMax.Construct(aRange.mMax);
+  };
+  if (mWidth) {
+    construct(capabilities.mWidth, *mWidth);
+  }
+  if (mHeight) {
+    construct(capabilities.mHeight, *mHeight);
+  }
+  if (mFrameRate) {
+    construct(capabilities.mFrameRate, *mFrameRate);
+  }
+  if (!mFacingMode.IsEmpty()) {
+    capabilities.mFacingMode.Construct(mFacingMode.Clone());
+  }
+  if (!mResizeMode.IsEmpty()) {
+    capabilities.mResizeMode.Construct(mResizeMode.Clone());
+  }
+  if (!mEchoCancellation.IsEmpty()) {
+    capabilities.mEchoCancellation.Construct(mEchoCancellation.Clone());
+  }
+  if (!mAutoGainControl.IsEmpty()) {
+    capabilities.mAutoGainControl.Construct(mAutoGainControl.Clone());
+  }
+  if (!mNoiseSuppression.IsEmpty()) {
+    capabilities.mNoiseSuppression.Construct(mNoiseSuppression.Clone());
+  }
+  if (mChannelCount) {
+    construct(capabilities.mChannelCount, *mChannelCount);
+  }
+  return capabilities;
+}
+
 }  // namespace mozilla

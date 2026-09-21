@@ -24,7 +24,8 @@ class MediaEngineFake : public MediaEngine {
   void Shutdown() override {}
   RefPtr<MediaEngineSource> CreateSource(const MediaDevice* aDevice) override;
   RefPtr<MediaEngineSource> CreateSourceFrom(
-      const MediaEngineSource* aSource, const MediaDevice* aDevice) override;
+      const MediaEngineSource* aSource, const MediaDevice* aDevice,
+      const MediaEngineSourceInitialParams& aParams) override;
 
   MediaEventSource<void>& DeviceListChangeEvent() override {
     return mDeviceListChangeEvent;
