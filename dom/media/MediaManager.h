@@ -44,6 +44,7 @@ class WebrtcLogSinkHandle;
 namespace mozilla {
 class MediaEngine;
 class MediaEngineSource;
+struct MediaEngineSourceInitialParams;
 class TaskQueue;
 class MediaTrack;
 template <typename T>
@@ -149,12 +150,12 @@ class LocalMediaDevice final : public nsIMediaDevice {
   nsresult Deallocate();
 
   /**
-   * Clones the LocalMediaDevice and sets a cloned source.
+   * Clones the LocalMediaDevice and sets a cloned source, starting out with
+   * the settings and capabilities in aParams. Main thread only.
    */
-  already_AddRefed<LocalMediaDevice> Clone() const;
+  already_AddRefed<LocalMediaDevice> Clone(
+      const MediaEngineSourceInitialParams& aParams) const;
 
-  void GetSettings(dom::MediaTrackSettings& aOutSettings);
-  void GetCapabilities(dom::MediaTrackCapabilities& aOutCapabilities);
   MediaEngineSource* Source();
   const TrackingId& GetTrackingId() const;
   // Returns null if not a physical audio device.
@@ -210,6 +211,9 @@ class MediaManager final : public nsIMediaManagerService,
   // to MainThread from MediaManager thread.
   static MediaManager* Get();
   static MediaManager* GetIfExists();
+  // The MediaManager thread. Main thread or MediaManager thread, while the
+  // MediaManager exists.
+  static AbstractThread* MediaThread();
   static void Dispatch(already_AddRefed<Runnable> task);
 
   /**

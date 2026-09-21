@@ -200,10 +200,16 @@ static bool sHasMainThreadShutdown;
 
 struct DeviceState {
   DeviceState(RefPtr<LocalMediaDevice> aDevice,
-              RefPtr<LocalTrackSource> aTrackSource, bool aOffWhileDisabled)
+              RefPtr<LocalTrackSource> aTrackSource, bool aOffWhileDisabled,
+              const MediaEngineSourceSettings& aInitialSettings,
+              const MediaEngineSourceCapabilities& aInitialCapabilities)
       : mOffWhileDisabled(aOffWhileDisabled),
         mDevice(std::move(aDevice)),
-        mTrackSource(std::move(aTrackSource)) {
+        mTrackSource(std::move(aTrackSource)),
+        mSettings(AbstractThread::MainThread(), aInitialSettings,
+                  "DeviceState::mSettings"),
+        mCapabilities(AbstractThread::MainThread(), aInitialCapabilities,
+                      "DeviceState::mCapabilities") {
     MOZ_ASSERT(mDevice);
     MOZ_ASSERT(mTrackSource);
   }
@@ -260,6 +266,11 @@ struct DeviceState {
   // from this device. Always non-null. Threadsafe access, but see method
   // declarations for individual constraints.
   const RefPtr<LocalTrackSource> mTrackSource;
+
+  // Mirrors of mDevice's source's settings and capabilities, connected while
+  // this state is active. MainThread only.
+  Mirror<MediaEngineSourceSettings> mSettings;
+  Mirror<MediaEngineSourceCapabilities> mCapabilities;
 };
 
 /**
@@ -393,7 +404,9 @@ class DeviceListener : public SupportsWeakPtr {
    */
   void Activate(RefPtr<LocalMediaDevice> aDevice,
                 RefPtr<LocalTrackSource> aTrackSource, bool aStartMuted,
-                bool aIsAllocated);
+                bool aIsAllocated,
+                const MediaEngineSourceSettings& aInitialSettings,
+                const MediaEngineSourceCapabilities& aInitialCapabilities);
 
   /**
    * Posts a task to initialize and start the associated device.
@@ -586,7 +599,9 @@ class GetUserMediaWindowListener {
    */
   void Activate(RefPtr<DeviceListener> aListener,
                 RefPtr<LocalMediaDevice> aDevice,
-                RefPtr<LocalTrackSource> aTrackSource, bool aIsAllocated) {
+                RefPtr<LocalTrackSource> aTrackSource, bool aIsAllocated,
+                const MediaEngineSourceSettings& aInitialSettings,
+                const MediaEngineSourceCapabilities& aInitialCapabilities) {
     MOZ_ASSERT(NS_IsMainThread());
     MOZ_ASSERT(aListener);
     MOZ_ASSERT(!aListener->Activated());
@@ -605,7 +620,7 @@ class GetUserMediaWindowListener {
 
     mInactiveListeners.RemoveElement(aListener);
     aListener->Activate(std::move(aDevice), std::move(aTrackSource), muted,
-                        aIsAllocated);
+                        aIsAllocated, aInitialSettings, aInitialCapabilities);
     mActiveListeners.AppendElement(std::move(aListener));
   }
 
@@ -855,8 +870,10 @@ class LocalTrackSource : public MediaStreamTrackSource {
           false, __func__);
     }
     auto p = mListener->ApplyConstraints(aConstraints, aCallerType);
+    // React on the AbstractThread so that tail dispatch orders the settings
+    // mirror update ahead of us, for sinks reading settings when notified.
     p->Then(
-        GetCurrentSerialEventTarget(), __func__,
+        AbstractThread::MainThread(), __func__,
         [aConstraints, this, self = RefPtr(this)] {
           ConstraintsChanged(aConstraints);
         },
@@ -1167,17 +1184,6 @@ LocalMediaDevice::GetCanRequestOsLevelPrompt(bool* aCanRequestOsLevelPrompt) {
   return NS_OK;
 }
 
-void LocalMediaDevice::GetSettings(MediaTrackSettings& aOutSettings) {
-  MOZ_ASSERT(NS_IsMainThread());
-  Source()->GetSettings(aOutSettings);
-}
-
-void LocalMediaDevice::GetCapabilities(
-    MediaTrackCapabilities& aOutCapabilities) {
-  MOZ_ASSERT(NS_IsMainThread());
-  Source()->GetCapabilities(aOutCapabilities);
-}
-
 MediaEngineSource* LocalMediaDevice::Source() {
   if (!mSource) {
     mSource = mRawDevice->mEngine->CreateSource(mRawDevice);
@@ -1291,11 +1297,12 @@ nsresult LocalMediaDevice::Deallocate() {
   return mSource->Deallocate();
 }
 
-already_AddRefed<LocalMediaDevice> LocalMediaDevice::Clone() const {
+already_AddRefed<LocalMediaDevice> LocalMediaDevice::Clone(
+    const MediaEngineSourceInitialParams& aParams) const {
   MOZ_ASSERT(NS_IsMainThread());
   auto device = MakeRefPtr<LocalMediaDevice>(mRawDevice, mID, mGroupID, mName);
-  device->mSource =
-      mRawDevice->mEngine->CreateSourceFrom(mSource, device->mRawDevice);
+  device->mSource = mRawDevice->mEngine->CreateSourceFrom(
+      mSource, device->mRawDevice, aParams);
 #ifdef MOZ_THREAD_SAFETY_OWNERSHIP_CHECKS_SUPPORTED
   // The source is normally created on the MediaManager thread. But for cloning,
   // it ends up being created on main thread. Make sure its owning event target
@@ -1638,6 +1645,19 @@ class GetUserMediaStreamTask final : public GetUserMediaTask {
         mVideoTrackingId.emplace(mVideoDevice->GetTrackingId());
       }
     }
+    // Snapshot the allocated sources' state while on their thread, so the
+    // tracks report it as soon as getUserMedia() resolves rather than once
+    // their mirrors have been updated.
+    if (!errorMsg && mAudioDevice) {
+      MediaEngineSource* source = mAudioDevice->Source();
+      mAudioSettings = source->Settings();
+      mAudioCapabilities = source->Capabilities();
+    }
+    if (!errorMsg && mVideoDevice) {
+      MediaEngineSource* source = mVideoDevice->Source();
+      mVideoSettings = source->Settings();
+      mVideoCapabilities = source->Capabilities();
+    }
     if (errorMsg) {
       LOG("{} {}", errorMsg, static_cast<uint32_t>(rv));
       if (badConstraint) {
@@ -1740,6 +1760,12 @@ class GetUserMediaStreamTask final : public GetUserMediaTask {
   // Tracking id unique for a video frame source. Set when the corresponding
   // device has been allocated.
   Maybe<TrackingId> mVideoTrackingId;
+  // The allocated sources' settings and capabilities. Set on the MediaManager
+  // thread when allocating, read on the main thread after.
+  MediaEngineSourceSettings mAudioSettings;
+  MediaEngineSourceCapabilities mAudioCapabilities;
+  MediaEngineSourceSettings mVideoSettings;
+  MediaEngineSourceCapabilities mVideoCapabilities;
   // Copy of MediaManager::mPrefs
   const MediaEnginePrefs mPrefs;
   // media.getusermedia.window.focus_source.enabled
@@ -1868,14 +1894,14 @@ void GetUserMediaStreamTask::PrepareDOMStream() {
   // get a callback that the MediaStream has started consuming. The listener
   // is freed when the page is invalidated (on navigation or close).
   if (mAudioDeviceListener) {
-    mWindowListener->Activate(mAudioDeviceListener, mAudioDevice,
-                              std::move(audioTrackSource),
-                              /*aIsAllocated=*/true);
+    mWindowListener->Activate(
+        mAudioDeviceListener, mAudioDevice, std::move(audioTrackSource),
+        /*aIsAllocated=*/true, mAudioSettings, mAudioCapabilities);
   }
   if (mVideoDeviceListener) {
-    mWindowListener->Activate(mVideoDeviceListener, mVideoDevice,
-                              std::move(videoTrackSource),
-                              /*aIsAllocated=*/true);
+    mWindowListener->Activate(
+        mVideoDeviceListener, mVideoDevice, std::move(videoTrackSource),
+        /*aIsAllocated=*/true, mVideoSettings, mVideoCapabilities);
   }
 
   // Dispatch to the media thread to ask it to start the sources, because that
@@ -1902,9 +1928,12 @@ void GetUserMediaStreamTask::PrepareDOMStream() {
               return DeviceListener::DeviceListenerPromise::CreateAndResolve(
                   true, __func__);
             }
+            // The first frame's settings reach the main thread through
+            // state mirroring, which tail dispatch orders ahead of this
+            // reaction.
             RefPtr<DeviceListener::DeviceListenerPromise> resolvePromise =
                 firstFramePromise->Then(
-                    GetMainThreadSerialEventTarget(), __func__,
+                    AbstractThread::MainThread(), __func__,
                     [] {
                       return DeviceListener::DeviceListenerPromise::
                           CreateAndResolve(true, __func__);
@@ -2584,10 +2613,11 @@ MediaManager* MediaManager::Get() {
 #ifdef MOZ_WEBRTC
         CreateWebrtcTaskQueueWrapper(
             GetMediaThreadPool(MediaThreadType::SUPERVISOR), "MediaManager"_ns,
-            TailDispatchPolicy::NoTailDispatch);
+            TailDispatchPolicy::ConsistentOrdering);
 #else
         TaskQueue::Create(GetMediaThreadPool(MediaThreadType::SUPERVISOR),
-                          "MediaManager", TailDispatchPolicy::NoTailDispatch);
+                          "MediaManager",
+                          TailDispatchPolicy::ConsistentOrdering);
 #endif
     LOG("New Media thread for gum");
 
@@ -2647,6 +2677,13 @@ MediaManager* MediaManager::Get() {
 MediaManager* MediaManager::GetIfExists() {
   MOZ_ASSERT(NS_IsMainThread() || IsInMediaThread());
   return sSingleton;
+}
+
+/* static */
+AbstractThread* MediaManager::MediaThread() {
+  MediaManager* mgr = GetIfExists();
+  MOZ_RELEASE_ASSERT(mgr, "Must exist while MediaEngineSources are created");
+  return mgr->mMediaThread;
 }
 
 /* static */
@@ -4378,9 +4415,11 @@ void DeviceListener::Register(GetUserMediaWindowListener* aListener) {
   mWindowListener = aListener;
 }
 
-void DeviceListener::Activate(RefPtr<LocalMediaDevice> aDevice,
-                              RefPtr<LocalTrackSource> aTrackSource,
-                              bool aStartMuted, bool aIsAllocated) {
+void DeviceListener::Activate(
+    RefPtr<LocalMediaDevice> aDevice, RefPtr<LocalTrackSource> aTrackSource,
+    bool aStartMuted, bool aIsAllocated,
+    const MediaEngineSourceSettings& aInitialSettings,
+    const MediaEngineSourceCapabilities& aInitialCapabilities) {
   MOZ_ASSERT(NS_IsMainThread(), "Only call on main thread");
 
   LOG("DeviceListener {} activating {} device {}", fmt::ptr(this),
@@ -4404,9 +4443,13 @@ void DeviceListener::Activate(RefPtr<LocalMediaDevice> aDevice,
   }
 
   mDeviceState = MakeUnique<DeviceState>(
-      std::move(aDevice), std::move(aTrackSource), offWhileDisabled);
+      std::move(aDevice), std::move(aTrackSource), offWhileDisabled,
+      aInitialSettings, aInitialCapabilities);
   mDeviceState->mDeviceMuted = aStartMuted;
   mDeviceState->mAllocated = aIsAllocated;
+  MediaEngineSource* source = mDeviceState->mDevice->Source();
+  mDeviceState->mSettings.Connect(source->CanonicalSettings());
+  mDeviceState->mCapabilities.Connect(source->CanonicalCapabilities());
   if (aStartMuted) {
     mDeviceState->mTrackSource->Mute();
   }
@@ -4545,7 +4588,9 @@ already_AddRefed<DeviceListener> DeviceListener::Clone() const {
     return nullptr;
   }
 
-  RefPtr device = thisDevice->Clone();
+  RefPtr device = thisDevice->Clone(
+      {.mSettings = Some(mDeviceState->mSettings.Ref()),
+       .mCapabilities = Some(mDeviceState->mCapabilities.Ref())});
   auto listener = MakeRefPtr<DeviceListener>();
   auto trackSource = MakeRefPtr<LocalTrackSource>(
       thisTrackSource->GetPrincipal(), thisTrackSource->mLabel, listener,
@@ -4556,7 +4601,9 @@ already_AddRefed<DeviceListener> DeviceListener::Clone() const {
   mWindowListener->Register(listener);
   LOG("DeviceListener {} activating clone", fmt::ptr(this));
   mWindowListener->Activate(listener, device, trackSource,
-                            /*aIsAllocated=*/false);
+                            /*aIsAllocated=*/false,
+                            mDeviceState->mSettings.Ref(),
+                            mDeviceState->mCapabilities.Ref());
 
   listener->mDeviceState->mDeviceEnabled = mDeviceState->mDeviceEnabled;
   listener->mDeviceState->mDeviceMuted = mDeviceState->mDeviceMuted;
@@ -4634,6 +4681,8 @@ void DeviceListener::Stop() {
 
   if (mDeviceState) {
     mDeviceState->mDisableTimer->Cancel();
+    mDeviceState->mSettings.DisconnectIfConnected();
+    mDeviceState->mCapabilities.DisconnectIfConnected();
 
     if (mDeviceState->mStopped) {
       // device already stopped.
@@ -4663,9 +4712,9 @@ void DeviceListener::Stop() {
 
 void DeviceListener::GetSettings(MediaTrackSettings& aOutSettings) const {
   MOZ_ASSERT(NS_IsMainThread(), "Only call on main thread");
-  LocalMediaDevice* device = GetDevice();
-  device->GetSettings(aOutSettings);
+  aOutSettings = mDeviceState->mSettings.Ref().ToMediaTrackSettings();
 
+  LocalMediaDevice* device = GetDevice();
   MediaSourceEnum mediaSource = device->GetMediaSource();
   if (mediaSource == MediaSourceEnum::Camera ||
       mediaSource == MediaSourceEnum::Microphone) {
@@ -4677,9 +4726,10 @@ void DeviceListener::GetSettings(MediaTrackSettings& aOutSettings) const {
 void DeviceListener::GetCapabilities(
     MediaTrackCapabilities& aOutCapabilities) const {
   MOZ_ASSERT(NS_IsMainThread(), "Only call on main thread");
-  LocalMediaDevice* device = GetDevice();
-  device->GetCapabilities(aOutCapabilities);
+  aOutCapabilities =
+      mDeviceState->mCapabilities.Ref().ToMediaTrackCapabilities();
 
+  LocalMediaDevice* device = GetDevice();
   MediaSourceEnum mediaSource = device->GetMediaSource();
   if (mediaSource == MediaSourceEnum::Camera ||
       mediaSource == MediaSourceEnum::Microphone) {

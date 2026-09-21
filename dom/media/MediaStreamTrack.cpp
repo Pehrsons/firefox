@@ -293,13 +293,17 @@ already_AddRefed<Promise> MediaStreamTrack::ApplyConstraints(
   // After GetSource().ApplyConstraints succeeds (after it's been to
   // media-thread and back), and no sooner, do we set mConstraints to the newly
   // applied values.
+  //
+  // The source's settings reach this thread through state mirroring, which
+  // tail dispatch orders ahead of this reaction, so that getSettings() is up
+  // to date when the promise resolves.
 
   // Keep a reference to this, to make sure it's still here when we get back.
   RefPtr<MediaStreamTrack> self(this);
   GetSource()
       .ApplyConstraints(aConstraints, aCallerType)
       ->Then(
-          GetCurrentSerialEventTarget(), __func__,
+          AbstractThread::MainThread(), __func__,
           [this, self, promise, aConstraints](bool aDummy) {
             nsGlobalWindowInner* window = GetOwnerWindow();
             if (!window || !window->IsCurrentInnerWindow()) {

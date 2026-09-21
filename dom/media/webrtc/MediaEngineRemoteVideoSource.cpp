@@ -167,16 +167,21 @@ static gfx::IntSize CalculateDesiredSize(DesiredSizeInput aInput) {
 }
 
 MediaEngineRemoteVideoSource::MediaEngineRemoteVideoSource(
-    const MediaDevice* aMediaDevice)
-    : mCapEngine(CaptureEngine(aMediaDevice->mMediaSource)),
+    const MediaDevice* aMediaDevice,
+    const MediaEngineSourceInitialParams& aParams)
+    : mOwnerThread(MediaManager::MediaThread()),
+      mSettings(mOwnerThread,
+                aParams.mSettings.valueOr(MediaEngineSourceSettings()),
+                "MediaEngineRemoteVideoSource::mSettings"),
+      mCapabilities(
+          mOwnerThread,
+          aParams.mCapabilities.valueOr(MediaEngineSourceCapabilities()),
+          "MediaEngineRemoteVideoSource::mCapabilities"),
+      mCapEngine(CaptureEngine(aMediaDevice->mMediaSource)),
       mTrackingId(CaptureEngineToTrackingSourceStr(mCapEngine), 0),
       mMutex("MediaEngineRemoteVideoSource::mMutex"),
       mRescalingBufferPool(/* zero_initialize */ false,
                            /* max_number_of_buffers */ 1),
-      mSettingsUpdatedByFrame(MakeAndAddRef<media::Refcountable<AtomicBool>>()),
-      mSettings(MakeAndAddRef<media::Refcountable<MediaTrackSettings>>()),
-      mTrackCapabilities(
-          MakeAndAddRef<media::Refcountable<MediaTrackCapabilities>>()),
       mFirstFramePromise(mFirstFramePromiseHolder.Ensure(__func__)),
       mCalculation(kFitness),
       mPrefs(MakeUnique<MediaEnginePrefs>()),
@@ -198,11 +203,9 @@ MediaEngineRemoteVideoSource::MediaEngineRemoteVideoSource(
 already_AddRefed<MediaEngineRemoteVideoSource>
 MediaEngineRemoteVideoSource::CreateFrom(
     const MediaEngineRemoteVideoSource* aSource,
-    const MediaDevice* aMediaDevice) {
-  auto src = MakeRefPtr<MediaEngineRemoteVideoSource>(aMediaDevice);
-  *static_cast<MediaTrackSettings*>(src->mSettings) = *aSource->mSettings;
-  *static_cast<MediaTrackCapabilities*>(src->mTrackCapabilities) =
-      *aSource->mTrackCapabilities;
+    const MediaDevice* aMediaDevice,
+    const MediaEngineSourceInitialParams& aParams) {
+  auto src = MakeRefPtr<MediaEngineRemoteVideoSource>(aMediaDevice, aParams);
   {
     MutexAutoLock lock(aSource->mMutex);
     src->mIncomingImageSize = aSource->mIncomingImageSize;
@@ -305,34 +308,31 @@ nsresult MediaEngineRemoteVideoSource::Allocate(
 
   auto dstSize = CalculateDesiredSize(input);
 
-  NS_DispatchToMainThread(NS_NewRunnableFunction(
-      "MediaEngineRemoteVideoSource::Allocate::MainUpdate",
-      [settings = mSettings, caps = mTrackCapabilities, dstSize, framerate,
-       facingMode = mFacingMode, resizeMode]() {
-        *settings = dom::MediaTrackSettings();
+  MediaEngineSourceSettings settings;
+  settings.mWidth = Some(dstSize.width);
+  settings.mHeight = Some(dstSize.height);
+  settings.mFrameRate = Some(framerate);
+  settings.mFacingMode = mFacingMode;
 
-        settings->mWidth.Construct(dstSize.width);
-        settings->mHeight.Construct(dstSize.height);
-        settings->mFrameRate.Construct(framerate);
+  MediaEngineSourceCapabilities caps(mCapabilities.Ref());
+  caps.mFacingMode.Clear();
+  if (mFacingMode) {
+    caps.mFacingMode.AppendElement(*mFacingMode);
+  }
 
-        caps->mFacingMode.Reset();
-        if (facingMode) {
-          settings->mFacingMode.Construct(*facingMode);
-          caps->mFacingMode.Construct(nsTArray{*facingMode});
-        }
-
-        caps->mResizeMode.Reset();
-        if (resizeMode) {
-          nsString noneString, cropString;
-          noneString.AssignASCII(dom::GetEnumString(VideoResizeModeEnum::None));
-          cropString.AssignASCII(
-              dom::GetEnumString(VideoResizeModeEnum::Crop_and_scale));
-          settings->mResizeMode.Construct(
-              *resizeMode == VideoResizeModeEnum::Crop_and_scale ? cropString
-                                                                 : noneString);
-          caps->mResizeMode.Construct(nsTArray{noneString, cropString});
-        }
-      }));
+  caps.mResizeMode.Clear();
+  if (resizeMode) {
+    nsString noneString, cropString;
+    noneString.AssignASCII(dom::GetEnumString(VideoResizeModeEnum::None));
+    cropString.AssignASCII(
+        dom::GetEnumString(VideoResizeModeEnum::Crop_and_scale));
+    settings.mResizeMode =
+        Some(*resizeMode == VideoResizeModeEnum::Crop_and_scale ? cropString
+                                                                : noneString);
+    caps.mResizeMode = {noneString, cropString};
+  }
+  mSettings = settings;
+  mCapabilities = caps;
 
   LOG("Video device {} allocated", mCaptureId);
   return NS_OK;
@@ -429,7 +429,7 @@ nsresult MediaEngineRemoteVideoSource::Start() {
   constraints.mResizeMode.mIdeal.insert(resizeModeString);
 
   nsresult rv = StartCapture(constraints, resizeMode);
-  mSettingsUpdatedByFrame->mValue = false;
+  mSettingsUpdatedByFrame = false;
   return rv;
 }
 
@@ -567,22 +567,17 @@ nsresult MediaEngineRemoteVideoSource::Reconfigure(
     }
   }
 
-  mSettingsUpdatedByFrame->mValue = false;
+  mSettingsUpdatedByFrame = false;
   gfx::IntSize dstSize = CalculateDesiredSize(input);
-  NS_DispatchToMainThread(NS_NewRunnableFunction(
-      __func__, [settings = mSettings, updated = mSettingsUpdatedByFrame,
-                 dstSize, framerate, resizeMode]() mutable {
-        if (!updated->mValue) {
-          settings->mWidth.Value() = dstSize.width;
-          settings->mHeight.Value() = dstSize.height;
-        }
-        settings->mFrameRate.Value() = framerate;
-        if (resizeMode) {
-          settings->mResizeMode.Reset();
-          settings->mResizeMode.Construct(
-              NS_ConvertASCIItoUTF16(dom::GetEnumString(*resizeMode)));
-        }
-      }));
+  MediaEngineSourceSettings settings = mSettings.Ref();
+  settings.mWidth = Some(dstSize.width);
+  settings.mHeight = Some(dstSize.height);
+  settings.mFrameRate = Some(framerate);
+  if (resizeMode) {
+    settings.mResizeMode =
+        Some(nsString(NS_ConvertASCIItoUTF16(dom::GetEnumString(*resizeMode))));
+  }
+  mSettings = settings;
 
   return NS_OK;
 }
@@ -590,36 +585,36 @@ nsresult MediaEngineRemoteVideoSource::Reconfigure(
 size_t MediaEngineRemoteVideoSource::NumCapabilities() const {
   AssertIsOnOwningThread();
 
-  if (!mCapabilities.IsEmpty()) {
-    return mCapabilities.Length();
+  if (!mCaptureCapabilities.IsEmpty()) {
+    return mCaptureCapabilities.Length();
   }
 
   int num = camera::GetChildAndCall(&camera::CamerasChild::NumberOfCapabilities,
                                     mCapEngine, mDeviceUUID.get());
   if (num > 0) {
-    mCapabilities.SetLength(num);
+    mCaptureCapabilities.SetLength(num);
   } else {
     // The default for devices that don't return discrete capabilities: treat
     // them as supporting all capabilities orthogonally. E.g. screensharing.
     // CaptureCapability defaults key values to 0, which means accept any value.
-    mCapabilities.AppendElement(MakeUnique<webrtc::CaptureCapability>());
+    mCaptureCapabilities.AppendElement(MakeUnique<webrtc::CaptureCapability>());
     mCapabilitiesAreHardcoded = true;
   }
 
-  return mCapabilities.Length();
+  return mCaptureCapabilities.Length();
 }
 
 webrtc::CaptureCapability& MediaEngineRemoteVideoSource::GetCapability(
     size_t aIndex) const {
   AssertIsOnOwningThread();
-  MOZ_RELEASE_ASSERT(aIndex < mCapabilities.Length());
-  if (!mCapabilities[aIndex]) {
-    mCapabilities[aIndex] = MakeUnique<webrtc::CaptureCapability>();
+  MOZ_RELEASE_ASSERT(aIndex < mCaptureCapabilities.Length());
+  if (!mCaptureCapabilities[aIndex]) {
+    mCaptureCapabilities[aIndex] = MakeUnique<webrtc::CaptureCapability>();
     camera::GetChildAndCall(&camera::CamerasChild::GetCaptureCapability,
                             mCapEngine, mDeviceUUID.get(), aIndex,
-                            mCapabilities[aIndex].get());
+                            mCaptureCapabilities[aIndex].get());
   }
-  return *mCapabilities[aIndex];
+  return *mCaptureCapabilities[aIndex];
 }
 
 const TrackingId& MediaEngineRemoteVideoSource::GetTrackingId() const {
@@ -747,13 +742,16 @@ int MediaEngineRemoteVideoSource::DeliverFrame(
 
   if (mLastReportedSize != Some(dstSize)) {
     mLastReportedSize = Some(dstSize);
-    NS_DispatchToMainThread(NS_NewRunnableFunction(
+    mOwnerThread->Dispatch(NS_NewRunnableFunction(
         "MediaEngineRemoteVideoSource::FrameSizeChange",
-        [settings = mSettings, updated = mSettingsUpdatedByFrame,
-         holder = std::move(mFirstFramePromiseHolder), dstSize]() mutable {
-          settings->mWidth.Value() = dstSize.width;
-          settings->mHeight.Value() = dstSize.height;
-          updated->mValue = true;
+        [self = RefPtr(this), holder = std::move(mFirstFramePromiseHolder),
+         dstSize]() mutable {
+          self->AssertIsOnOwningThread();
+          MediaEngineSourceSettings settings = self->mSettings.Ref();
+          settings.mWidth = Some(dstSize.width);
+          settings.mHeight = Some(dstSize.height);
+          self->mSettings = settings;
+          self->mSettingsUpdatedByFrame = true;
           // Since mImageSize was initialized to (0,0), we end up here on the
           // arrival of the first frame. We resolve the promise representing
           // arrival of first frame, after correct settings values have been
@@ -1017,28 +1015,14 @@ bool MediaEngineRemoteVideoSource::ChooseCapability(
     candidateSet.AppendElement(CapabilityCandidate(capability));
   }
 
-  NS_DispatchToMainThread(NS_NewRunnableFunction(
-      "MediaEngineRemoteVideoSource::ChooseCapability",
-      [capabilities = mTrackCapabilities, maxHeight, maxWidth,
-       maxFps]() mutable {
-        dom::ULongRange widthRange;
-        widthRange.mMax.Construct(maxWidth);
-        widthRange.mMin.Construct(2);
-        capabilities->mWidth.Reset();
-        capabilities->mWidth.Construct(widthRange);
-
-        dom::ULongRange heightRange;
-        heightRange.mMax.Construct(maxHeight);
-        heightRange.mMin.Construct(2);
-        capabilities->mHeight.Reset();
-        capabilities->mHeight.Construct(heightRange);
-
-        dom::DoubleRange frameRateRange;
-        frameRateRange.mMax.Construct(maxFps);
-        frameRateRange.mMin.Construct(0);
-        capabilities->mFrameRate.Reset();
-        capabilities->mFrameRate.Construct(frameRateRange);
-      }));
+  MediaEngineSourceCapabilities capabilities(mCapabilities.Ref());
+  capabilities.mWidth = Some(MediaEngineSourceCapabilities::ULongRange{
+      2, AssertedCast<uint32_t>(maxWidth)});
+  capabilities.mHeight = Some(MediaEngineSourceCapabilities::ULongRange{
+      2, AssertedCast<uint32_t>(maxHeight)});
+  capabilities.mFrameRate = Some(MediaEngineSourceCapabilities::DoubleRange{
+      0, static_cast<double>(maxFps)});
+  mCapabilities = capabilities;
 
   if (mCapabilitiesAreHardcoded && mCapEngine == camera::CameraEngine) {
     // We have a hardcoded capability, which means this camera didn't report
@@ -1046,7 +1030,7 @@ bool MediaEngineRemoteVideoSource::ChooseCapability(
     // add a couple of default candidates based on prefs and constraints.
     // The chosen candidate will be propagated to StartCapture() which will fail
     // for an invalid candidate.
-    MOZ_DIAGNOSTIC_ASSERT(mCapabilities.Length() == 1);
+    MOZ_DIAGNOSTIC_ASSERT(mCaptureCapabilities.Length() == 1);
     MOZ_DIAGNOSTIC_ASSERT(candidateSet.Length() == 1);
     candidateSet.Clear();
 
@@ -1155,16 +1139,6 @@ bool MediaEngineRemoteVideoSource::ChooseCapability(
 
   LogCapability("Chosen capability", aCapability, sameDistance);
   return true;
-}
-
-void MediaEngineRemoteVideoSource::GetSettings(
-    MediaTrackSettings& aOutSettings) const {
-  aOutSettings = *mSettings;
-}
-
-void MediaEngineRemoteVideoSource::GetCapabilities(
-    dom::MediaTrackCapabilities& aOutCapabilities) const {
-  aOutCapabilities = *mTrackCapabilities;
 }
 
 }  // namespace mozilla

@@ -9,6 +9,7 @@
 #include "ImageContainer.h"
 #include "MediaEnginePrefs.h"
 #include "MediaEngineSource.h"
+#include "MediaManager.h"
 #include "MediaTrackConstraints.h"
 #include "MediaTrackGraph.h"
 #include "MediaTrackListener.h"
@@ -84,12 +85,24 @@ static nsString FakeVideoName() {
  */
 class MediaEngineFakeVideoSource : public MediaEngineSource {
  public:
-  MediaEngineFakeVideoSource();
-
-  static already_AddRefed<MediaEngineFakeVideoSource> CreateFrom(
-      const MediaEngineFakeVideoSource* aSource);
+  explicit MediaEngineFakeVideoSource(
+      const MediaEngineSourceInitialParams& aParams);
 
   static nsString GetGroupId();
+
+  AbstractCanonical<MediaEngineSourceSettings>* CanonicalSettings() override {
+    return &mSettings;
+  }
+  const MediaEngineSourceSettings& Settings() const override {
+    return mSettings.Ref();
+  }
+  AbstractCanonical<MediaEngineSourceCapabilities>* CanonicalCapabilities()
+      override {
+    return &mCapabilities;
+  }
+  const MediaEngineSourceCapabilities& Capabilities() const override {
+    return mCapabilities.Ref();
+  }
 
   nsresult Allocate(const dom::MediaTrackConstraints& aConstraints,
                     const MediaEnginePrefs& aPrefs, uint64_t aWindowID,
@@ -106,10 +119,6 @@ class MediaEngineFakeVideoSource : public MediaEngineSource {
   uint32_t GetBestFitnessDistance(
       const nsTArray<const NormalizedConstraintSet*>& aConstraintSets,
       const MediaEnginePrefs& aPrefs) const override;
-  void GetSettings(dom::MediaTrackSettings& aOutSettings) const override;
-
-  void GetCapabilities(
-      dom::MediaTrackCapabilities& aOutCapabilities) const override;
 
   bool IsFake() const override { return true; }
 
@@ -117,6 +126,10 @@ class MediaEngineFakeVideoSource : public MediaEngineSource {
   ~MediaEngineFakeVideoSource() {
     mGeneratedImageListener.DisconnectIfExists();
   }
+
+  static MediaEngineSourceSettings DefaultSettings();
+  static MediaEngineSourceCapabilities MakeCapabilities(
+      bool aResizeModeEnabled);
 
   void OnGeneratedImage(RefPtr<layers::Image> aImage, TimeStamp aTime,
                         VideoRotation aRotation);
@@ -132,27 +145,32 @@ class MediaEngineFakeVideoSource : public MediaEngineSource {
 
   MediaEnginePrefs mOpts;
 
-  // Main thread only.
-  const RefPtr<media::Refcountable<dom::MediaTrackSettings>> mSettings;
+  // Owning thread only.
+  Canonical<MediaEngineSourceSettings> mSettings;
+  Canonical<MediaEngineSourceCapabilities> mCapabilities;
 };
 
-MediaEngineFakeVideoSource::MediaEngineFakeVideoSource()
-    : mSettings(MakeAndAddRef<media::Refcountable<MediaTrackSettings>>()) {
-  mSettings->mWidth.Construct(int32_t(VIDEO_WIDTH_DEFAULT));
-  mSettings->mHeight.Construct(int32_t(VIDEO_HEIGHT_DEFAULT));
-  mSettings->mFrameRate.Construct(double(MediaEnginePrefs::DEFAULT_VIDEO_FPS));
-  mSettings->mFacingMode.Construct(NS_ConvertASCIItoUTF16(
-      dom::GetEnumString(VideoFacingModeEnum::Environment)));
-  mSettings->mResizeMode.Construct(NS_ConvertASCIItoUTF16(
-      dom::GetEnumString(dom::VideoResizeModeEnum::None)));
-}
+MediaEngineFakeVideoSource::MediaEngineFakeVideoSource(
+    const MediaEngineSourceInitialParams& aParams)
+    : mSettings(MediaManager::MediaThread(),
+                aParams.mSettings.valueOr(DefaultSettings()),
+                "MediaEngineFakeVideoSource::mSettings"),
+      mCapabilities(MediaManager::MediaThread(),
+                    aParams.mCapabilities.valueOr(MakeCapabilities(
+                        MediaEnginePrefs().mResizeModeEnabled)),
+                    "MediaEngineFakeVideoSource::mCapabilities") {}
 
-/*static*/ already_AddRefed<MediaEngineFakeVideoSource>
-MediaEngineFakeVideoSource::CreateFrom(
-    const MediaEngineFakeVideoSource* aSource) {
-  auto src = MakeRefPtr<MediaEngineFakeVideoSource>();
-  *static_cast<MediaTrackSettings*>(src->mSettings) = *aSource->mSettings;
-  return src.forget();
+/* static */
+MediaEngineSourceSettings MediaEngineFakeVideoSource::DefaultSettings() {
+  MediaEngineSourceSettings settings;
+  settings.mWidth = Some(int32_t(VIDEO_WIDTH_DEFAULT));
+  settings.mHeight = Some(int32_t(VIDEO_HEIGHT_DEFAULT));
+  settings.mFrameRate = Some(double(MediaEnginePrefs::DEFAULT_VIDEO_FPS));
+  settings.mFacingMode = Some(nsString(NS_ConvertASCIItoUTF16(
+      dom::GetEnumString(VideoFacingModeEnum::Environment))));
+  settings.mResizeMode = Some(nsString(NS_ConvertASCIItoUTF16(
+      dom::GetEnumString(dom::VideoResizeModeEnum::None))));
+  return settings;
 }
 
 nsString MediaEngineFakeVideoSource::GetGroupId() {
@@ -193,44 +211,25 @@ uint32_t MediaEngineFakeVideoSource::GetBestFitnessDistance(
   return SaturatingCast<uint32_t>(distance);
 }
 
-void MediaEngineFakeVideoSource::GetSettings(
-    MediaTrackSettings& aOutSettings) const {
-  MOZ_ASSERT(NS_IsMainThread());
-  aOutSettings = *mSettings;
-}
-
-void MediaEngineFakeVideoSource::GetCapabilities(
-    MediaTrackCapabilities& aOutCapabilities) const {
-  MOZ_ASSERT(NS_IsMainThread());
-
-  NS_ConvertASCIItoUTF16 facingString(
-      GetEnumString(VideoFacingModeEnum::Environment));
-  nsTArray<nsString> facing;
-  facing.AppendElement(facingString);
-  aOutCapabilities.mFacingMode.Construct(std::move(facing));
-
-  if (mOpts.mResizeModeEnabled) {
-    nsTArray<nsString> resizeModes{
-        NS_ConvertASCIItoUTF16(GetEnumString(dom::VideoResizeModeEnum::None)),
-        NS_ConvertASCIItoUTF16(
-            GetEnumString(dom::VideoResizeModeEnum::Crop_and_scale))};
-    aOutCapabilities.mResizeMode.Construct(std::move(resizeModes));
+/* static */
+MediaEngineSourceCapabilities MediaEngineFakeVideoSource::MakeCapabilities(
+    bool aResizeModeEnabled) {
+  MediaEngineSourceCapabilities capabilities;
+  capabilities.mFacingMode.AppendElement(
+      NS_ConvertASCIItoUTF16(GetEnumString(VideoFacingModeEnum::Environment)));
+  if (aResizeModeEnabled) {
+    capabilities.mResizeMode.AppendElement(
+        NS_ConvertASCIItoUTF16(GetEnumString(dom::VideoResizeModeEnum::None)));
+    capabilities.mResizeMode.AppendElement(NS_ConvertASCIItoUTF16(
+        GetEnumString(dom::VideoResizeModeEnum::Crop_and_scale)));
   }
-
-  dom::ULongRange widthRange;
-  widthRange.mMax.Construct(VIDEO_WIDTH_MAX);
-  widthRange.mMin.Construct(1);
-  aOutCapabilities.mWidth.Construct(widthRange);
-
-  dom::ULongRange heightRange;
-  heightRange.mMax.Construct(VIDEO_HEIGHT_MAX);
-  heightRange.mMin.Construct(1);
-  aOutCapabilities.mHeight.Construct(heightRange);
-
-  dom::DoubleRange frameRateRange;
-  frameRateRange.mMax.Construct(double(MediaEnginePrefs::DEFAULT_VIDEO_FPS));
-  frameRateRange.mMin.Construct(0);
-  aOutCapabilities.mFrameRate.Construct(frameRateRange);
+  capabilities.mWidth =
+      Some(MediaEngineSourceCapabilities::ULongRange{1, VIDEO_WIDTH_MAX});
+  capabilities.mHeight =
+      Some(MediaEngineSourceCapabilities::ULongRange{1, VIDEO_HEIGHT_MAX});
+  capabilities.mFrameRate = Some(MediaEngineSourceCapabilities::DoubleRange{
+      0, double(MediaEnginePrefs::DEFAULT_VIDEO_FPS)});
+  return capabilities;
 }
 
 nsresult MediaEngineFakeVideoSource::Allocate(
@@ -268,17 +267,14 @@ nsresult MediaEngineFakeVideoSource::Allocate(
   mGeneratedImageListener = mCapturer->GeneratedImageEvent().Connect(
       target, this, &MediaEngineFakeVideoSource::OnGeneratedImage);
 
-  NS_DispatchToMainThread(NS_NewRunnableFunction(
-      __func__,
-      [settings = mSettings, frameRate = mOpts.mFPS, width = mOpts.mWidth,
-       height = mOpts.mHeight, resizeModeString]() {
-        settings->mFrameRate.Value() = frameRate;
-        settings->mWidth.Value() = width;
-        settings->mHeight.Value() = height;
-        settings->mResizeMode.Reset();
-        resizeModeString.apply(
-            [&](const auto& aStr) { settings->mResizeMode.Construct(aStr); });
-      }));
+  MediaEngineSourceSettings settings = mSettings.Ref();
+  settings.mFrameRate = Some(double(mOpts.mFPS));
+  settings.mWidth = Some(mOpts.mWidth);
+  settings.mHeight = Some(mOpts.mHeight);
+  settings.mResizeMode =
+      resizeModeString.map([](const auto& aStr) { return nsString(aStr); });
+  mSettings = settings;
+  mCapabilities = MakeCapabilities(mOpts.mResizeModeEnabled);
 
   mState = kAllocated;
   return NS_OK;
@@ -395,7 +391,7 @@ class AudioSourcePullListener : public MediaTrackListener {
  */
 class MediaEngineFakeAudioSource : public MediaEngineSource {
  public:
-  MediaEngineFakeAudioSource() = default;
+  MediaEngineFakeAudioSource();
 
   static nsString GetUUID();
   static nsString GetGroupId();
@@ -414,13 +410,11 @@ class MediaEngineFakeAudioSource : public MediaEngineSource {
 
   bool IsFake() const override { return true; }
 
-  void GetSettings(dom::MediaTrackSettings& aOutSettings) const override;
-
-  void GetCapabilities(
-      dom::MediaTrackCapabilities& aOutCapabilities) const override;
-
  protected:
   ~MediaEngineFakeAudioSource() = default;
+
+  static MediaEngineSourceSettings InitialSettings();
+  static MediaEngineSourceCapabilities MakeCapabilities();
 
   // Current state of this source.
   MediaEngineSourceState mState = kReleased;
@@ -428,6 +422,25 @@ class MediaEngineFakeAudioSource : public MediaEngineSource {
   PrincipalHandle mPrincipalHandle = PRINCIPAL_HANDLE_NONE;
   uint32_t mFrequency = 1000;
   RefPtr<AudioSourcePullListener> mPullListener;
+
+  // Owning thread only.
+  Canonical<MediaEngineSourceSettings> mSettings;
+  Canonical<MediaEngineSourceCapabilities> mCapabilities;
+
+ public:
+  AbstractCanonical<MediaEngineSourceSettings>* CanonicalSettings() override {
+    return &mSettings;
+  }
+  const MediaEngineSourceSettings& Settings() const override {
+    return mSettings.Ref();
+  }
+  AbstractCanonical<MediaEngineSourceCapabilities>* CanonicalCapabilities()
+      override {
+    return &mCapabilities;
+  }
+  const MediaEngineSourceCapabilities& Capabilities() const override {
+    return mCapabilities.Ref();
+  }
 };
 
 nsString MediaEngineFakeAudioSource::GetUUID() {
@@ -438,34 +451,31 @@ nsString MediaEngineFakeAudioSource::GetGroupId() {
   return u"Fake Audio Group"_ns;
 }
 
-void MediaEngineFakeAudioSource::GetSettings(
-    MediaTrackSettings& aOutSettings) const {
-  MOZ_ASSERT(NS_IsMainThread());
-  aOutSettings.mAutoGainControl.Construct(false);
-  aOutSettings.mEchoCancellation.Construct(false);
-  aOutSettings.mNoiseSuppression.Construct(false);
-  aOutSettings.mChannelCount.Construct(1);
+MediaEngineFakeAudioSource::MediaEngineFakeAudioSource()
+    : mSettings(MediaManager::MediaThread(), InitialSettings(),
+                "MediaEngineFakeAudioSource::mSettings"),
+      mCapabilities(MediaManager::MediaThread(), MakeCapabilities(),
+                    "MediaEngineFakeAudioSource::mCapabilities") {}
+
+/* static */
+MediaEngineSourceSettings MediaEngineFakeAudioSource::InitialSettings() {
+  MediaEngineSourceSettings settings;
+  settings.mAutoGainControl = Some(false);
+  settings.mEchoCancellation = Some(false);
+  settings.mNoiseSuppression = Some(false);
+  settings.mChannelCount = Some(1);
+  return settings;
 }
 
-void MediaEngineFakeAudioSource::GetCapabilities(
-    MediaTrackCapabilities& aOutCapabilities) const {
-  MOZ_ASSERT(NS_IsMainThread());
-  nsTArray<bool> echoCancellation;
-  echoCancellation.AppendElement(false);
-  aOutCapabilities.mEchoCancellation.Construct(std::move(echoCancellation));
-
-  nsTArray<bool> autoGainControl;
-  autoGainControl.AppendElement(false);
-  aOutCapabilities.mAutoGainControl.Construct(std::move(autoGainControl));
-
-  nsTArray<bool> noiseSuppression;
-  noiseSuppression.AppendElement(false);
-  aOutCapabilities.mNoiseSuppression.Construct(std::move(noiseSuppression));
-
-  dom::ULongRange channelCountRange;
-  channelCountRange.mMax.Construct(1);
-  channelCountRange.mMin.Construct(1);
-  aOutCapabilities.mChannelCount.Construct(channelCountRange);
+/* static */
+MediaEngineSourceCapabilities MediaEngineFakeAudioSource::MakeCapabilities() {
+  MediaEngineSourceCapabilities capabilities;
+  capabilities.mEchoCancellation.AppendElement(false);
+  capabilities.mAutoGainControl.AppendElement(false);
+  capabilities.mNoiseSuppression.AppendElement(false);
+  capabilities.mChannelCount =
+      Some(MediaEngineSourceCapabilities::ULongRange{1, 1});
+  return capabilities;
 }
 
 nsresult MediaEngineFakeAudioSource::Allocate(
@@ -618,27 +628,19 @@ void MediaEngineFake::EnumerateDevices(
 
 RefPtr<MediaEngineSource> MediaEngineFake::CreateSource(
     const MediaDevice* aMediaDevice) {
-  MOZ_ASSERT(aMediaDevice->mEngine == this);
-  switch (aMediaDevice->mMediaSource) {
-    case MediaSourceEnum::Camera:
-      return MakeRefPtr<MediaEngineFakeVideoSource>();
-    case MediaSourceEnum::Microphone:
-      return MakeRefPtr<MediaEngineFakeAudioSource>();
-    default:
-      MOZ_ASSERT_UNREACHABLE("Unsupported source type");
-      return nullptr;
-  }
+  return CreateSourceFrom(nullptr, aMediaDevice,
+                          MediaEngineSourceInitialParams());
 }
 
 RefPtr<MediaEngineSource> MediaEngineFake::CreateSourceFrom(
-    const MediaEngineSource* aSource, const MediaDevice* aMediaDevice) {
+    const MediaEngineSource* aSource, const MediaDevice* aMediaDevice,
+    const MediaEngineSourceInitialParams& aParams) {
   MOZ_ASSERT(aMediaDevice->mEngine == this);
   switch (aMediaDevice->mMediaSource) {
     case MediaSourceEnum::Camera:
-      return MediaEngineFakeVideoSource::CreateFrom(
-          static_cast<const MediaEngineFakeVideoSource*>(aSource));
+      return MakeRefPtr<MediaEngineFakeVideoSource>(aParams);
     case MediaSourceEnum::Microphone:
-      // No main thread members that need to be deep cloned.
+      // Settings and capabilities are constant.
       return MakeRefPtr<MediaEngineFakeAudioSource>();
     default:
       MOZ_ASSERT_UNREACHABLE("Unsupported source type");

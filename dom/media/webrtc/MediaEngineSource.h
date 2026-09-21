@@ -8,10 +8,15 @@
 #include "MediaSegment.h"
 #include "MediaTrackConstraints.h"
 #include "PerformanceRecorder.h"
+#include "mozilla/Maybe.h"
 #include "mozilla/RefPtr.h"
+#include "mozilla/StateMirroring.h"
 #include "mozilla/dom/MediaStreamTrackBinding.h"
+#include "mozilla/dom/MediaTrackCapabilitiesBinding.h"
+#include "mozilla/dom/MediaTrackSettingsBinding.h"
 #include "mozilla/media/MediaUtils.h"
-#include "nsStringFwd.h"
+#include "nsString.h"
+#include "nsTArray.h"
 
 namespace mozilla {
 
@@ -56,6 +61,68 @@ enum MediaEngineSourceState {
   kStarted,    // Previously allocated or stopped, then started.
   kStopped,    // Previously started, then stopped.
   kReleased    // Not allocated.
+};
+
+/**
+ * The settings of a device, as a comparable value. Converted to the
+ * MediaTrackSettings dictionary for js by ToMediaTrackSettings(); deviceId and
+ * groupId are added by the caller.
+ */
+struct MediaEngineSourceSettings {
+  Maybe<int32_t> mWidth;
+  Maybe<int32_t> mHeight;
+  Maybe<double> mFrameRate;
+  Maybe<nsString> mFacingMode;
+  Maybe<nsString> mResizeMode;
+  Maybe<bool> mEchoCancellation;
+  Maybe<bool> mAutoGainControl;
+  Maybe<bool> mNoiseSuppression;
+  Maybe<int32_t> mChannelCount;
+
+  bool operator==(const MediaEngineSourceSettings&) const = default;
+
+  // Unset members are left out of the result.
+  dom::MediaTrackSettings ToMediaTrackSettings() const;
+};
+
+/**
+ * The capabilities of a device, as a comparable value. Converted to the
+ * MediaTrackCapabilities dictionary for js by ToMediaTrackCapabilities();
+ * deviceId and groupId are added by the caller.
+ */
+struct MediaEngineSourceCapabilities {
+  template <typename T>
+  struct Range {
+    T mMin{};
+    T mMax{};
+    bool operator==(const Range&) const = default;
+  };
+  using ULongRange = Range<uint32_t>;
+  using DoubleRange = Range<double>;
+
+  Maybe<ULongRange> mWidth;
+  Maybe<ULongRange> mHeight;
+  Maybe<DoubleRange> mFrameRate;
+  CopyableTArray<nsString> mFacingMode;
+  CopyableTArray<nsString> mResizeMode;
+  CopyableTArray<bool> mEchoCancellation;
+  CopyableTArray<bool> mAutoGainControl;
+  CopyableTArray<bool> mNoiseSuppression;
+  Maybe<ULongRange> mChannelCount;
+
+  bool operator==(const MediaEngineSourceCapabilities&) const = default;
+
+  // Unset ranges and empty lists are left out of the result.
+  dom::MediaTrackCapabilities ToMediaTrackCapabilities() const;
+};
+
+/**
+ * Initial state for a source created by MediaEngine::CreateSourceFrom. Unset
+ * members leave the source at its defaults.
+ */
+struct MediaEngineSourceInitialParams {
+  Maybe<MediaEngineSourceSettings> mSettings;
+  Maybe<MediaEngineSourceCapabilities> mCapabilities;
 };
 
 /**
@@ -178,18 +245,32 @@ class MediaEngineSourceInterface {
       const MediaEnginePrefs& aPrefs) const = 0;
 
   /**
-   * Returns the current settings of the underlying device.
+   * The current settings of the underlying device. Owned by the MediaManager
+   * thread; mirror it to read it from another thread.
    *
    * Note that this might not be the settings of the underlying hardware.
    * In case of a camera where we intervene and scale frames to avoid
    * leaking information from other documents than the current one,
-   * GetSettings() will return the scaled resolution. I.e., the
-   * device settings as seen by js.
+   * this holds the scaled resolution. I.e., the device settings as seen by js.
    */
-  virtual void GetSettings(dom::MediaTrackSettings& aOutSettings) const = 0;
+  virtual AbstractCanonical<MediaEngineSourceSettings>* CanonicalSettings() = 0;
 
-  virtual void GetCapabilities(
-      dom::MediaTrackCapabilities& aOutCapabilities) const = 0;
+  /**
+   * The current value of CanonicalSettings(). MediaManager thread only.
+   */
+  virtual const MediaEngineSourceSettings& Settings() const = 0;
+
+  /**
+   * The capabilities of the underlying device. Owned by the MediaManager
+   * thread; mirror it to read it from another thread.
+   */
+  virtual AbstractCanonical<MediaEngineSourceCapabilities>*
+  CanonicalCapabilities() = 0;
+
+  /**
+   * The current value of CanonicalCapabilities(). MediaManager thread only.
+   */
+  virtual const MediaEngineSourceCapabilities& Capabilities() const = 0;
 };
 
 /**
