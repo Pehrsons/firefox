@@ -15,12 +15,12 @@ namespace mozilla::dom {
 class AudioStreamTrack : public MediaStreamTrack {
  public:
   AudioStreamTrack(
-      nsPIDOMWindowInner* aWindow, mozilla::MediaTrack* aInputTrack,
+      nsIGlobalObject* aGlobal, mozilla::MediaTrack* aInputTrack,
       MediaStreamTrackSource* aSource,
       MediaStreamTrackState aReadyState = MediaStreamTrackState::Live,
       bool aMuted = false,
       const MediaTrackConstraints& aConstraints = MediaTrackConstraints())
-      : MediaStreamTrack(aWindow, aInputTrack, aSource, aReadyState, aMuted,
+      : MediaStreamTrack(aGlobal, aInputTrack, aSource, aReadyState, aMuted,
                          aConstraints) {}
 
   already_AddRefed<MediaStreamTrack> Clone() override;
