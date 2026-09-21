@@ -48,78 +48,51 @@ extern LazyLogModule gMediaManagerLog;
  */
 
 MediaEngineWebRTCMicrophoneSource::MediaEngineWebRTCMicrophoneSource(
-    const MediaDevice* aMediaDevice)
+    const MediaDevice* aMediaDevice,
+    const MediaEngineSourceInitialParams& aParams)
     : mPrincipal(PRINCIPAL_HANDLE_NONE),
       mDeviceInfo(aMediaDevice->mAudioDeviceInfo),
       mDeviceMaxChannelCount(mDeviceInfo->MaxChannels()),
-      mSettings(new nsMainThreadPtrHolder<
-                media::Refcountable<dom::MediaTrackSettings>>(
-          "MediaEngineWebRTCMicrophoneSource::mSettings",
-          new media::Refcountable<dom::MediaTrackSettings>(),
-          // Non-strict means it won't assert main thread for us.
-          // It would be great if it did but we're already on the media thread.
-          /* aStrict = */ false)),
-      mCapabilities(new nsMainThreadPtrHolder<
-                    media::Refcountable<dom::MediaTrackCapabilities>>(
-          "MediaEngineWebRTCMicrophoneSource::mCapabilities",
-          new media::Refcountable<dom::MediaTrackCapabilities>(),
-          // Non-strict means it won't assert main thread for us.
-          // It would be great if it did but we're already on the media thread.
-          /* aStrict = */ false)) {
+      mSettings(
+          MediaManager::MediaThread(),
+          aParams.mSettings.valueOr(SettingsFromPrefs(MediaEnginePrefs())),
+          "MediaEngineWebRTCMicrophoneSource::mSettings"),
+      mCapabilities(MediaManager::MediaThread(),
+                    aParams.mCapabilities.valueOr(
+                        CapabilitiesForDevice(mDeviceMaxChannelCount)),
+                    "MediaEngineWebRTCMicrophoneSource::mCapabilities") {
   MOZ_ASSERT(aMediaDevice->mMediaSource == MediaSourceEnum::Microphone);
 #ifndef ANDROID
   MOZ_ASSERT(mDeviceInfo->DeviceID());
 #endif
 
-  // We'll init lazily as needed
-  mSettings->mEchoCancellation.Construct(0);
-  mSettings->mAutoGainControl.Construct(0);
-  mSettings->mNoiseSuppression.Construct(0);
-  mSettings->mChannelCount.Construct(0);
-
   mState = kReleased;
-
-  // Set mMaxChannelsCapablitiy on main thread.
-  NS_DispatchToMainThread(NS_NewRunnableFunction(
-      __func__, [capabilities = mCapabilities,
-                 deviceMaxChannelCount = mDeviceMaxChannelCount] {
-        nsTArray<bool> echoCancellation;
-        echoCancellation.AppendElement(true);
-        echoCancellation.AppendElement(false);
-        capabilities->mEchoCancellation.Reset();
-        capabilities->mEchoCancellation.Construct(std::move(echoCancellation));
-
-        nsTArray<bool> autoGainControl;
-        autoGainControl.AppendElement(true);
-        autoGainControl.AppendElement(false);
-        capabilities->mAutoGainControl.Reset();
-        capabilities->mAutoGainControl.Construct(std::move(autoGainControl));
-
-        nsTArray<bool> noiseSuppression;
-        noiseSuppression.AppendElement(true);
-        noiseSuppression.AppendElement(false);
-        capabilities->mNoiseSuppression.Reset();
-        capabilities->mNoiseSuppression.Construct(std::move(noiseSuppression));
-
-        if (deviceMaxChannelCount) {
-          dom::ULongRange channelCountRange;
-          channelCountRange.mMax.Construct(deviceMaxChannelCount);
-          channelCountRange.mMin.Construct(1);
-          capabilities->mChannelCount.Reset();
-          capabilities->mChannelCount.Construct(channelCountRange);
-        }
-      }));
 }
 
-/*static*/ already_AddRefed<MediaEngineWebRTCMicrophoneSource>
-MediaEngineWebRTCMicrophoneSource::CreateFrom(
-    const MediaEngineWebRTCMicrophoneSource* aSource,
-    const MediaDevice* aMediaDevice) {
-  auto src = MakeRefPtr<MediaEngineWebRTCMicrophoneSource>(aMediaDevice);
-  *static_cast<dom::MediaTrackSettings*>(src->mSettings) = *aSource->mSettings;
-  *static_cast<dom::MediaTrackCapabilities*>(src->mCapabilities) =
-      *aSource->mCapabilities;
-  return src.forget();
+/* static */
+MediaEngineSourceSettings MediaEngineWebRTCMicrophoneSource::SettingsFromPrefs(
+    const MediaEnginePrefs& aPrefs) {
+  MediaEngineSourceSettings settings;
+  settings.mEchoCancellation = Some(aPrefs.mAecOn);
+  settings.mAutoGainControl = Some(aPrefs.mAgcOn);
+  settings.mNoiseSuppression = Some(aPrefs.mNoiseOn);
+  settings.mChannelCount = Some(aPrefs.mChannels);
+  return settings;
+}
+
+/* static */
+MediaEngineSourceCapabilities
+MediaEngineWebRTCMicrophoneSource::CapabilitiesForDevice(
+    uint32_t aDeviceMaxChannelCount) {
+  MediaEngineSourceCapabilities capabilities;
+  capabilities.mEchoCancellation = {true, false};
+  capabilities.mAutoGainControl = {true, false};
+  capabilities.mNoiseSuppression = {true, false};
+  if (aDeviceMaxChannelCount) {
+    capabilities.mChannelCount = Some(
+        MediaEngineSourceCapabilities::ULongRange{1, aDeviceMaxChannelCount});
+  }
+  return capabilities;
 }
 
 nsresult MediaEngineWebRTCMicrophoneSource::EvaluateSettings(
@@ -285,15 +258,12 @@ void MediaEngineWebRTCMicrophoneSource::ApplySettings(
       mTrack,
       "ApplySetting is to be called only after SetTrack has been called");
 
+  mSettings = SettingsFromPrefs(aPrefs);
+
   RefPtr<MediaEngineWebRTCMicrophoneSource> that = this;
   CubebUtils::AudioDeviceID deviceID = mDeviceInfo->DeviceID();
   NS_DispatchToMainThread(NS_NewRunnableFunction(
       __func__, [this, that, deviceID, track = mTrack, prefs = aPrefs] {
-        mSettings->mEchoCancellation.Value() = prefs.mAecOn;
-        mSettings->mAutoGainControl.Value() = prefs.mAgcOn;
-        mSettings->mNoiseSuppression.Value() = prefs.mNoiseOn;
-        mSettings->mChannelCount.Value() = prefs.mChannels;
-
         if (track->IsDestroyed()) {
           return;
         }
@@ -320,13 +290,7 @@ nsresult MediaEngineWebRTCMicrophoneSource::Allocate(
     return rv;
   }
 
-  NS_DispatchToMainThread(NS_NewRunnableFunction(
-      __func__, [settings = mSettings, prefs = outputPrefs] {
-        settings->mEchoCancellation.Value() = prefs.mAecOn;
-        settings->mAutoGainControl.Value() = prefs.mAgcOn;
-        settings->mNoiseSuppression.Value() = prefs.mNoiseOn;
-        settings->mChannelCount.Value() = prefs.mChannels;
-      }));
+  mSettings = SettingsFromPrefs(outputPrefs);
 
   mCurrentPrefs = outputPrefs;
 
@@ -456,18 +420,6 @@ nsresult MediaEngineWebRTCMicrophoneSource::Stop() {
   mState = kStopped;
 
   return NS_OK;
-}
-
-void MediaEngineWebRTCMicrophoneSource::GetSettings(
-    dom::MediaTrackSettings& aOutSettings) const {
-  MOZ_ASSERT(NS_IsMainThread());
-  aOutSettings = *mSettings;
-}
-
-void MediaEngineWebRTCMicrophoneSource::GetCapabilities(
-    dom::MediaTrackCapabilities& aOutCapabilities) const {
-  MOZ_ASSERT(NS_IsMainThread());
-  aOutCapabilities = *mCapabilities;
 }
 
 AudioInputProcessing::AudioInputProcessing(uint32_t aMaxChannelCount)
@@ -1446,8 +1398,24 @@ void AudioProcessingTrack::SetInputProcessingImpl(
 }
 
 MediaEngineWebRTCAudioCaptureSource::MediaEngineWebRTCAudioCaptureSource(
-    const MediaDevice* aMediaDevice) {
+    const MediaDevice* aMediaDevice)
+    : mSettings(MediaManager::MediaThread(), InitialSettings(),
+                "MediaEngineWebRTCAudioCaptureSource::mSettings"),
+      mCapabilities(MediaManager::MediaThread(),
+                    MediaEngineSourceCapabilities(),
+                    "MediaEngineWebRTCAudioCaptureSource::mCapabilities") {
   MOZ_ASSERT(aMediaDevice->mMediaSource == MediaSourceEnum::AudioCapture);
+}
+
+/* static */
+MediaEngineSourceSettings
+MediaEngineWebRTCAudioCaptureSource::InitialSettings() {
+  MediaEngineSourceSettings settings;
+  settings.mAutoGainControl = Some(false);
+  settings.mEchoCancellation = Some(false);
+  settings.mNoiseSuppression = Some(false);
+  settings.mChannelCount = Some(1);
+  return settings;
 }
 
 /* static */
@@ -1494,14 +1462,6 @@ nsresult MediaEngineWebRTCAudioCaptureSource::Reconfigure(
     const dom::MediaTrackConstraints& aConstraints,
     const MediaEnginePrefs& aPrefs, const char** aOutBadConstraint) {
   return NS_OK;
-}
-
-void MediaEngineWebRTCAudioCaptureSource::GetSettings(
-    dom::MediaTrackSettings& aOutSettings) const {
-  aOutSettings.mAutoGainControl.Construct(false);
-  aOutSettings.mEchoCancellation.Construct(false);
-  aOutSettings.mNoiseSuppression.Construct(false);
-  aOutSettings.mChannelCount.Construct(1);
 }
 
 }  // namespace mozilla

@@ -27,8 +27,9 @@ class MediaEngineWebRTC : public MediaEngine {
                         nsTArray<RefPtr<MediaDevice>>*) override;
   void InvalidateDesktopCaptureDeviceCache(dom::MediaSourceEnum) override;
   RefPtr<MediaEngineSource> CreateSource(const MediaDevice* aDevice) override;
-  RefPtr<MediaEngineSource> CreateSourceFrom(const MediaEngineSource* aSource,
-                                             const MediaDevice*) override;
+  RefPtr<MediaEngineSource> CreateSourceFrom(
+      const MediaEngineSource* aSource, const MediaDevice* aDevice,
+      const MediaEngineSourceInitialParams& aParams) override;
 
   MediaEventSource<void>& DeviceListChangeEvent() override {
     return mDeviceListChangeEvent;

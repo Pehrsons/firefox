@@ -22,6 +22,7 @@ class Blob;
 class AllocationHandle;
 class MediaDevice;
 class MediaEngineSource;
+struct MediaEngineSourceInitialParams;
 
 enum MediaSinkEnum {
   Speaker,
@@ -52,11 +53,12 @@ class MediaEngine {
       const MediaDevice* aDevice) = 0;
 
   /**
-   * Like CreateSource but in addition copies over capabilities and settings
-   * from another source.
+   * Like CreateSource but for cloning aSource. Copies over its internal state
+   * and starts out with the settings and capabilities in aParams.
    */
   virtual RefPtr<MediaEngineSource> CreateSourceFrom(
-      const MediaEngineSource* aSource, const MediaDevice* aDevice) = 0;
+      const MediaEngineSource* aSource, const MediaDevice* aDevice,
+      const MediaEngineSourceInitialParams& aParams) = 0;
 
   virtual MediaEventSource<void>& DeviceListChangeEvent() = 0;
   /**

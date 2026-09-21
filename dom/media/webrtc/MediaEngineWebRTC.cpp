@@ -134,7 +134,7 @@ void MediaEngineWebRTC::EnumerateVideoDevices(
     webrtc::CaptureCapability cap;
     int numCaps = GetChildAndCall(&CamerasChild::NumberOfCapabilities,
                                   capEngine, uniqueId);
-    LOG("Number of Capabilities {}", numCaps);
+    LOG("Number of MediaEngineSourceCapabilities {}", numCaps);
     for (int j = 0; j < numCaps; j++) {
       if (GetChildAndCall(&CamerasChild::GetCaptureCapability, capEngine,
                           uniqueId, j, &cap) != 0) {
@@ -304,13 +304,15 @@ RefPtr<MediaEngineSource> MediaEngineWebRTC::CreateSource(
     const MediaDevice* aMediaDevice) {
   MOZ_ASSERT(aMediaDevice->mEngine == this);
   if (MediaEngineSource::IsVideo(aMediaDevice->mMediaSource)) {
-    return MakeRefPtr<MediaEngineRemoteVideoSource>(aMediaDevice);
+    return MakeRefPtr<MediaEngineRemoteVideoSource>(
+        aMediaDevice, MediaEngineSourceInitialParams());
   }
   switch (aMediaDevice->mMediaSource) {
     case MediaSourceEnum::AudioCapture:
       return MakeRefPtr<MediaEngineWebRTCAudioCaptureSource>(aMediaDevice);
     case MediaSourceEnum::Microphone:
-      return MakeRefPtr<MediaEngineWebRTCMicrophoneSource>(aMediaDevice);
+      return MakeRefPtr<MediaEngineWebRTCMicrophoneSource>(
+          aMediaDevice, MediaEngineSourceInitialParams());
     default:
       MOZ_CRASH("Unsupported source type");
       return nullptr;
@@ -318,18 +320,18 @@ RefPtr<MediaEngineSource> MediaEngineWebRTC::CreateSource(
 }
 
 RefPtr<MediaEngineSource> MediaEngineWebRTC::CreateSourceFrom(
-    const MediaEngineSource* aSource, const MediaDevice* aMediaDevice) {
+    const MediaEngineSource* aSource, const MediaDevice* aMediaDevice,
+    const MediaEngineSourceInitialParams& aParams) {
   MOZ_ASSERT(aMediaDevice->mEngine == this);
   if (MediaEngineSource::IsVideo(aMediaDevice->mMediaSource)) {
     return MediaEngineRemoteVideoSource::CreateFrom(
-        static_cast<const MediaEngineRemoteVideoSource*>(aSource),
-        aMediaDevice);
+        static_cast<const MediaEngineRemoteVideoSource*>(aSource), aMediaDevice,
+        aParams);
   }
   switch (aMediaDevice->mMediaSource) {
     case MediaSourceEnum::Microphone:
-      return MediaEngineWebRTCMicrophoneSource::CreateFrom(
-          static_cast<const MediaEngineWebRTCMicrophoneSource*>(aSource),
-          aMediaDevice);
+      return MakeRefPtr<MediaEngineWebRTCMicrophoneSource>(aMediaDevice,
+                                                           aParams);
     default:
       MOZ_CRASH("Unsupported source type");
       return nullptr;
