@@ -84,11 +84,27 @@ class MediaEngineRemoteVideoSource : public MediaEngineSource,
   static void TrimLessFitCandidates(nsTArray<CapabilityCandidate>& aSet);
 
  public:
-  explicit MediaEngineRemoteVideoSource(const MediaDevice* aMediaDevice);
+  MediaEngineRemoteVideoSource(const MediaDevice* aMediaDevice,
+                               const MediaEngineSourceInitialParams& aParams);
 
   static already_AddRefed<MediaEngineRemoteVideoSource> CreateFrom(
       const MediaEngineRemoteVideoSource* aSource,
-      const MediaDevice* aMediaDevice);
+      const MediaDevice* aMediaDevice,
+      const MediaEngineSourceInitialParams& aParams);
+
+  AbstractCanonical<MediaEngineSourceSettings>* CanonicalSettings() override {
+    return &mSettings;
+  }
+  const MediaEngineSourceSettings& Settings() const override {
+    return mSettings.Ref();
+  }
+  AbstractCanonical<MediaEngineSourceCapabilities>* CanonicalCapabilities()
+      override {
+    return &mCapabilities;
+  }
+  const MediaEngineSourceCapabilities& Capabilities() const override {
+    return mCapabilities.Ref();
+  }
 
   // ExternalRenderer
   /**
@@ -117,7 +133,6 @@ class MediaEngineRemoteVideoSource : public MediaEngineSource,
   uint32_t GetBestFitnessDistance(
       const nsTArray<const NormalizedConstraintSet*>& aConstraintSets,
       const MediaEnginePrefs& aPrefs) const override;
-  void GetSettings(dom::MediaTrackSettings& aOutSettings) const override;
 
   RefPtr<GenericNonExclusivePromise> GetFirstFramePromise() const override {
     return mFirstFramePromise;
@@ -130,9 +145,6 @@ class MediaEngineRemoteVideoSource : public MediaEngineSource,
   MediaEventSource<void>* CaptureEndedEvent() override {
     return &mCaptureEndedEvent;
   }
-
-  void GetCapabilities(
-      dom::MediaTrackCapabilities& aOutCapabilities) const override;
 
  private:
   /**
@@ -152,6 +164,11 @@ class MediaEngineRemoteVideoSource : public MediaEngineSource,
   webrtc::CaptureCapability& GetCapability(size_t aIndex) const;
 
   int mCaptureId = -1;
+  // The MediaManager thread, which owns mSettings and mCapabilities.
+  const RefPtr<AbstractThread> mOwnerThread;
+  // Owning thread only.
+  Canonical<MediaEngineSourceSettings> mSettings;
+  Canonical<MediaEngineSourceCapabilities> mCapabilities;
   const camera::CaptureEngine mCapEngine;  // source of media (cam, screen etc)
 
   // A tracking id used to uniquely identify the source of video frames.
@@ -204,22 +221,10 @@ class MediaEngineRemoteVideoSource : public MediaEngineSource,
   // Cameras IPC thread only.
   Maybe<gfx::IntSize> mLastReportedSize;
 
-  struct AtomicBool {
-    Atomic<bool> mValue;
-  };
-
   // True when resolution settings have been updated from a real frame's
-  // resolution. Threadsafe. Set to false on the owning thread. Set to true on
-  // main thread.
-  const RefPtr<media::Refcountable<AtomicBool>> mSettingsUpdatedByFrame;
+  // resolution. Owning thread only.
+  bool mSettingsUpdatedByFrame = false;
 
-  // The current settings of this source.
-  // Note that these may be different from the settings of the underlying device
-  // since we scale frames to avoid fingerprinting.
-  // Members are main thread only.
-  const RefPtr<media::Refcountable<dom::MediaTrackSettings>> mSettings;
-  const RefPtr<media::Refcountable<dom::MediaTrackCapabilities>>
-      mTrackCapabilities;
   MozPromiseHolder<GenericNonExclusivePromise> mFirstFramePromiseHolder;
   RefPtr<GenericNonExclusivePromise> mFirstFramePromise;
 
@@ -237,7 +242,8 @@ class MediaEngineRemoteVideoSource : public MediaEngineSource,
   UniquePtr<MediaEnginePrefs> mPrefs;
 
   /**
-   * Capabilities that we choose between when applying constraints.
+   * MediaEngineSourceCapabilities that we choose between when applying
+   * constraints.
    *
    * This allows for memoization of capabilities as they're requested from the
    * parent process.
@@ -245,13 +251,13 @@ class MediaEngineRemoteVideoSource : public MediaEngineSource,
    * This is mutable so that the const methods NumCapabilities() and
    * GetCapability() can reset it. Owning thread only.
    */
-  mutable nsTArray<UniquePtr<webrtc::CaptureCapability>> mCapabilities;
+  mutable nsTArray<UniquePtr<webrtc::CaptureCapability>> mCaptureCapabilities;
 
   /**
-   * True if mCapabilities only contains hardcoded capabilities. This can happen
-   * if the underlying device is not reporting any capabilities. These can be
-   * affected by constraints, so they're evaluated in ChooseCapability() rather
-   * than GetCapability().
+   * True if mCaptureCapabilities only contains hardcoded capabilities. This can
+   * happen if the underlying device is not reporting any capabilities. These
+   * can be affected by constraints, so they're evaluated in ChooseCapability()
+   * rather than GetCapability().
    *
    * This is mutable so that the const methods NumCapabilities() and
    * GetCapability() can reset it. Owning thread only.

@@ -28,15 +28,27 @@ class WebrtcEnvironmentWrapper;
 //   the main thread and then the MTG thread so that it can be used as part of
 //   the graph processing. On destruction, similarly, a message is sent to the
 //   graph so that it stops using it, and then it is deleted.
-// - mSettings is created on the MediaManager thread is always ever accessed on
-//   the Main Thread. It is const.
+// - The settings and capabilities are Canonicals owned by the MediaManager
+//   thread, see MediaEngineSource.
 class MediaEngineWebRTCMicrophoneSource : public MediaEngineSource {
  public:
-  explicit MediaEngineWebRTCMicrophoneSource(const MediaDevice* aMediaDevice);
+  MediaEngineWebRTCMicrophoneSource(
+      const MediaDevice* aMediaDevice,
+      const MediaEngineSourceInitialParams& aParams);
 
-  static already_AddRefed<MediaEngineWebRTCMicrophoneSource> CreateFrom(
-      const MediaEngineWebRTCMicrophoneSource* aSource,
-      const MediaDevice* aMediaDevice);
+  AbstractCanonical<MediaEngineSourceSettings>* CanonicalSettings() override {
+    return &mSettings;
+  }
+  const MediaEngineSourceSettings& Settings() const override {
+    return mSettings.Ref();
+  }
+  AbstractCanonical<MediaEngineSourceCapabilities>* CanonicalCapabilities()
+      override {
+    return &mCapabilities;
+  }
+  const MediaEngineSourceCapabilities& Capabilities() const override {
+    return mCapabilities.Ref();
+  }
 
   nsresult Allocate(const dom::MediaTrackConstraints& aConstraints,
                     const MediaEnginePrefs& aPrefs, uint64_t aWindowID,
@@ -50,15 +62,6 @@ class MediaEngineWebRTCMicrophoneSource : public MediaEngineSource {
                        const MediaEnginePrefs& aPrefs,
                        const char** aOutBadConstraint) override;
 
-  /**
-   * Assigns the current settings of the capture to aOutSettings.
-   * Main thread only.
-   */
-  void GetSettings(dom::MediaTrackSettings& aOutSettings) const override;
-
-  void GetCapabilities(
-      dom::MediaTrackCapabilities& aOutCapabilities) const override;
-
   nsresult TakePhoto(MediaEnginePhotoCallback* aCallback) override {
     return NS_ERROR_NOT_IMPLEMENTED;
   }
@@ -67,6 +70,11 @@ class MediaEngineWebRTCMicrophoneSource : public MediaEngineSource {
   ~MediaEngineWebRTCMicrophoneSource() = default;
 
  private:
+  static MediaEngineSourceSettings SettingsFromPrefs(
+      const MediaEnginePrefs& aPrefs);
+  static MediaEngineSourceCapabilities CapabilitiesForDevice(
+      uint32_t aDeviceMaxChannelCount);
+
   /**
    * From a set of constraints and about:config preferences, output the correct
    * set of preferences that can be sent to AudioInputProcessing.
@@ -80,7 +88,7 @@ class MediaEngineWebRTCMicrophoneSource : public MediaEngineSource {
                             const char** aOutBadConstraint);
   /**
    * From settings output by EvaluateSettings, send those settings to the
-   * AudioInputProcessing instance and the main thread (for use in GetSettings).
+   * AudioInputProcessing instance and publish them through mTrackSettings.
    */
   void ApplySettings(const MediaEnginePrefs& aPrefs);
 
@@ -90,17 +98,9 @@ class MediaEngineWebRTCMicrophoneSource : public MediaEngineSource {
 
   // The maximum number of channels that this device supports.
   const uint32_t mDeviceMaxChannelCount;
-  // The current settings for the underlying device.
-  // Constructed on the MediaManager thread, and then only ever accessed on the
-  // main thread.
-  const nsMainThreadPtrHandle<media::Refcountable<dom::MediaTrackSettings>>
-      mSettings;
-
-  // The media capabilities for the underlying device.
-  // Constructed on the MediaManager thread, and then only ever accessed on the
-  // main thread.
-  const nsMainThreadPtrHandle<media::Refcountable<dom::MediaTrackCapabilities>>
-      mCapabilities;
+  // Owning thread only.
+  Canonical<MediaEngineSourceSettings> mSettings;
+  Canonical<MediaEngineSourceCapabilities> mCapabilities;
 
   // Current state of the resource for this source.
   MediaEngineSourceState mState;
@@ -368,13 +368,29 @@ class MediaEngineWebRTCAudioCaptureSource : public MediaEngineSource {
     return NS_ERROR_NOT_IMPLEMENTED;
   }
 
-  void GetSettings(dom::MediaTrackSettings& aOutSettings) const override;
-
-  void GetCapabilities(
-      dom::MediaTrackCapabilities& aOutCapabilities) const override {}
-
  protected:
   virtual ~MediaEngineWebRTCAudioCaptureSource() = default;
+
+  static MediaEngineSourceSettings InitialSettings();
+
+  // Owning thread only.
+  Canonical<MediaEngineSourceSettings> mSettings;
+  Canonical<MediaEngineSourceCapabilities> mCapabilities;
+
+ public:
+  AbstractCanonical<MediaEngineSourceSettings>* CanonicalSettings() override {
+    return &mSettings;
+  }
+  const MediaEngineSourceSettings& Settings() const override {
+    return mSettings.Ref();
+  }
+  AbstractCanonical<MediaEngineSourceCapabilities>* CanonicalCapabilities()
+      override {
+    return &mCapabilities;
+  }
+  const MediaEngineSourceCapabilities& Capabilities() const override {
+    return mCapabilities.Ref();
+  }
 };
 
 }  // end namespace mozilla
