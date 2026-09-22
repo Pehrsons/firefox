@@ -268,7 +268,7 @@ struct DeviceState {
   const RefPtr<LocalTrackSource> mTrackSource;
 
   // Mirrors of mDevice's source's settings and capabilities, connected while
-  // this state is active. MainThread only.
+  // this state is active and forwarded to mTrackSource. MainThread only.
   Mirror<MediaEngineSourceSettings> mSettings;
   Mirror<MediaEngineSourceCapabilities> mCapabilities;
 };
@@ -438,17 +438,8 @@ class DeviceListener : public SupportsWeakPtr {
    */
   void Stop();
 
-  /**
-   * Gets the main thread MediaTrackSettings from the MediaEngineSource
-   * associated with aTrack.
-   */
-  void GetSettings(MediaTrackSettings& aOutSettings) const;
-
-  /**
-   * Gets the main thread MediaTrackCapabilities from the MediaEngineSource
-   * associated with aTrack.
-   */
-  void GetCapabilities(MediaTrackCapabilities& aOutCapabilities) const;
+  void SettingsChanged();
+  void CapabilitiesChanged();
 
   /**
    * Posts a task to set the enabled state of the device associated with this
@@ -551,6 +542,10 @@ class DeviceListener : public SupportsWeakPtr {
 
   // Weak pointer to the window listener that owns us. MainThread only.
   GetUserMediaWindowListener* mWindowListener;
+
+  // Forwards mDeviceState's settings and capabilities mirrors to its track
+  // source. MainThread only.
+  WatchManager<DeviceListener> mWatchManager;
 
   // Accessed from MediaTrackGraph thread, MediaManager thread, and MainThread
   // No locking needed as it's set on Activate() and never assigned to again.
@@ -894,18 +889,14 @@ class LocalTrackSource : public MediaStreamTrackSource {
     return p;
   }
 
-  void GetSettings(MediaTrackSettings& aOutSettings) override {
-    if (mListener) {
-      mListener->GetSettings(aOutSettings);
-    }
-    AddDeviceIds(aOutSettings);
+  void SetSettings(const MediaEngineSourceSettings& aSettings) {
+    MOZ_ASSERT(NS_IsMainThread());
+    mSettings = aSettings;
   }
 
-  void GetCapabilities(MediaTrackCapabilities& aOutCapabilities) override {
-    if (mListener) {
-      mListener->GetCapabilities(aOutCapabilities);
-    }
-    AddDeviceIds(aOutCapabilities);
+  void SetCapabilities(const MediaEngineSourceCapabilities& aCapabilities) {
+    MOZ_ASSERT(NS_IsMainThread());
+    mCapabilities = aCapabilities;
   }
 
   void Stop() override {
@@ -4416,7 +4407,8 @@ DeviceListener::DeviceListener()
     : mStopped(false),
       mMainThreadCheck(nullptr),
       mPrincipalHandle(PRINCIPAL_HANDLE_NONE),
-      mWindowListener(nullptr) {}
+      mWindowListener(nullptr),
+      mWatchManager(this, AbstractThread::MainThread()) {}
 
 void DeviceListener::Register(GetUserMediaWindowListener* aListener) {
   LOG("DeviceListener {} registering with window listener {}", fmt::ptr(this),
@@ -4462,9 +4454,15 @@ void DeviceListener::Activate(
       aInitialSettings, aInitialCapabilities);
   mDeviceState->mDeviceMuted = aStartMuted;
   mDeviceState->mAllocated = aIsAllocated;
+  SettingsChanged();
+  CapabilitiesChanged();
   MediaEngineSource* source = mDeviceState->mDevice->Source();
   mDeviceState->mSettings.Connect(source->CanonicalSettings());
   mDeviceState->mCapabilities.Connect(source->CanonicalCapabilities());
+  mWatchManager.Watch(mDeviceState->mSettings,
+                      &DeviceListener::SettingsChanged);
+  mWatchManager.Watch(mDeviceState->mCapabilities,
+                      &DeviceListener::CapabilitiesChanged);
   if (aStartMuted) {
     mDeviceState->mTrackSource->Mute();
   }
@@ -4696,6 +4694,7 @@ void DeviceListener::Stop() {
 
   if (mDeviceState) {
     mDeviceState->mDisableTimer->Cancel();
+    mWatchManager.Shutdown();
     mDeviceState->mSettings.DisconnectIfConnected();
     mDeviceState->mCapabilities.DisconnectIfConnected();
 
@@ -4725,16 +4724,13 @@ void DeviceListener::Stop() {
   windowListener->Remove(this);
 }
 
-void DeviceListener::GetSettings(MediaTrackSettings& aOutSettings) const {
-  MOZ_ASSERT(NS_IsMainThread(), "Only call on main thread");
-  aOutSettings = mDeviceState->mSettings.Ref().ToMediaTrackSettings();
+void DeviceListener::SettingsChanged() {
+  mDeviceState->mTrackSource->SetSettings(mDeviceState->mSettings.Ref());
 }
 
-void DeviceListener::GetCapabilities(
-    MediaTrackCapabilities& aOutCapabilities) const {
-  MOZ_ASSERT(NS_IsMainThread(), "Only call on main thread");
-  aOutCapabilities =
-      mDeviceState->mCapabilities.Ref().ToMediaTrackCapabilities();
+void DeviceListener::CapabilitiesChanged() {
+  mDeviceState->mTrackSource->SetCapabilities(
+      mDeviceState->mCapabilities.Ref());
 }
 
 auto DeviceListener::UpdateDevice(bool aOn) -> RefPtr<DeviceOperationPromise> {
