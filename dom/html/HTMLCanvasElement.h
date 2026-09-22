@@ -101,6 +101,11 @@ class FrameCaptureListener : public SupportsWeakPtr {
   virtual void NewFrame(already_AddRefed<layers::Image> aImage,
                         const TimeStamp& aTime) = 0;
 
+  /*
+   * Called when the width or height attribute of the canvas changes.
+   */
+  virtual void CanvasSizeChanged(const CSSIntSize& aSize) {}
+
  protected:
   virtual ~FrameCaptureListener() = default;
 };

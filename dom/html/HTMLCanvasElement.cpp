@@ -658,6 +658,16 @@ void HTMLCanvasElement::AfterMaybeChangeAttr(int32_t aNamespaceID,
     ErrorResult dummy;
     UpdateContext(nullptr, JS::NullHandleValue, dummy);
   }
+  if (aNamespaceID == kNameSpaceID_None &&
+      (aName == nsGkAtoms::width || aName == nsGkAtoms::height)) {
+    const CSSIntSize size = GetWidthHeight();
+    for (const WeakPtr<FrameCaptureListener>& listener :
+         mRequestedFrameListeners) {
+      if (listener) {
+        listener->CanvasSizeChanged(size);
+      }
+    }
+  }
 }
 
 void HTMLCanvasElement::HandlePrintCallback(nsPresContext* aPresContext) {
@@ -844,63 +854,6 @@ PrintCallback* HTMLCanvasElement::GetMozPrintCallback() const {
   return mPrintCallback;
 }
 
-static uint32_t sCaptureSourceId = 0;
-class CanvasCaptureTrackSource : public MediaStreamTrackSource {
- public:
-  NS_DECL_ISUPPORTS_INHERITED
-  NS_DECL_CYCLE_COLLECTION_CLASS_INHERITED(CanvasCaptureTrackSource,
-                                           MediaStreamTrackSource)
-
-  CanvasCaptureTrackSource(nsIPrincipal* aPrincipal,
-                           CanvasCaptureMediaStream* aCaptureStream)
-      : MediaStreamTrackSource(
-            aPrincipal, nsString(),
-            TrackingId(TrackingId::Source::Canvas, sCaptureSourceId++,
-                       TrackingId::TrackAcrossProcesses::Yes)),
-        mCaptureStream(aCaptureStream) {}
-
-  MediaSourceEnum GetMediaSource() const override {
-    return MediaSourceEnum::Other;
-  }
-
-  bool HasAlpha() const override {
-    if (!mCaptureStream || !mCaptureStream->Canvas()) {
-      // In cycle-collection
-      return false;
-    }
-    return !mCaptureStream->Canvas()->GetIsOpaque();
-  }
-
-  void GetSettings(dom::MediaTrackSettings& aResult) override {
-    aResult.mWidth.Construct(mCaptureStream->Canvas()->Width());
-    aResult.mHeight.Construct(mCaptureStream->Canvas()->Height());
-  }
-
-  void Stop() override {
-    if (!mCaptureStream) {
-      return;
-    }
-
-    mCaptureStream->StopCapture();
-  }
-
-  void Disable() override {}
-
-  void Enable() override {}
-
- private:
-  virtual ~CanvasCaptureTrackSource() = default;
-
-  RefPtr<CanvasCaptureMediaStream> mCaptureStream;
-};
-
-NS_IMPL_ADDREF_INHERITED(CanvasCaptureTrackSource, MediaStreamTrackSource)
-NS_IMPL_RELEASE_INHERITED(CanvasCaptureTrackSource, MediaStreamTrackSource)
-NS_INTERFACE_MAP_BEGIN_CYCLE_COLLECTION(CanvasCaptureTrackSource)
-NS_INTERFACE_MAP_END_INHERITING(MediaStreamTrackSource)
-NS_IMPL_CYCLE_COLLECTION_INHERITED(CanvasCaptureTrackSource,
-                                   MediaStreamTrackSource, mCaptureStream)
-
 already_AddRefed<CanvasCaptureMediaStream> HTMLCanvasElement::CaptureStream(
     const Optional<double>& aFrameRate, nsIPrincipal& aSubjectPrincipal,
     ErrorResult& aRv) {
@@ -932,15 +885,15 @@ already_AddRefed<CanvasCaptureMediaStream> HTMLCanvasElement::CaptureStream(
   auto stream = MakeRefPtr<CanvasCaptureMediaStream>(window->AsGlobal(), this);
 
   nsCOMPtr<nsIPrincipal> principal = NodePrincipal();
-  nsresult rv = stream->Init(aFrameRate, principal);
+  auto source = MakeRefPtr<CanvasCaptureTrackSource>(principal, stream);
+  nsresult rv = stream->Init(aFrameRate, principal, source);
   if (NS_FAILED(rv)) {
     aRv.Throw(rv);
     return nullptr;
   }
 
-  RefPtr<MediaStreamTrack> track =
-      new VideoStreamTrack(window->AsGlobal(), stream->GetSourceStream(),
-                           new CanvasCaptureTrackSource(principal, stream));
+  RefPtr<MediaStreamTrack> track = new VideoStreamTrack(
+      window->AsGlobal(), stream->GetSourceStream(), source);
   stream->AddTrackInternal(track);
 
   // Check site-specific permission and display prompt if appropriate.

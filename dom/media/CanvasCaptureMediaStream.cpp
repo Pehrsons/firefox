@@ -19,9 +19,62 @@ using namespace mozilla::gfx;
 
 namespace mozilla::dom {
 
+static uint32_t sCaptureSourceId = 0;
+
+NS_IMPL_ADDREF_INHERITED(CanvasCaptureTrackSource, MediaStreamTrackSource)
+NS_IMPL_RELEASE_INHERITED(CanvasCaptureTrackSource, MediaStreamTrackSource)
+NS_INTERFACE_MAP_BEGIN_CYCLE_COLLECTION(CanvasCaptureTrackSource)
+NS_INTERFACE_MAP_END_INHERITING(MediaStreamTrackSource)
+NS_IMPL_CYCLE_COLLECTION_CLASS(CanvasCaptureTrackSource)
+NS_IMPL_CYCLE_COLLECTION_UNLINK_BEGIN_INHERITED(CanvasCaptureTrackSource,
+                                                MediaStreamTrackSource)
+  NS_IMPL_CYCLE_COLLECTION_UNLINK(mCaptureStream)
+  NS_IMPL_CYCLE_COLLECTION_UNLINK_WEAK_PTR
+NS_IMPL_CYCLE_COLLECTION_UNLINK_END
+NS_IMPL_CYCLE_COLLECTION_TRAVERSE_BEGIN_INHERITED(CanvasCaptureTrackSource,
+                                                  MediaStreamTrackSource)
+  NS_IMPL_CYCLE_COLLECTION_TRAVERSE(mCaptureStream)
+NS_IMPL_CYCLE_COLLECTION_TRAVERSE_END
+
+CanvasCaptureTrackSource::CanvasCaptureTrackSource(
+    nsIPrincipal* aPrincipal, CanvasCaptureMediaStream* aCaptureStream)
+    : MediaStreamTrackSource(
+          aPrincipal, nsString(),
+          TrackingId(TrackingId::Source::Canvas, sCaptureSourceId++,
+                     TrackingId::TrackAcrossProcesses::Yes)),
+      mCaptureStream(aCaptureStream) {
+  HTMLCanvasElement* canvas = mCaptureStream->Canvas();
+  SetCanvasSize(CSSIntSize(canvas->Width(), canvas->Height()));
+}
+
+bool CanvasCaptureTrackSource::HasAlpha() const {
+  if (!mCaptureStream || !mCaptureStream->Canvas()) {
+    // In cycle-collection
+    return false;
+  }
+  return !mCaptureStream->Canvas()->GetIsOpaque();
+}
+
+void CanvasCaptureTrackSource::Stop() {
+  if (!mCaptureStream) {
+    return;
+  }
+
+  mCaptureStream->StopCapture();
+}
+
+void CanvasCaptureTrackSource::SetCanvasSize(const CSSIntSize& aSize) {
+  MOZ_ASSERT(NS_IsMainThread());
+  mSettings = MediaStreamTrackSourceSettings{.mWidth = Some(aSize.width),
+                                             .mHeight = Some(aSize.height)};
+}
+
 OutputStreamDriver::OutputStreamDriver(SourceMediaTrack* aSourceStream,
-                                       const PrincipalHandle& aPrincipalHandle)
-    : mSourceStream(aSourceStream), mPrincipalHandle(aPrincipalHandle) {
+                                       const PrincipalHandle& aPrincipalHandle,
+                                       CanvasCaptureTrackSource* aTrackSource)
+    : mSourceStream(aSourceStream),
+      mPrincipalHandle(aPrincipalHandle),
+      mTrackSource(aTrackSource) {
   MOZ_ASSERT(NS_IsMainThread());
   MOZ_ASSERT(mSourceStream);
 }
@@ -29,6 +82,13 @@ OutputStreamDriver::OutputStreamDriver(SourceMediaTrack* aSourceStream,
 OutputStreamDriver::~OutputStreamDriver() {
   MOZ_ASSERT(NS_IsMainThread());
   EndTrack();
+}
+
+void OutputStreamDriver::CanvasSizeChanged(const CSSIntSize& aSize) {
+  MOZ_ASSERT(NS_IsMainThread());
+  if (mTrackSource) {
+    mTrackSource->SetCanvasSize(aSize);
+  }
 }
 
 void OutputStreamDriver::EndTrack() {
@@ -52,9 +112,10 @@ void OutputStreamDriver::SetImage(RefPtr<layers::Image>&& aImage,
 
 class TimerDriver : public OutputStreamDriver {
  public:
-  explicit TimerDriver(SourceMediaTrack* aSourceStream, const double& aFPS,
-                       const PrincipalHandle& aPrincipalHandle)
-      : OutputStreamDriver(aSourceStream, aPrincipalHandle),
+  TimerDriver(SourceMediaTrack* aSourceStream, const double& aFPS,
+              const PrincipalHandle& aPrincipalHandle,
+              CanvasCaptureTrackSource* aTrackSource)
+      : OutputStreamDriver(aSourceStream, aPrincipalHandle, aTrackSource),
         mFrameInterval(aFPS == 0.0 ? TimeDuration::Forever()
                                    : TimeDuration::FromSeconds(1.0 / aFPS)) {}
 
@@ -116,9 +177,10 @@ class TimerDriver : public OutputStreamDriver {
 
 class AutoDriver : public OutputStreamDriver {
  public:
-  explicit AutoDriver(SourceMediaTrack* aSourceStream,
-                      const PrincipalHandle& aPrincipalHandle)
-      : OutputStreamDriver(aSourceStream, aPrincipalHandle) {}
+  AutoDriver(SourceMediaTrack* aSourceStream,
+             const PrincipalHandle& aPrincipalHandle,
+             CanvasCaptureTrackSource* aTrackSource)
+      : OutputStreamDriver(aSourceStream, aPrincipalHandle, aTrackSource) {}
 
   void RequestFrameCapture() override {}
 
@@ -167,8 +229,9 @@ void CanvasCaptureMediaStream::RequestFrame() {
   }
 }
 
-nsresult CanvasCaptureMediaStream::Init(const dom::Optional<double>& aFPS,
-                                        nsIPrincipal* aPrincipal) {
+nsresult CanvasCaptureMediaStream::Init(
+    const dom::Optional<double>& aFPS, nsIPrincipal* aPrincipal,
+    CanvasCaptureTrackSource* aTrackSource) {
   MediaTrackGraph* graph = MediaTrackGraph::GetInstance(
       MediaTrackGraph::SYSTEM_THREAD_DRIVER, GetOwnerWindow(),
       MediaTrackGraph::REQUEST_DEFAULT_SAMPLE_RATE,
@@ -176,13 +239,14 @@ nsresult CanvasCaptureMediaStream::Init(const dom::Optional<double>& aFPS,
   SourceMediaTrack* source = graph->CreateSourceTrack(MediaSegment::VIDEO);
   PrincipalHandle principalHandle = MakePrincipalHandle(aPrincipal);
   if (!aFPS.WasPassed()) {
-    mOutputStreamDriver = new AutoDriver(source, principalHandle);
+    mOutputStreamDriver = new AutoDriver(source, principalHandle, aTrackSource);
   } else if (aFPS.Value() < 0) {
     return NS_ERROR_ILLEGAL_VALUE;
   } else {
     // Cap frame rate to 60 FPS for sanity
     double fps = std::min(60.0, aFPS.Value());
-    mOutputStreamDriver = new TimerDriver(source, fps, principalHandle);
+    mOutputStreamDriver =
+        new TimerDriver(source, fps, principalHandle, aTrackSource);
   }
   return NS_OK;
 }
