@@ -54,6 +54,7 @@
 #include "jsapi.h"
 #include "mozilla/AppShutdown.h"
 #include "mozilla/AsyncEventDispatcher.h"
+#include "mozilla/Casting.h"
 #include "mozilla/EMEUtils.h"
 #include "mozilla/EventDispatcher.h"
 #include "mozilla/MathAlgorithms.h"
@@ -1456,8 +1457,8 @@ class HTMLMediaElement::MediaElementTrackSource
     return mMediaDecoderHasAlpha.valueOr(false);
   }
 
-  void GetSettings(dom::MediaTrackSettings& aResult) override {
-    if (!mOwner) {
+  void UpdateVideoSize() {
+    if (!mOwner || mTrack->mType != MediaSegment::VIDEO) {
       return;
     }
 
@@ -1466,8 +1467,9 @@ class HTMLMediaElement::MediaElementTrackSource
       return;
     }
 
-    aResult.mWidth.Construct(elem->VideoWidth());
-    aResult.mHeight.Construct(elem->VideoHeight());
+    mSettings = MediaStreamTrackSourceSettings{
+        .mWidth = Some(AssertedCast<int32_t>(elem->VideoWidth())),
+        .mHeight = Some(AssertedCast<int32_t>(elem->VideoHeight()))};
   }
 
   ProcessedMediaTrack* Track() const { return mTrack; }
@@ -4321,6 +4323,7 @@ void HTMLMediaElement::UpdateOutputTrackSources() {
          NS_ConvertUTF16toUTF8(id).get()));
 
     track->QueueSetAutoend(false);
+    source->UpdateVideoSize();
     MOZ_DIAGNOSTIC_ASSERT(!mOutputTrackSources.Contains(id));
     mOutputTrackSources.InsertOrUpdate(id, RefPtr{source});
 
@@ -7467,6 +7470,9 @@ void HTMLMediaElement::UpdateMediaSize(const nsIntSize& aSize,
 
   mMediaInfo.mVideo.mDisplay = aSize;
   mMediaInfo.mVideo.mRotation = aRotation;
+  for (const auto& source : mOutputTrackSources.Values()) {
+    source->UpdateVideoSize();
+  }
   mWatchManager.ManualNotify(&HTMLMediaElement::UpdateReadyStateInternal);
 }
 
