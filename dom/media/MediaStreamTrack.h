@@ -241,19 +241,6 @@ class MediaStreamTrackSource : public nsISupports {
   }
 
   /**
-   * Settings and capabilities as exposed to script. Overridden by sources
-   * that do not publish through the Canonicals yet.
-   */
-  virtual void GetSettings(dom::MediaTrackSettings& aResult) {
-    aResult = Settings().ToMediaTrackSettings();
-    AddDeviceIds(aResult);
-  }
-  virtual void GetCapabilities(dom::MediaTrackCapabilities& aResult) {
-    aResult = Capabilities().ToMediaTrackCapabilities();
-    AddDeviceIds(aResult);
-  }
-
-  /**
    * Called by the source interface when all registered sinks with
    * KeepsSourceAlive() == true have unregistered.
    */
@@ -424,14 +411,6 @@ class MediaStreamTrackSource : public nsISupports {
   const nsString mGroupId;
 
  protected:
-  template <typename T>
-  void AddDeviceIds(T& aResult) const {
-    if (!mDeviceId.IsEmpty()) {
-      aResult.mDeviceId.Construct(mDeviceId);
-      aResult.mGroupId.Construct(mGroupId);
-    }
-  }
-
   Canonical<MediaStreamTrackSourceSettings> mSettings;
   Canonical<MediaStreamTrackSourceCapabilities> mCapabilities;
 
