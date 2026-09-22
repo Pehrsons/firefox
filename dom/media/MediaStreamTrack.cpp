@@ -249,7 +249,12 @@ void MediaStreamTrack::Stop() {
 
 void MediaStreamTrack::GetCapabilities(MediaTrackCapabilities& aResult,
                                        CallerType aCallerType) {
-  GetSource().GetCapabilities(aResult);
+  const MediaStreamTrackSource& source = GetSource();
+  aResult = source.Capabilities().ToMediaTrackCapabilities();
+  if (!source.mDeviceId.IsEmpty()) {
+    aResult.mDeviceId.Construct(source.mDeviceId);
+    aResult.mGroupId.Construct(source.mGroupId);
+  }
 }
 
 void MediaStreamTrack::GetConstraints(dom::MediaTrackConstraints& aResult) {
@@ -258,7 +263,12 @@ void MediaStreamTrack::GetConstraints(dom::MediaTrackConstraints& aResult) {
 
 void MediaStreamTrack::GetSettings(dom::MediaTrackSettings& aResult,
                                    CallerType aCallerType) {
-  GetSource().GetSettings(aResult);
+  const MediaStreamTrackSource& source = GetSource();
+  aResult = source.Settings().ToMediaTrackSettings();
+  if (!source.mDeviceId.IsEmpty()) {
+    aResult.mDeviceId.Construct(source.mDeviceId);
+    aResult.mGroupId.Construct(source.mGroupId);
+  }
 
   // Spoof values when privacy.resistFingerprinting is true.
   if (!nsContentUtils::ShouldResistFingerprinting(
