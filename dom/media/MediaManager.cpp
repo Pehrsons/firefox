@@ -842,14 +842,27 @@ class GetUserMediaWindowListener {
   bool mMicrophonesAreMuted = false;
 };
 
+// Only camera and microphone tracks expose deviceId and groupId.
+static bool ExposesDeviceIds(const LocalMediaDevice* aDevice) {
+  if (!aDevice) {
+    return false;
+  }
+  MediaSourceEnum source = aDevice->GetMediaSource();
+  return source == MediaSourceEnum::Camera ||
+         source == MediaSourceEnum::Microphone;
+}
+
 class LocalTrackSource : public MediaStreamTrackSource {
  public:
   LocalTrackSource(nsIPrincipal* aPrincipal, const nsString& aLabel,
                    const RefPtr<DeviceListener>& aListener,
-                   MediaSourceEnum aSource, MediaTrack* aTrack,
-                   RefPtr<const PeerIdentity> aPeerIdentity,
+                   const LocalMediaDevice* aDevice, MediaSourceEnum aSource,
+                   MediaTrack* aTrack, RefPtr<const PeerIdentity> aPeerIdentity,
                    TrackingId aTrackingId = TrackingId())
-      : MediaStreamTrackSource(aPrincipal, aLabel, std::move(aTrackingId)),
+      : MediaStreamTrackSource(
+            aPrincipal, aLabel, std::move(aTrackingId),
+            ExposesDeviceIds(aDevice) ? aDevice->mID : nsString(),
+            ExposesDeviceIds(aDevice) ? aDevice->mGroupID : nsString()),
         mSource(aSource),
         mTrack(aTrack),
         mPeerIdentity(std::move(aPeerIdentity)),
@@ -885,12 +898,14 @@ class LocalTrackSource : public MediaStreamTrackSource {
     if (mListener) {
       mListener->GetSettings(aOutSettings);
     }
+    AddDeviceIds(aOutSettings);
   }
 
   void GetCapabilities(MediaTrackCapabilities& aOutCapabilities) override {
     if (mListener) {
       mListener->GetCapabilities(aOutCapabilities);
     }
+    AddDeviceIds(aOutCapabilities);
   }
 
   void Stop() override {
@@ -963,7 +978,7 @@ class AudioCaptureTrackSource : public LocalTrackSource {
                           const nsString& aLabel,
                           AudioCaptureTrack* aAudioCaptureTrack,
                           RefPtr<PeerIdentity> aPeerIdentity)
-      : LocalTrackSource(aPrincipal, aLabel, nullptr,
+      : LocalTrackSource(aPrincipal, aLabel, nullptr, nullptr,
                          MediaSourceEnum::AudioCapture, aAudioCaptureTrack,
                          std::move(aPeerIdentity)),
         mWindow(aWindow),
@@ -1845,7 +1860,7 @@ void GetUserMediaStreamTask::PrepareDOMStream() {
       track = mtg->CreateSourceTrack(MediaSegment::AUDIO);
 #endif
       audioTrackSource = new LocalTrackSource(
-          principal, audioDeviceName, mAudioDeviceListener,
+          principal, audioDeviceName, mAudioDeviceListener, mAudioDevice,
           mAudioDevice->GetMediaSource(), track, peerIdentity);
       MOZ_ASSERT(MediaManager::IsOn(mConstraints.mAudio));
       RefPtr<MediaStreamTrack> domTrack = new dom::AudioStreamTrack(
@@ -1858,7 +1873,7 @@ void GetUserMediaStreamTask::PrepareDOMStream() {
     const nsString& videoDeviceName = mVideoDevice->mName;
     RefPtr<MediaTrack> track = mtg->CreateSourceTrack(MediaSegment::VIDEO);
     videoTrackSource = new LocalTrackSource(
-        principal, videoDeviceName, mVideoDeviceListener,
+        principal, videoDeviceName, mVideoDeviceListener, mVideoDevice,
         mVideoDevice->GetMediaSource(), track, peerIdentity, *mVideoTrackingId);
     MOZ_ASSERT(MediaManager::IsOn(mConstraints.mVideo));
     RefPtr<MediaStreamTrack> domTrack = new dom::VideoStreamTrack(
@@ -4594,7 +4609,7 @@ already_AddRefed<DeviceListener> DeviceListener::Clone() const {
   auto listener = MakeRefPtr<DeviceListener>();
   auto trackSource = MakeRefPtr<LocalTrackSource>(
       thisTrackSource->GetPrincipal(), thisTrackSource->mLabel, listener,
-      thisTrackSource->mSource, track, thisTrackSource->mPeerIdentity,
+      device, thisTrackSource->mSource, track, thisTrackSource->mPeerIdentity,
       thisTrackSource->mTrackingId);
 
   LOG("DeviceListener {} registering clone", fmt::ptr(this));
@@ -4713,14 +4728,6 @@ void DeviceListener::Stop() {
 void DeviceListener::GetSettings(MediaTrackSettings& aOutSettings) const {
   MOZ_ASSERT(NS_IsMainThread(), "Only call on main thread");
   aOutSettings = mDeviceState->mSettings.Ref().ToMediaTrackSettings();
-
-  LocalMediaDevice* device = GetDevice();
-  MediaSourceEnum mediaSource = device->GetMediaSource();
-  if (mediaSource == MediaSourceEnum::Camera ||
-      mediaSource == MediaSourceEnum::Microphone) {
-    aOutSettings.mDeviceId.Construct(device->mID);
-    aOutSettings.mGroupId.Construct(device->mGroupID);
-  }
 }
 
 void DeviceListener::GetCapabilities(
@@ -4728,14 +4735,6 @@ void DeviceListener::GetCapabilities(
   MOZ_ASSERT(NS_IsMainThread(), "Only call on main thread");
   aOutCapabilities =
       mDeviceState->mCapabilities.Ref().ToMediaTrackCapabilities();
-
-  LocalMediaDevice* device = GetDevice();
-  MediaSourceEnum mediaSource = device->GetMediaSource();
-  if (mediaSource == MediaSourceEnum::Camera ||
-      mediaSource == MediaSourceEnum::Microphone) {
-    aOutCapabilities.mDeviceId.Construct(device->mID);
-    aOutCapabilities.mGroupId.Construct(device->mGroupID);
-  }
 }
 
 auto DeviceListener::UpdateDevice(bool aOn) -> RefPtr<DeviceOperationPromise> {
