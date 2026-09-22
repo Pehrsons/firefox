@@ -5,6 +5,7 @@
 #include "MediaStreamTrack.h"
 
 #include "DOMMediaStream.h"
+#include "GraphTrackHolder.h"
 #include "MediaSegment.h"
 #include "MediaStreamError.h"
 #include "MediaTrackGraph.h"
@@ -108,7 +109,6 @@ MediaStreamTrack::MediaStreamTrack(nsIGlobalObject* aGlobal,
                                    bool aMuted,
                                    const MediaTrackConstraints& aConstraints)
     : mGlobal(aGlobal),
-      mInputTrack(aInputTrack),
       mSource(aSource),
       mSink(MakeUnique<TrackSink>(this)),
       mPrincipal(aSource->GetPrincipal()),
@@ -124,28 +124,17 @@ MediaStreamTrack::MediaStreamTrack(nsIGlobalObject* aGlobal,
   if (!Ended()) {
     GetSource().RegisterSink(mSink.get());
 
-    // Even if the input track is destroyed we need mTrack so that methods
-    // like AddListener still work. Keeping the number of paths to a minimum
-    // also helps prevent bugs elsewhere. We'll be ended through the
-    // MediaStreamTrackSource soon enough.
-    auto graph = mInputTrack->IsDestroyed()
+    auto graph = aInputTrack->IsDestroyed()
                      ? MediaTrackGraph::GetInstanceIfExists(
-                           GetOwnerWindow(), mInputTrack->mSampleRate,
+                           GetOwnerWindow(), aInputTrack->mSampleRate,
                            MediaTrackGraph::DEFAULT_OUTPUT_DEVICE)
-                     : mInputTrack->Graph();
+                     : aInputTrack->Graph();
     MOZ_DIAGNOSTIC_ASSERT(graph,
                           "A destroyed input track is only expected when "
                           "cloning, but since we're live there must be another "
                           "live track that is keeping the graph alive");
-
-    mTrack = graph->CreateForwardedInputTrack(
-        mInputTrack->mType, mozilla::MediaTrack::Flag::EnableCanonicals);
-    mPort = mTrack->AllocateInputPort(mInputTrack);
-    mTrackEnded.Connect(&mTrack->CanonicalEnded());
-    mWatchManager.Watch(mTrackEnded, &MediaStreamTrack::OnTrackEnded);
-    mTrackPrincipalHandle.Connect(&mTrack->CanonicalPrincipalHandle());
-    mWatchManager.Watch(mTrackPrincipalHandle,
-                        &MediaStreamTrack::OnPrincipalHandleChanged);
+    mHolder = GraphTrackHolder::Create(aInputTrack, graph);
+    SetGraphTrack(mHolder->GraphTrack());
   }
 
   nsresult rv;
@@ -161,6 +150,21 @@ MediaStreamTrack::MediaStreamTrack(nsIGlobalObject* aGlobal,
   char chars[NSID_LENGTH];
   uuid.ToProvidedString(chars);
   mID = NS_ConvertASCIItoUTF16(chars);
+}
+
+void MediaStreamTrack::SetGraphTrack(ProcessedMediaTrack* aTrack) {
+  MOZ_ASSERT(aTrack);
+  MOZ_ASSERT(!mTrack);
+  mTrack = aTrack;
+  mTrackEnded.Connect(&mTrack->CanonicalEnded());
+  mWatchManager.Watch(mTrackEnded, &MediaStreamTrack::OnTrackEnded);
+  mTrackPrincipalHandle.Connect(&mTrack->CanonicalPrincipalHandle());
+  mWatchManager.Watch(mTrackPrincipalHandle,
+                      &MediaStreamTrack::OnPrincipalHandleChanged);
+}
+
+mozilla::MediaTrack* MediaStreamTrack::InputTrack() const {
+  return mHolder ? mHolder->InputTrack() : nullptr;
 }
 
 MediaStreamTrack::~MediaStreamTrack() { Destroy(); }
@@ -522,14 +526,11 @@ void MediaStreamTrack::SetReadyState(MediaStreamTrackState aState) {
     mWatchManager.Shutdown();
     mTrackEnded.DisconnectIfConnected();
     mTrackPrincipalHandle.DisconnectIfConnected();
-    if (mPort) {
-      mPort->Destroy();
-    }
-    if (mTrack) {
-      mTrack->Destroy();
-    }
-    mPort = nullptr;
     mTrack = nullptr;
+    if (mHolder) {
+      mHolder->Shutdown();
+      mHolder = nullptr;
+    }
   }
 
   mReadyState = aState;

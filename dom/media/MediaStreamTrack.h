@@ -42,6 +42,7 @@ class MediaMgrError;
 namespace dom {
 
 class AudioStreamTrack;
+class GraphTrackHolder;
 class VideoStreamTrack;
 class RTCStatsTimestampMaker;
 enum class CallerType : uint32_t;
@@ -443,36 +444,36 @@ class MediaStreamTrackConsumer : public SupportsWeakPtr {
  * DOM wrapper for MediaTrackGraph-MediaTracks.
  *
  * To account for cloning, a MediaStreamTrack wraps two internal (and chained)
- * MediaTracks:
- *   1. mInputTrack
+ * MediaTracks, held by its GraphTrackHolder:
+ *   1. The input track
  *      - Controlled by the producer of the data in the track. The producer
  *        decides on lifetime of the MediaTrack and the track inside it.
  *      - It can be any type of MediaTrack.
  *      - Contains one track only.
  *   2. mTrack
  *      - A ForwardedInputTrack representing this MediaStreamTrack.
- *      - Its data is piped from mInputTrack through mPort.
+ *      - Its data is piped from the input track through a port.
  *      - Contains one track only.
  *      - When this MediaStreamTrack is enabled/disabled this is reflected in
  *        the chunks in the track in mTrack.
  *      - When this MediaStreamTrack has ended, mTrack gets destroyed.
- *        Note that mInputTrack is unaffected, such that any clones of mTrack
- *        can live on. When all clones are ended, this is signaled to the
+ *        Note that the input track is unaffected, such that any clones of
+ *        mTrack can live on. When all clones are ended, this is signaled to the
  *        producer via our MediaStreamTrackSource. It is then likely to destroy
- *        mInputTrack.
+ *        the input track.
  *
  * A graphical representation of how tracks are connected when cloned follows:
  *
  * MediaStreamTrack A
- *       mInputTrack     mTrack
+ *       input track     mTrack
  *            t1 ---------> t1
  *               \
  *                -----
  * MediaStreamTrack B  \  (clone of A)
- *       mInputTrack   \ mTrack
+ *       input track   \ mTrack
  *            *          -> t1
  *
- *   (*) is a copy of A's mInputTrack
+ *   (*) is a copy of A's input track
  */
 // clang-format on
 class MediaStreamTrack : public DOMEventTargetHelper, public SupportsWeakPtr {
@@ -662,6 +663,14 @@ class MediaStreamTrack : public DOMEventTargetHelper, public SupportsWeakPtr {
   void OnTrackEnded();
 
   /**
+   * Starts borrowing aTrack as mTrack and mirroring its state.
+   */
+  void SetGraphTrack(ProcessedMediaTrack* aTrack);
+
+  // The input track of our holder, for cloning. Null without a holder.
+  mozilla::MediaTrack* InputTrack() const;
+
+  /**
    * Called when this track's readyState transitions to "ended".
    * Notifies all MediaStreamTrackConsumers that this track ended.
    */
@@ -712,7 +721,7 @@ class MediaStreamTrack : public DOMEventTargetHelper, public SupportsWeakPtr {
     MOZ_ASSERT(!!cloneRes.mSource == !!cloneRes.mInputTrack);
     if (!cloneRes.mSource || !cloneRes.mInputTrack) {
       cloneRes.mSource = mSource;
-      cloneRes.mInputTrack = mInputTrack;
+      cloneRes.mInputTrack = InputTrack();
     }
     auto newTrack = MakeRefPtr<TrackType>(
         GetParentObject(), cloneRes.mInputTrack, cloneRes.mSource, ReadyState(),
@@ -731,16 +740,13 @@ class MediaStreamTrack : public DOMEventTargetHelper, public SupportsWeakPtr {
   // that tearing down the global does not disconnect us from it: a track
   // keeps ending and firing events after its window has navigated away.
   nsCOMPtr<nsIGlobalObject> mGlobal;
-  // The input MediaTrack assigned us by the data producer.
-  // Owned by the producer.
-  const RefPtr<mozilla::MediaTrack> mInputTrack;
+  // Holds the input track assigned us by the data producer and owns mTrack.
+  // Set on construction if we're live. Valid until we end.
+  RefPtr<GraphTrackHolder> mHolder;
   // The MediaTrack representing this MediaStreamTrack in the MediaTrackGraph.
-  // Set on construction if we're live. Valid until we end. Owned by us.
+  // Borrowed from mHolder, which guarantees it is not destroyed while we
+  // borrow it. Set on construction if we're live. Valid until we end.
   RefPtr<ProcessedMediaTrack> mTrack;
-  // The MediaInputPort connecting mInputTrack to mTrack. Set on construction
-  // if mInputTrack is non-destroyed and we're live. Valid until we end. Owned
-  // by us.
-  RefPtr<MediaInputPort> mPort;
   RefPtr<MediaStreamTrackSource> mSource;
   const UniquePtr<TrackSink> mSink;
   nsCOMPtr<nsIPrincipal> mPrincipal;

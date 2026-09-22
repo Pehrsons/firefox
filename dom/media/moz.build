@@ -302,6 +302,7 @@ UNIFIED_SOURCES += [
     "GetUserMediaRequest.cpp",
     "GraphDriver.cpp",
     "GraphRunner.cpp",
+    "GraphTrackHolder.cpp",
     "ImageConversion.cpp",
     "MediaCache.cpp",
     "MediaContainerType.cpp",
