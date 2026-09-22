@@ -117,9 +117,17 @@ class MediaStreamTrackSource : public nsISupports {
 
   MediaStreamTrackSource(nsIPrincipal* aPrincipal, const nsString& aLabel,
                          TrackingId aTrackingId)
+      : MediaStreamTrackSource(aPrincipal, aLabel, std::move(aTrackingId),
+                               nsString(), nsString()) {}
+
+  MediaStreamTrackSource(nsIPrincipal* aPrincipal, const nsString& aLabel,
+                         TrackingId aTrackingId, const nsString& aDeviceId,
+                         const nsString& aGroupId)
       : mPrincipal(aPrincipal),
         mLabel(aLabel),
         mTrackingId(std::move(aTrackingId)),
+        mDeviceId(aDeviceId),
+        mGroupId(aGroupId),
         mStopped(false) {}
 
   /**
@@ -374,7 +382,20 @@ class MediaStreamTrackSource : public nsISupports {
   // frames for this track.
   const TrackingId mTrackingId;
 
+  // The deviceId and groupId settings. Empty for sources that don't expose
+  // them.
+  const nsString mDeviceId;
+  const nsString mGroupId;
+
  protected:
+  template <typename T>
+  void AddDeviceIds(T& aResult) const {
+    if (!mDeviceId.IsEmpty()) {
+      aResult.mDeviceId.Construct(mDeviceId);
+      aResult.mGroupId.Construct(mGroupId);
+    }
+  }
+
   // True if all MediaStreamTrack users have unregistered from this source and
   // Stop() has been called.
   bool mStopped;
