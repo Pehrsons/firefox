@@ -140,6 +140,7 @@ class RTCRtpReceiver : public nsISupports,
   void OnRtpPacket();
   void UpdateUnmuteBlockingState();
   void UpdateReceiveTrackMute();
+  void UpdateReceivingSize();
 
   Canonical<Ssrc>& CanonicalSsrc() { return mSsrc; }
   Canonical<Ssrc>& CanonicalVideoRtxSsrc() { return mVideoRtxSsrc; }
@@ -166,8 +167,6 @@ class RTCRtpReceiver : public nsISupports,
   }
 
   const RTCStatsTimestampMaker* GetTimestampMaker() const;
-
-  Maybe<gfx::IntSize> ReceivingSize() const;
 
  private:
   virtual ~RTCRtpReceiver();

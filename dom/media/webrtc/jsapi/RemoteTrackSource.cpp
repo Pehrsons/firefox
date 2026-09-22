@@ -32,16 +32,16 @@ RemoteTrackSource::RemoteTrackSource(SourceMediaTrack* aStream,
                                      TrackingId aTrackingId)
     : dom::MediaStreamTrackSource(aPrincipal, aLabel, std::move(aTrackingId)),
       mStream(aStream),
-      mReceiver(aReceiver) {}
+      mReceiver(aReceiver) {
+  if (mStream->mType == MediaSegment::VIDEO) {
+    SetReceivingSize(Nothing());
+  }
+}
 
 RemoteTrackSource::~RemoteTrackSource() { Destroy(); }
 
 void RemoteTrackSource::Destroy() {
   if (mStream) {
-    if (mReceiver && mStream->mType == MediaSegment::VIDEO) {
-      mReceivingSizeOnEnded = mReceiver->ReceivingSize().orElse(
-          [] { return Some(gfx::IntSize{0, 0}); });
-    }
     MOZ_ASSERT(!mStream->IsDestroyed());
     mStream->End();
     mStream->Destroy();
@@ -52,19 +52,11 @@ void RemoteTrackSource::Destroy() {
   }
 }
 
-void RemoteTrackSource::GetSettings(dom::MediaTrackSettings& aSettings) {
-  if (mReceivingSizeOnEnded) {
-    aSettings.mWidth.Construct(mReceivingSizeOnEnded->width);
-    aSettings.mHeight.Construct(mReceivingSizeOnEnded->height);
-    return;
-  }
-
-  if (mStream && mStream->mType == MediaSegment::VIDEO) {
-    const gfx::IntSize size = mReceiver->ReceivingSize().valueOrFrom(
-        [] { return gfx::IntSize{0, 0}; });
-    aSettings.mWidth.Construct(size.width);
-    aSettings.mHeight.Construct(size.height);
-  }
+void RemoteTrackSource::SetReceivingSize(const Maybe<gfx::IntSize>& aSize) {
+  MOZ_ASSERT(NS_IsMainThread());
+  const gfx::IntSize size = aSize.valueOr(gfx::IntSize{0, 0});
+  mSettings = MediaStreamTrackSourceSettings{.mWidth = Some(size.width),
+                                             .mHeight = Some(size.height)};
 }
 
 auto RemoteTrackSource::ApplyConstraints(
