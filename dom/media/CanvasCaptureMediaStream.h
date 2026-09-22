@@ -6,7 +6,9 @@
 #define mozilla_dom_CanvasCaptureMediaStream_h_
 
 #include "DOMMediaStream.h"
+#include "MediaStreamTrack.h"
 #include "PrincipalHandle.h"
+#include "mozilla/WeakPtr.h"
 #include "mozilla/dom/HTMLCanvasElement.h"
 
 class nsIPrincipal;
@@ -53,6 +55,32 @@ class OutputStreamFrameListener;
  * ----------------------------------------------------------------------------
  */
 
+class CanvasCaptureTrackSource final : public MediaStreamTrackSource,
+                                       public SupportsWeakPtr {
+ public:
+  NS_DECL_ISUPPORTS_INHERITED
+  NS_DECL_CYCLE_COLLECTION_CLASS_INHERITED(CanvasCaptureTrackSource,
+                                           MediaStreamTrackSource)
+
+  CanvasCaptureTrackSource(nsIPrincipal* aPrincipal,
+                           CanvasCaptureMediaStream* aCaptureStream);
+
+  MediaSourceEnum GetMediaSource() const override {
+    return MediaSourceEnum::Other;
+  }
+  bool HasAlpha() const override;
+  void Stop() override;
+  void Disable() override {}
+  void Enable() override {}
+
+  void SetCanvasSize(const CSSIntSize& aSize);
+
+ private:
+  virtual ~CanvasCaptureTrackSource() = default;
+
+  RefPtr<CanvasCaptureMediaStream> mCaptureStream;
+};
+
 /*
  * Base class for drivers of the output stream.
  * It is up to each sub class to implement the NewFrame() callback of
@@ -61,7 +89,8 @@ class OutputStreamFrameListener;
 class OutputStreamDriver : public FrameCaptureListener {
  public:
   OutputStreamDriver(SourceMediaTrack* aSourceStream,
-                     const PrincipalHandle& aPrincipalHandle);
+                     const PrincipalHandle& aPrincipalHandle,
+                     CanvasCaptureTrackSource* aTrackSource);
 
   NS_INLINE_DECL_THREADSAFE_REFCOUNTING(OutputStreamDriver);
 
@@ -83,8 +112,11 @@ class OutputStreamDriver : public FrameCaptureListener {
    */
   void EndTrack();
 
+  void CanvasSizeChanged(const CSSIntSize& aSize) override;
+
   const RefPtr<SourceMediaTrack> mSourceStream;
   const PrincipalHandle mPrincipalHandle;
+  const WeakPtr<CanvasCaptureTrackSource> mTrackSource;
 
  protected:
   virtual ~OutputStreamDriver();
@@ -99,7 +131,8 @@ class CanvasCaptureMediaStream : public DOMMediaStream {
   NS_DECL_CYCLE_COLLECTION_CLASS_INHERITED(CanvasCaptureMediaStream,
                                            DOMMediaStream)
 
-  nsresult Init(const dom::Optional<double>& aFPS, nsIPrincipal* aPrincipal);
+  nsresult Init(const dom::Optional<double>& aFPS, nsIPrincipal* aPrincipal,
+                CanvasCaptureTrackSource* aTrackSource);
 
   JSObject* WrapObject(JSContext* aCx,
                        JS::Handle<JSObject*> aGivenProto) override;
