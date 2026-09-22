@@ -48,8 +48,6 @@ class AudioDestinationTrackSource final : public MediaStreamTrackSource {
     return MediaSourceEnum::AudioCapture;
   }
 
-  void GetSettings(MediaTrackSettings& aSettings) override {}
-
   void Stop() override { Destroy(); }
 
   void Disable() override {}

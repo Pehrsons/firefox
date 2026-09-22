@@ -5,6 +5,7 @@
 #ifndef MEDIASTREAMTRACK_H_
 #define MEDIASTREAMTRACK_H_
 
+#include "MediaEngineSource.h"
 #include "MediaTrackConstraints.h"
 #include "PerformanceRecorder.h"
 #include "PrincipalChangeObserver.h"
@@ -44,6 +45,9 @@ class AudioStreamTrack;
 class VideoStreamTrack;
 class RTCStatsTimestampMaker;
 enum class CallerType : uint32_t;
+
+using MediaStreamTrackSourceSettings = MediaEngineSourceSettings;
+using MediaStreamTrackSourceCapabilities = MediaEngineSourceCapabilities;
 
 /**
  * Common interface through which a MediaStreamTrack can communicate with its
@@ -120,6 +124,7 @@ class MediaStreamTrackSource : public nsISupports {
       : MediaStreamTrackSource(aPrincipal, aLabel, std::move(aTrackingId),
                                nsString(), nsString()) {}
 
+  // The Canonicals are owned by AbstractThread::GetCurrent(), which must exist.
   MediaStreamTrackSource(nsIPrincipal* aPrincipal, const nsString& aLabel,
                          TrackingId aTrackingId, const nsString& aDeviceId,
                          const nsString& aGroupId)
@@ -128,6 +133,12 @@ class MediaStreamTrackSource : public nsISupports {
         mTrackingId(std::move(aTrackingId)),
         mDeviceId(aDeviceId),
         mGroupId(aGroupId),
+        mSettings(AbstractThread::GetCurrent(),
+                  MediaStreamTrackSourceSettings(),
+                  "MediaStreamTrackSource::mSettings"),
+        mCapabilities(AbstractThread::GetCurrent(),
+                      MediaStreamTrackSourceCapabilities(),
+                      "MediaStreamTrackSource::mCapabilities"),
         mStopped(false) {}
 
   /**
@@ -211,11 +222,36 @@ class MediaStreamTrackSource : public nsISupports {
       const dom::MediaTrackConstraints& aConstraints, CallerType aCallerType);
 
   /**
-   * Same for GetSettings (no-op).
+   * The settings and capabilities of this source, owned by the thread it was
+   * created on. Subclasses set them as their state changes so that mirrors on
+   * other threads stay up to date.
    */
-  virtual void GetSettings(dom::MediaTrackSettings& aResult) = 0;
+  AbstractCanonical<MediaStreamTrackSourceSettings>& CanonicalSettings() {
+    return mSettings;
+  }
+  AbstractCanonical<MediaStreamTrackSourceCapabilities>&
+  CanonicalCapabilities() {
+    return mCapabilities;
+  }
+  const MediaStreamTrackSourceSettings& Settings() const {
+    return mSettings.Ref();
+  }
+  const MediaStreamTrackSourceCapabilities& Capabilities() const {
+    return mCapabilities.Ref();
+  }
 
-  virtual void GetCapabilities(dom::MediaTrackCapabilities& aResult) {};
+  /**
+   * Settings and capabilities as exposed to script. Overridden by sources
+   * that do not publish through the Canonicals yet.
+   */
+  virtual void GetSettings(dom::MediaTrackSettings& aResult) {
+    aResult = Settings().ToMediaTrackSettings();
+    AddDeviceIds(aResult);
+  }
+  virtual void GetCapabilities(dom::MediaTrackCapabilities& aResult) {
+    aResult = Capabilities().ToMediaTrackCapabilities();
+    AddDeviceIds(aResult);
+  }
 
   /**
    * Called by the source interface when all registered sinks with
@@ -395,6 +431,9 @@ class MediaStreamTrackSource : public nsISupports {
       aResult.mGroupId.Construct(mGroupId);
     }
   }
+
+  Canonical<MediaStreamTrackSourceSettings> mSettings;
+  Canonical<MediaStreamTrackSourceCapabilities> mCapabilities;
 
   // True if all MediaStreamTrack users have unregistered from this source and
   // Stop() has been called.
