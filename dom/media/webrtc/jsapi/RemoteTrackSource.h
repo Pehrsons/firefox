@@ -31,8 +31,6 @@ class RemoteTrackSource : public dom::MediaStreamTrackSource {
     return dom::MediaSourceEnum::Other;
   }
 
-  void GetSettings(dom::MediaTrackSettings& aSettings) override;
-
   RefPtr<ApplyConstraintsPromise> ApplyConstraints(
       const dom::MediaTrackConstraints& aConstraints,
       dom::CallerType aCallerType) override;
@@ -48,6 +46,7 @@ class RemoteTrackSource : public dom::MediaStreamTrackSource {
 
   void SetPrincipal(nsIPrincipal* aPrincipal);
   void SetMuted(bool aMuted);
+  void SetReceivingSize(const Maybe<gfx::IntSize>& aSize);
   void ForceEnded();
 
   SourceMediaTrack* Stream() const;
@@ -59,7 +58,6 @@ class RemoteTrackSource : public dom::MediaStreamTrackSource {
 
   RefPtr<SourceMediaTrack> mStream;
   RefPtr<dom::RTCRtpReceiver> mReceiver;
-  Maybe<gfx::IntSize> mReceivingSizeOnEnded;
 };
 
 }  // namespace mozilla

@@ -174,6 +174,7 @@ RTCRtpReceiver::RTCRtpReceiver(
         principalHandle, aPrivacy);
     mReceivingSize.Connect(
         aConduit->AsVideoSessionConduit().ref()->CanonicalReceivingSize());
+    mWatchManager.Watch(mReceivingSize, &RTCRtpReceiver::UpdateReceivingSize);
   }
 
   mPipeline->InitControl(this);
@@ -1269,11 +1270,9 @@ const RTCStatsTimestampMaker* RTCRtpReceiver::GetTimestampMaker() const {
   return &mPc->GetTimestampMaker();
 }
 
-Maybe<gfx::IntSize> RTCRtpReceiver::ReceivingSize() const {
+void RTCRtpReceiver::UpdateReceivingSize() {
   MOZ_ASSERT(NS_IsMainThread());
-  MOZ_ASSERT_IF(mPipeline,
-                mPipeline->mConduit->type() == MediaSessionConduit::VIDEO);
-  return mReceivingSize.Ref();
+  mTrackSource->SetReceivingSize(mReceivingSize.Ref());
 }
 
 }  // namespace mozilla::dom
