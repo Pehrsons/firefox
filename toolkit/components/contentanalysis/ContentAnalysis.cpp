@@ -2969,11 +2969,12 @@ ContentAnalysis::CheckUploadsInBatchMode(
     return FilesAllowedPromise::CreateAndResolve(std::move(aFiles), __func__);
   }
 
-  auto numberOfRequestsLeft = std::make_shared<size_t>(aFiles.Length());
-  auto allowedFiles = MakeRefPtr<media::Refcountable<nsCOMArray<nsIFile>>>();
+  // Resolves with the file if allowed and nullptr if blocked. Rejects if the
+  // compound request got canceled or failed.
+  using PerFilePromise = MozPromise<RefPtr<nsIFile>, nsresult, true>;
   auto userActionIds =
       MakeRefPtr<media::Refcountable<mozilla::HashSet<nsCString>>>();
-  auto promise = MakeRefPtr<FilesAllowedPromise::Private>(__func__);
+  nsTArray<RefPtr<PerFilePromise>> perFilePromises;
   nsCOMPtr<nsIURI> uri;
   if (aWindow) {
     uri = aWindow->GetDocumentURI();
@@ -3028,89 +3029,84 @@ ContentAnalysis::CheckUploadsInBatchMode(
     request->SetTimeoutMultiplier(static_cast<uint32_t>(aFiles.Count()));
     nsTArray<RefPtr<nsIContentAnalysisRequest>> singleRequest{
         std::move(request)};
-    auto callback =
-        mozilla::MakeRefPtr<mozilla::contentanalysis::ContentAnalysisCallback>(
-            // Note that this gets coerced to a std::function<>, which means it
-            // has to be copyable, so everything captured here must be copyable,
-            // which is why allowedFiles needs to be wrapped in a RefPtr and not
-            // simply std::move()d.
-            [promise, allowedFiles, numberOfRequestsLeft, file = RefPtr{file},
-             userActionIds](nsIContentAnalysisResult* aResult) {
-              // Since we're on the main thread, don't need to synchronize
-              // access to allowedFiles or numberOfRequestsLeft
-              AssertIsOnMainThread();
-              nsCOMPtr<nsIContentAnalysisResponse> response =
-                  do_QueryInterface(aResult);
-              LOGD(
-                  "Processing callback for batched file request, "
-                  "numberOfRequestsLeft=%zu",
-                  *(numberOfRequestsLeft.get()));
-              RefPtr<ContentAnalysis> owner = GetContentAnalysisFromService();
-              if (response && response->GetAction() ==
-                                  nsIContentAnalysisResponse::eCanceled) {
-                // This was cancelled, so even if some other files have been
-                // allowed we want to return an empty result.
-                LOGD("Batched file request got cancel response");
-                // Some of these may have finished already, but that's OK.
-                // Remove the userActionIds array, then cancel its entries, so
-                // that we only cancel them once.
-                if (owner) {
-                  if (auto entry =
-                          owner->mCompoundUserActions.lookup(userActionIds)) {
-                    owner->mCompoundUserActions.remove(entry);
-                    for (auto iter = userActionIds->iter(); !iter.done();
-                         iter.next()) {
-                      owner->CancelRequestsByUserAction(iter.get());
-                    }
-                  }
-                }
-                nsCOMArray<nsIFile> emptyFiles;
-                // Note that Resolve() will do nothing if the promise has
-                // already been resolved.
-                promise->Resolve(std::move(emptyFiles), __func__);
-                return;
-              }
-              if (aResult->GetShouldAllowContent()) {
-                allowedFiles->AppendElement(file);
-              }
-              (*numberOfRequestsLeft)--;
-              if (*numberOfRequestsLeft == 0) {
-                promise->Resolve(std::move(*allowedFiles), __func__);
-                if (owner) {
-                  owner->mCompoundUserActions.remove(userActionIds);
-                }
-              }
-            },
-            [promise, userActionIds](nsresult aError) {
-              // cancel all requests
-              AssertIsOnMainThread();
+    MozPromiseHolder<PerFilePromise> perFileHolder;
+    RefPtr perFilePromise = perFileHolder.Ensure(__func__);
+    perFileHolder.UseSynchronousTaskDispatch(__func__);
+    perFilePromises.AppendElement(perFilePromise);
+    auto callback = mozilla::MakeRefPtr<
+        mozilla::contentanalysis::ContentAnalysisCallback>(
+        [h = std::move(perFileHolder), file = RefPtr{file}, userActionIds](
+            mozilla::contentanalysis::ContentAnalysisCallback::CombinedResult&&
+                aResult) mutable {
+          AssertIsOnMainThread();
+          nsCOMPtr<nsIContentAnalysisResponse> response;
+          if (aResult.isOk()) {
+            response = do_QueryInterface(aResult.inspect());
+          }
+          LOGD("Processing callback for batched file request");
+          const bool canceled =
+              response &&
+              response->GetAction() == nsIContentAnalysisResponse::eCanceled;
+          if (canceled || aResult.isErr()) {
+            if (canceled) {
+              // This was cancelled, so even if some other files have been
+              // allowed we want to return an empty result.
+              LOGD("Batched file request got cancel response");
+            } else {
               LOGE("Batched file request got error %s",
-                   SafeGetStaticErrorName(aError));
-              RefPtr<ContentAnalysis> owner = GetContentAnalysisFromService();
-              // Some of these may have finished already, but that's OK.
-              // Remove the userActionIds array, then cancel its entries, so
-              // that we only cancel these once.
-              if (owner) {
-                if (auto entry =
-                        owner->mCompoundUserActions.lookup(userActionIds)) {
-                  owner->mCompoundUserActions.remove(entry);
-                  for (auto iter = userActionIds->iter(); !iter.done();
-                       iter.next()) {
-                    owner->CancelRequestsByUserAction(iter.get());
-                  }
+                   SafeGetStaticErrorName(aResult.inspectErr()));
+            }
+            // Some of these may have finished already, but that's OK.
+            // Remove the userActionIds array, then cancel its entries, so
+            // that we only cancel them once.
+            if (RefPtr<ContentAnalysis> owner =
+                    GetContentAnalysisFromService()) {
+              if (auto entry =
+                      owner->mCompoundUserActions.lookup(userActionIds)) {
+                owner->mCompoundUserActions.remove(entry);
+                for (auto iter = userActionIds->iter(); !iter.done();
+                     iter.next()) {
+                  owner->CancelRequestsByUserAction(iter.get());
                 }
               }
-              nsCOMArray<nsIFile> emptyFiles;
-              // Note that Resolve() will do nothing if the promise has already
-              // been resolved.
-              promise->Resolve(std::move(emptyFiles), __func__);
-            });
+            }
+            h.Reject(canceled ? NS_ERROR_ABORT : aResult.unwrapErr(), __func__);
+            return;
+          }
+          if (aResult.inspect()->GetShouldAllowContent()) {
+            h.Resolve(file, __func__);
+          } else {
+            h.Resolve(nullptr, __func__);
+          }
+        });
     contentAnalysis->AnalyzeContentRequestsCallback(singleRequest,
                                                     aAutoAcknowledge, callback);
   }
 
   cancelOnError.release();
-  return promise;
+  return PerFilePromise::All(GetCurrentSerialEventTarget(), perFilePromises)
+      ->Then(
+          GetCurrentSerialEventTarget(), __func__,
+          [userActionIds](CopyableTArray<RefPtr<nsIFile>>&& aResults) {
+            nsCOMArray<nsIFile> allowedFiles;
+            for (auto& file : aResults) {
+              if (file) {
+                allowedFiles.AppendElement(file);
+              }
+            }
+            if (RefPtr<ContentAnalysis> owner =
+                    GetContentAnalysisFromService()) {
+              owner->mCompoundUserActions.remove(userActionIds);
+            }
+            return FilesAllowedPromise::CreateAndResolve(
+                std::move(allowedFiles), __func__);
+          },
+          [](nsresult) {
+            // The compound request got canceled or failed, so even if some
+            // files have been allowed we want to return an empty result.
+            return FilesAllowedPromise::CreateAndResolve(nsCOMArray<nsIFile>(),
+                                                         __func__);
+          });
 }
 
 NS_IMETHODIMP
