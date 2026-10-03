@@ -2598,156 +2598,150 @@ ContentAnalysis::PrintToPDFToDetermineIfPrintAllowed(
 
   contentAnalysisPrintSettings->SetOutputStream(outputStream.get());
   RefPtr<dom::CanonicalBrowsingContext> browsingContext = aBrowsingContext;
-  auto promise = MakeRefPtr<PrintAllowedPromise::Private>(__func__);
   nsCOMPtr<nsIPrintSettings> finalPrintSettings(aPrintSettings);
-  aBrowsingContext
+  return aBrowsingContext
       ->PrintWithNoContentAnalysis(contentAnalysisPrintSettings, true, nullptr)
       ->Then(
           GetCurrentSerialEventTarget(), __func__,
-          [browsingContext, contentAnalysisPrintSettings, finalPrintSettings,
-           promise](
-              dom::MaybeDiscardedBrowsingContext cachedStaticBrowsingContext)
-              MOZ_CAN_RUN_SCRIPT_BOUNDARY_LAMBDA mutable {
-                nsCOMPtr<nsIOutputStream> outputStream;
-                contentAnalysisPrintSettings->GetOutputStream(
-                    getter_AddRefs(outputStream));
-                nsCOMPtr<nsIStorageStream> storageStream =
-                    do_QueryInterface(outputStream);
-                MOZ_ASSERT(storageStream);
-                nsTArray<uint8_t> printData;
-                uint32_t length = 0;
-                storageStream->GetLength(&length);
-                if (!printData.SetLength(length, fallible)) {
-                  promise->Reject(
-                      PrintAllowedError(NS_ERROR_OUT_OF_MEMORY,
-                                        cachedStaticBrowsingContext),
-                      __func__);
-                  return;
-                }
-                nsCOMPtr<nsIInputStream> inputStream;
-                nsresult rv = storageStream->NewInputStream(
-                    0, getter_AddRefs(inputStream));
-                if (NS_FAILED(rv)) {
-                  promise->Reject(
-                      PrintAllowedError(rv, cachedStaticBrowsingContext),
-                      __func__);
-                  return;
-                }
-                uint32_t currentPosition = 0;
-                while (currentPosition < length) {
-                  uint32_t elementsRead = 0;
-                  // Make sure the reinterpret_cast<> below is safe
-                  static_assert(std::is_trivially_assignable_v<
-                                decltype(*printData.Elements()), char>);
-                  rv = inputStream->Read(
-                      reinterpret_cast<char*>(printData.Elements()) +
-                          currentPosition,
-                      length - currentPosition, &elementsRead);
-                  if (NS_WARN_IF(NS_FAILED(rv) || !elementsRead)) {
-                    promise->Reject(
-                        PrintAllowedError(NS_FAILED(rv) ? rv : NS_ERROR_FAILURE,
+          [browsingContext, contentAnalysisPrintSettings, finalPrintSettings](
+              const MozPromise<dom::MaybeDiscardedBrowsingContext, nsresult,
+                               false>::ResolveOrRejectValue&
+                  aResult) MOZ_CAN_RUN_SCRIPT_BOUNDARY_LAMBDA mutable
+              -> RefPtr<PrintAllowedPromise> {
+            if (aResult.IsReject()) {
+              return PrintAllowedPromise::CreateAndReject(
+                  PrintAllowedError(aResult.RejectValue()), __func__);
+            }
+            dom::MaybeDiscardedBrowsingContext cachedStaticBrowsingContext =
+                aResult.ResolveValue();
+            nsCOMPtr<nsIOutputStream> outputStream;
+            contentAnalysisPrintSettings->GetOutputStream(
+                getter_AddRefs(outputStream));
+            nsCOMPtr<nsIStorageStream> storageStream =
+                do_QueryInterface(outputStream);
+            MOZ_ASSERT(storageStream);
+            nsTArray<uint8_t> printData;
+            uint32_t length = 0;
+            storageStream->GetLength(&length);
+            if (!printData.SetLength(length, fallible)) {
+              return PrintAllowedPromise::CreateAndReject(
+                  PrintAllowedError(NS_ERROR_OUT_OF_MEMORY,
+                                    cachedStaticBrowsingContext),
+                  __func__);
+            }
+            nsCOMPtr<nsIInputStream> inputStream;
+            nsresult rv =
+                storageStream->NewInputStream(0, getter_AddRefs(inputStream));
+            if (NS_FAILED(rv)) {
+              return PrintAllowedPromise::CreateAndReject(
+                  PrintAllowedError(rv, cachedStaticBrowsingContext), __func__);
+            }
+            uint32_t currentPosition = 0;
+            while (currentPosition < length) {
+              uint32_t elementsRead = 0;
+              // Make sure the reinterpret_cast<> below is safe
+              static_assert(std::is_trivially_assignable_v<
+                            decltype(*printData.Elements()), char>);
+              rv = inputStream->Read(
+                  reinterpret_cast<char*>(printData.Elements()) +
+                      currentPosition,
+                  length - currentPosition, &elementsRead);
+              if (NS_WARN_IF(NS_FAILED(rv) || !elementsRead)) {
+                return PrintAllowedPromise::CreateAndReject(
+                    PrintAllowedError(NS_FAILED(rv) ? rv : NS_ERROR_FAILURE,
+                                      cachedStaticBrowsingContext),
+                    __func__);
+              }
+              currentPosition += elementsRead;
+            }
+
+            nsString printerName;
+            rv = contentAnalysisPrintSettings->GetPrinterName(printerName);
+            if (NS_WARN_IF(NS_FAILED(rv))) {
+              return PrintAllowedPromise::CreateAndReject(
+                  PrintAllowedError(rv, cachedStaticBrowsingContext), __func__);
+            }
+
+            auto* windowParent = browsingContext->GetCurrentWindowGlobal();
+            if (!windowParent) {
+              // The print window may have been closed by the user by now.
+              // Cancel the print.
+              return PrintAllowedPromise::CreateAndReject(
+                  PrintAllowedError(NS_ERROR_ABORT,
+                                    cachedStaticBrowsingContext),
+                  __func__);
+            }
+            nsCOMPtr<nsIURI> uri = GetURIForBrowsingContext(
+                windowParent->Canonical()->GetBrowsingContext());
+            if (!uri) {
+              return PrintAllowedPromise::CreateAndReject(
+                  PrintAllowedError(NS_ERROR_FAILURE,
+                                    cachedStaticBrowsingContext),
+                  __func__);
+            }
+            // It's a little unclear what we should pass to the agent if
+            // print.always_print_silent is true, because in that case we
+            // don't show the print preview dialog or the system print
+            // dialog.
+            //
+            // I'm thinking of the print preview dialog case as the "normal"
+            // one, so to me printing without a dialog is closer to the
+            // system print dialog case.
+            bool isFromPrintPreviewDialog =
+                !Preferences::GetBool("print.prefer_system_dialog") &&
+                !Preferences::GetBool("print.always_print_silent");
+            RefPtr<nsIContentAnalysisRequest> contentAnalysisRequest =
+                new contentanalysis::ContentAnalysisRequest(
+                    std::move(printData), std::move(uri),
+                    std::move(printerName),
+                    isFromPrintPreviewDialog
+                        ? nsIContentAnalysisRequest::Reason::ePrintPreviewPrint
+                        : nsIContentAnalysisRequest::Reason::eSystemDialogPrint,
+                    windowParent);
+            nsCOMPtr<nsIContentAnalysis> contentAnalysis =
+                mozilla::components::nsIContentAnalysis::Service();
+            if (NS_WARN_IF(!contentAnalysis)) {
+              return PrintAllowedPromise::CreateAndReject(
+                  PrintAllowedError(NS_ERROR_NOT_AVAILABLE,
+                                    cachedStaticBrowsingContext),
+                  __func__);
+            }
+            bool isActive = false;
+            rv = contentAnalysis->GetIsActive(&isActive);
+            // Should not be called if content analysis is not active
+            MOZ_ASSERT(isActive);
+            (void)NS_WARN_IF(NS_FAILED(rv));
+            MozPromiseHolder<PrintAllowedPromise> holder;
+            RefPtr<PrintAllowedPromise> promise = holder.Ensure(__func__);
+            auto callback = MakeRefPtr<
+                contentanalysis::ContentAnalysisCallback>(
+                [holder = std::move(holder), browsingContext,
+                 cachedStaticBrowsingContext,
+                 finalPrintSettings = std::move(finalPrintSettings)](
+                    contentanalysis::ContentAnalysisCallback::CombinedResult&&
+                        aResult) MOZ_CAN_RUN_SCRIPT_BOUNDARY_LAMBDA mutable {
+                  if (aResult.isOk()) {
+                    holder.Resolve(
+                        PrintAllowedResult(
+                            aResult.inspect()->GetShouldAllowContent(),
+                            cachedStaticBrowsingContext),
+                        __func__);
+                  } else {
+                    holder.Reject(
+                        PrintAllowedError(aResult.unwrapErr(),
                                           cachedStaticBrowsingContext),
                         __func__);
-                    return;
                   }
-                  currentPosition += elementsRead;
-                }
-
-                nsString printerName;
-                rv = contentAnalysisPrintSettings->GetPrinterName(printerName);
-                if (NS_WARN_IF(NS_FAILED(rv))) {
-                  promise->Reject(
-                      PrintAllowedError(rv, cachedStaticBrowsingContext),
-                      __func__);
-                  return;
-                }
-
-                auto* windowParent = browsingContext->GetCurrentWindowGlobal();
-                if (!windowParent) {
-                  // The print window may have been closed by the user by now.
-                  // Cancel the print.
-                  promise->Reject(
-                      PrintAllowedError(NS_ERROR_ABORT,
-                                        cachedStaticBrowsingContext),
-                      __func__);
-                  return;
-                }
-                nsCOMPtr<nsIURI> uri = GetURIForBrowsingContext(
-                    windowParent->Canonical()->GetBrowsingContext());
-                if (!uri) {
-                  promise->Reject(
-                      PrintAllowedError(NS_ERROR_FAILURE,
-                                        cachedStaticBrowsingContext),
-                      __func__);
-                  return;
-                }
-                // It's a little unclear what we should pass to the agent if
-                // print.always_print_silent is true, because in that case we
-                // don't show the print preview dialog or the system print
-                // dialog.
-                //
-                // I'm thinking of the print preview dialog case as the "normal"
-                // one, so to me printing without a dialog is closer to the
-                // system print dialog case.
-                bool isFromPrintPreviewDialog =
-                    !Preferences::GetBool("print.prefer_system_dialog") &&
-                    !Preferences::GetBool("print.always_print_silent");
-                RefPtr<nsIContentAnalysisRequest> contentAnalysisRequest =
-                    new contentanalysis::ContentAnalysisRequest(
-                        std::move(printData), std::move(uri),
-                        std::move(printerName),
-                        isFromPrintPreviewDialog
-                            ? nsIContentAnalysisRequest::Reason::
-                                  ePrintPreviewPrint
-                            : nsIContentAnalysisRequest::Reason::
-                                  eSystemDialogPrint,
-                        windowParent);
-                auto callback =
-                    MakeRefPtr<contentanalysis::ContentAnalysisCallback>(
-                        [browsingContext, cachedStaticBrowsingContext, promise,
-                         finalPrintSettings = std::move(finalPrintSettings)](
-                            nsIContentAnalysisResult* aResult)
-                            MOZ_CAN_RUN_SCRIPT_BOUNDARY_LAMBDA mutable {
-                              promise->Resolve(
-                                  PrintAllowedResult(
-                                      aResult->GetShouldAllowContent(),
-                                      cachedStaticBrowsingContext),
-                                  __func__);
-                            },
-                        [promise,
-                         cachedStaticBrowsingContext](nsresult aError) {
-                          promise->Reject(
-                              PrintAllowedError(aError,
-                                                cachedStaticBrowsingContext),
-                              __func__);
-                        });
-                nsCOMPtr<nsIContentAnalysis> contentAnalysis =
-                    mozilla::components::nsIContentAnalysis::Service();
-                if (NS_WARN_IF(!contentAnalysis)) {
-                  promise->Reject(
-                      PrintAllowedError(rv, cachedStaticBrowsingContext),
-                      __func__);
-                } else {
-                  bool isActive = false;
-                  nsresult rv = contentAnalysis->GetIsActive(&isActive);
-                  // Should not be called if content analysis is not active
-                  MOZ_ASSERT(isActive);
-                  (void)NS_WARN_IF(NS_FAILED(rv));
-                  AutoTArray<RefPtr<nsIContentAnalysisRequest>, 1> requests{
-                      contentAnalysisRequest};
-                  rv = contentAnalysis->AnalyzeContentRequestsCallback(
-                      requests, /* aAutoAcknowledge */ true, callback);
-                  if (NS_WARN_IF(NS_FAILED(rv))) {
-                    promise->Reject(
-                        PrintAllowedError(rv, cachedStaticBrowsingContext),
-                        __func__);
-                  }
-                }
-              },
-          [promise](nsresult aError) {
-            promise->Reject(PrintAllowedError(aError), __func__);
+                });
+            AutoTArray<RefPtr<nsIContentAnalysisRequest>, 1> requests{
+                contentAnalysisRequest};
+            // AnalyzeContentRequestsCallback invokes the callback on every
+            // path, including when it returns failure.
+            rv = contentAnalysis->AnalyzeContentRequestsCallback(
+                requests, /* aAutoAcknowledge */ true, callback);
+            (void)NS_WARN_IF(NS_FAILED(rv));
+            return promise;
           });
-  return promise;
 }
 
 // For copies, the content analysis clipboard paste response cache is not
