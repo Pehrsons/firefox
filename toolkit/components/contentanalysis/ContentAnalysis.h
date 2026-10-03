@@ -4,7 +4,9 @@
 #ifndef mozilla_contentanalysis_h
 #define mozilla_contentanalysis_h
 
+#include "mozilla/MoveOnlyFunction.h"
 #include "mozilla/MozPromise.h"
+#include "mozilla/Result.h"
 #include "mozilla/dom/BrowsingContext.h"
 #include "mozilla/dom/MaybeDiscarded.h"
 #include "mozilla/dom/Promise.h"
@@ -552,14 +554,21 @@ class ContentAnalysisCallback final : public nsIContentAnalysisCallback {
   NS_DECL_THREADSAFE_ISUPPORTS
   NS_DECL_NSICONTENTANALYSISCALLBACK
   ContentAnalysisCallback(
-      std::function<void(nsIContentAnalysisResult*)>&& aContentResponseCallback,
-      std::function<void(nsresult)>&& aErrorCallback)
+      mozilla::MoveOnlyFunction<void(nsIContentAnalysisResult*)>&&
+          aContentResponseCallback,
+      mozilla::MoveOnlyFunction<void(nsresult)>&& aErrorCallback)
       : mContentResponseCallback(std::move(aContentResponseCallback)),
         mErrorCallback(std::move(aErrorCallback)) {}
 
   explicit ContentAnalysisCallback(
-      std::function<void(nsIContentAnalysisResult*)>&&
+      mozilla::MoveOnlyFunction<void(nsIContentAnalysisResult*)>&&
           aContentResponseCallback);
+
+  using CombinedResult =
+      mozilla::Result<RefPtr<nsIContentAnalysisResult>, nsresult>;
+
+  explicit ContentAnalysisCallback(
+      mozilla::MoveOnlyFunction<void(CombinedResult&&)>&& aCombinedCallback);
 
   // Wrap a given callback, in case it doesn't provide the guarantees that
   // this one does (such as checking that it is eventually called).
@@ -575,7 +584,8 @@ class ContentAnalysisCallback final : public nsIContentAnalysisCallback {
 
  private:
   virtual ~ContentAnalysisCallback() {
-    MOZ_ASSERT(!mContentResponseCallback && !mErrorCallback && !mPromise,
+    MOZ_ASSERT(!mContentResponseCallback && !mErrorCallback &&
+                   !mCombinedCallback && !mPromise,
                "ContentAnalysisCallback never called!");
   }
 
@@ -583,12 +593,15 @@ class ContentAnalysisCallback final : public nsIContentAnalysisCallback {
   void ClearCallbacks() {
     mContentResponseCallback = nullptr;
     mErrorCallback = nullptr;
+    mCombinedCallback = nullptr;
     mPromise = nullptr;
   }
 
   explicit ContentAnalysisCallback(dom::Promise* aPromise);
-  std::function<void(nsIContentAnalysisResult*)> mContentResponseCallback;
-  std::function<void(nsresult)> mErrorCallback;
+  mozilla::MoveOnlyFunction<void(nsIContentAnalysisResult*)>
+      mContentResponseCallback;
+  mozilla::MoveOnlyFunction<void(nsresult)> mErrorCallback;
+  mozilla::MoveOnlyFunction<void(CombinedResult&&)> mCombinedCallback;
   RefPtr<dom::Promise> mPromise;
   friend class ContentAnalysis;
 };

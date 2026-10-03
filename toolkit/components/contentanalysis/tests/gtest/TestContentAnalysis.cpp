@@ -8,6 +8,7 @@
 #include "mozilla/Preferences.h"
 #include "mozilla/ScopeExit.h"
 #include "mozilla/SpinEventLoopUntil.h"
+#include "mozilla/contentanalysis/ContentAnalysisIPCTypes.h"
 #include "mozilla/dom/Promise-inl.h"
 #include "js/Object.h"
 #include "js/PropertyAndElement.h"
@@ -1642,4 +1643,86 @@ TEST_F(ContentAnalysisTest, GetDiagnosticInfo_FailedSignatureVerification) {
   mAgentInfo.TerminateProcess();
   StartAgent();
   SendSimpleRequestAndWaitForResponse();
+}
+
+namespace {
+class RecordingCallback final : public nsIContentAnalysisCallback {
+ public:
+  NS_DECL_ISUPPORTS
+  NS_DECL_NSICONTENTANALYSISCALLBACK
+
+  RefPtr<nsIContentAnalysisResult> mResult;
+  nsresult mError = NS_OK;
+  uint32_t mCalls = 0;
+
+ private:
+  ~RecordingCallback() = default;
+};
+
+NS_IMPL_ISUPPORTS(RecordingCallback, nsIContentAnalysisCallback)
+
+NS_IMETHODIMP RecordingCallback::ContentResult(
+    nsIContentAnalysisResult* aResult) {
+  mResult = aResult;
+  ++mCalls;
+  return NS_OK;
+}
+
+NS_IMETHODIMP RecordingCallback::Error(nsresult aError) {
+  mError = aError;
+  ++mCalls;
+  return NS_OK;
+}
+}  // namespace
+
+TEST(ContentAnalysisCallback, CombinedCallbackGetsResult)
+{
+  RefPtr<nsIContentAnalysisResult> expected =
+      MakeRefPtr<ContentAnalysisNoResult>(
+          NoContentAnalysisResult::DENY_DUE_TO_OTHER_ERROR);
+  uint32_t calls = 0;
+  auto callback = MakeRefPtr<ContentAnalysisCallback>(
+      [&](ContentAnalysisCallback::CombinedResult&& aResult) {
+        ++calls;
+        ASSERT_TRUE(aResult.isOk());
+        EXPECT_EQ(expected.get(), aResult.inspect().get());
+      });
+  EXPECT_EQ(NS_OK, callback->ContentResult(expected));
+  EXPECT_EQ(1u, calls);
+}
+
+TEST(ContentAnalysisCallback, CombinedCallbackGetsError)
+{
+  uint32_t calls = 0;
+  auto callback = MakeRefPtr<ContentAnalysisCallback>(
+      [&](ContentAnalysisCallback::CombinedResult&& aResult) {
+        ++calls;
+        ASSERT_TRUE(aResult.isErr());
+        EXPECT_EQ(NS_ERROR_FAILURE, aResult.inspectErr());
+      });
+  EXPECT_EQ(NS_OK, callback->Error(NS_ERROR_FAILURE));
+  EXPECT_EQ(1u, calls);
+}
+
+TEST(ContentAnalysisCallback, DecoratedCallbackRoutesResult)
+{
+  auto decorated = MakeRefPtr<RecordingCallback>();
+  auto callback = MakeRefPtr<ContentAnalysisCallback>(decorated.get());
+  RefPtr<nsIContentAnalysisResult> expected =
+      MakeRefPtr<ContentAnalysisNoResult>(
+          NoContentAnalysisResult::DENY_DUE_TO_OTHER_ERROR);
+  EXPECT_EQ(NS_OK, callback->ContentResult(expected));
+  EXPECT_EQ(1u, decorated->mCalls);
+  EXPECT_EQ(expected.get(), decorated->mResult.get());
+  EXPECT_EQ(NS_OK, decorated->mError);
+}
+
+TEST(ContentAnalysisCallback, DecoratedCallbackRoutesError)
+{
+  auto decorated = MakeRefPtr<RecordingCallback>();
+  auto callback = MakeRefPtr<ContentAnalysisCallback>(decorated.get());
+  EXPECT_EQ(NS_OK, callback->Error(NS_ERROR_FAILURE));
+  EXPECT_EQ(1u, decorated->mCalls);
+  EXPECT_FALSE(decorated->mResult);
+  EXPECT_EQ(NS_ERROR_FAILURE, decorated->mError);
 }

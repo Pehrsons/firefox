@@ -3397,6 +3397,9 @@ NS_IMETHODIMP ContentAnalysisCallback::ContentResult(
   RefPtr result = aResult;
   if (mPromise) {
     mPromise->MaybeResolve(aResult);
+  } else if (mCombinedCallback) {
+    auto cb = std::move(mCombinedCallback);
+    cb(RefPtr<nsIContentAnalysisResult>(aResult));
   } else if (mContentResponseCallback) {
     mContentResponseCallback(aResult);
   } else {
@@ -3411,6 +3414,9 @@ NS_IMETHODIMP ContentAnalysisCallback::Error(nsresult aError) {
   LOGD("[%p] Called ContentAnalysisCallback::Error", this);
   if (mPromise) {
     mPromise->MaybeReject(aError);
+  } else if (mCombinedCallback) {
+    auto cb = std::move(mCombinedCallback);
+    cb(mozilla::Err(aError));
   } else if (mErrorCallback) {
     mErrorCallback(aError);
   } else {
@@ -3425,14 +3431,23 @@ ContentAnalysisCallback::ContentAnalysisCallback(dom::Promise* aPromise)
     : mPromise(aPromise) {}
 
 ContentAnalysisCallback::ContentAnalysisCallback(
-    std::function<void(nsIContentAnalysisResult*)>&& aContentResponseCallback) {
-  mErrorCallback = [aContentResponseCallback](nsresult) {
-    RefPtr noResult = MakeRefPtr<ContentAnalysisNoResult>(
-        NoContentAnalysisResult::DENY_DUE_TO_OTHER_ERROR);
-    aContentResponseCallback(noResult);
+    mozilla::MoveOnlyFunction<void(nsIContentAnalysisResult*)>&&
+        aContentResponseCallback) {
+  mCombinedCallback = [cb = std::move(aContentResponseCallback)](
+                          CombinedResult&& aResult) mutable {
+    if (aResult.isErr()) {
+      RefPtr noResult = MakeRefPtr<ContentAnalysisNoResult>(
+          NoContentAnalysisResult::DENY_DUE_TO_OTHER_ERROR);
+      cb(noResult);
+    } else {
+      cb(aResult.inspect());
+    }
   };
-  mContentResponseCallback = std::move(aContentResponseCallback);
 }
+
+ContentAnalysisCallback::ContentAnalysisCallback(
+    mozilla::MoveOnlyFunction<void(CombinedResult&&)>&& aCombinedCallback)
+    : mCombinedCallback(std::move(aCombinedCallback)) {}
 
 NS_IMETHODIMP ContentAnalysisDiagnosticInfo::GetConnectedToAgent(
     bool* aConnectedToAgent) {
