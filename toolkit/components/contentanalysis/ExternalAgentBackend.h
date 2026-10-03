@@ -7,6 +7,7 @@
 #include "ContentAnalysisBackend.h"
 #include "MainThreadUtils.h"
 #include "mozilla/DataMutex.h"
+#include "mozilla/MozPromise.h"
 #include "mozilla/RefPtr.h"
 #include "mozilla/Result.h"
 #include "mozilla/StaticString.h"
@@ -138,8 +139,9 @@ class ExternalAgentBackend final : public ContentAnalysisBackend {
   // method that wants to call into the client should go through
   // CallClientWithRetry() to make it easy to try reconnecting
   // to the client.
-  RefPtr<ClientPromise::Private> mClientPromise
+  MozPromiseHolder<ClientPromise> mClientHolder
       MOZ_GUARDED_BY(sMainThreadCapability);
+  RefPtr<ClientPromise> mClientPromise MOZ_GUARDED_BY(sMainThreadCapability);
 
   bool mCreatingClient MOZ_GUARDED_BY(sMainThreadCapability) = false;
   bool mHaveResolvedClientPromise MOZ_GUARDED_BY(sMainThreadCapability) = false;

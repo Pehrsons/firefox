@@ -20,6 +20,7 @@
 #include "nsThreadPool.h"
 
 #include <sstream>
+#include <type_traits>
 
 #ifdef XP_WIN
 #  include "mozilla/WinDllServices.h"
@@ -390,7 +391,7 @@ nsresult ExternalAgentBackend::CreateContentAnalysisClient(
       NS_DispatchToMainThread(
           NS_NewRunnableFunction(__func__, [self = RefPtr{this}, rv]() {
             AssertIsOnMainThread();
-            self->mClientPromise->Reject(rv, __func__);
+            self->mClientHolder.RejectIfExists(rv, __func__);
             self->mCreatingClient = false;
           }));
       return NS_OK;
@@ -401,18 +402,16 @@ nsresult ExternalAgentBackend::CreateContentAnalysisClient(
       __func__,
       [self = RefPtr{this}, isShutDown, client = std::move(client)]() {
         AssertIsOnMainThread();
-        // Note that if mClientPromise has been resolved or rejected,
-        // calling Resolve() or Reject() is a no-op.
         if (client) {
           self->mHaveResolvedClientPromise = true;
-          self->mClientPromise->Resolve(client, __func__);
+          self->mClientHolder.ResolveIfExists(client, __func__);
         } else {
           nsresult promiseResult = isShutDown ? NS_ERROR_ILLEGAL_DURING_SHUTDOWN
                                               : NS_ERROR_CONNECTION_REFUSED;
           glean::content_analysis::connection_failure
               .Get(nsCString{SafeGetStaticErrorName(promiseResult)})
               .Add();
-          self->mClientPromise->Reject(promiseResult, __func__);
+          self->mClientHolder.RejectIfExists(promiseResult, __func__);
         }
         self->mCreatingClient = false;
       }));
@@ -423,8 +422,8 @@ nsresult ExternalAgentBackend::CreateContentAnalysisClient(
 ExternalAgentBackend::ExternalAgentBackend()
     : mRequestTokenToBasicRequestInfoMap(
           "ExternalAgentBackend::mRequestTokenToBasicRequestInfoMap") {
-  mClientPromise = MakeRefPtr<ClientPromise::Private>(
-      "ExternalAgentBackend::ExternalAgentBackend");
+  mClientPromise =
+      mClientHolder.Ensure("ExternalAgentBackend::ExternalAgentBackend");
 
   mThreadPool = MakeRefPtr<nsThreadPool>();
   MOZ_ALWAYS_SUCCEEDS(
@@ -466,13 +465,12 @@ void ExternalAgentBackend::Shutdown() {
 
   // Reject the promise to avoid assertions when it gets destroyed
   // No-op if the promise has already been resolved or rejected
-  mClientPromise->Reject(NS_ERROR_ILLEGAL_DURING_SHUTDOWN, __func__);
+  mClientHolder.RejectIfExists(NS_ERROR_ILLEGAL_DURING_SHUTDOWN, __func__);
 
   // In case the promise _was_ resolved before, create a new one and reject
   // that.
-  mClientPromise =
-      MakeRefPtr<ClientPromise::Private>("ExternalAgentBackend:Shutdown");
-  mClientPromise->Reject(NS_ERROR_ILLEGAL_DURING_SHUTDOWN, __func__);
+  mClientPromise = mClientHolder.Ensure("ExternalAgentBackend:Shutdown");
+  mClientHolder.Reject(NS_ERROR_ILLEGAL_DURING_SHUTDOWN, __func__);
 
   if (mThreadPool) {
     mThreadPool->ShutdownWithTimeout(kShutdownThreadpoolTimeoutMs);
@@ -506,7 +504,7 @@ nsresult ExternalAgentBackend::CreateClientIfNecessary(
   nsCString pipePathName;
   nsresult rv = Preferences::GetCString(kPipePathNamePref, pipePathName);
   if (NS_WARN_IF(NS_FAILED(rv))) {
-    mClientPromise->Reject(rv, __func__);
+    mClientHolder.RejectIfExists(rv, __func__);
     return rv;
   }
   if (mHaveResolvedClientPromise && !aForceCreate) {
@@ -518,11 +516,9 @@ nsresult ExternalAgentBackend::CreateClientIfNecessary(
   }
   mCreatingClient = true;
   mHaveResolvedClientPromise = false;
-  // Reject the promise to avoid assertions when it gets destroyed
-  // No-op if the promise has already been resolved or rejected
-  mClientPromise->Reject(NS_ERROR_FAILURE, __func__);
-  mClientPromise = MakeRefPtr<ClientPromise::Private>(
-      "ExternalAgentBackend:CreateClientIfNecessary");
+  mClientHolder.RejectIfExists(NS_ERROR_FAILURE, __func__);
+  mClientPromise =
+      mClientHolder.Ensure("ExternalAgentBackend:CreateClientIfNecessary");
 
   bool isPerUser = StaticPrefs::browser_contentanalysis_is_per_user();
   nsString clientSignature;
@@ -546,7 +542,7 @@ nsresult ExternalAgentBackend::CreateClientIfNecessary(
     glean::content_analysis::connection_failure
         .Get(nsCString{SafeGetStaticErrorName(rv)})
         .Add();
-    mClientPromise->Reject(rv, __func__);
+    mClientHolder.RejectIfExists(rv, __func__);
     return rv;
   }
   return NS_OK;
@@ -647,92 +643,118 @@ void ExternalAgentBackend::CancelUserAction(const nsACString& aUserActionId) {
           });
 }
 
+namespace {
+
+template <typename T, typename U>
+class ClientCallRunnable final : public Runnable {
+ public:
+  ClientCallRunnable(StaticString aMethodName,
+                     MozPromiseHolder<MozPromise<T, nsresult, true>>&& aHolder,
+                     U aClientCallFunc,
+                     std::shared_ptr<content_analysis::sdk::Client> aClient)
+      : Runnable(aMethodName),
+        mMethodName(aMethodName),
+        mHolder(std::move(aHolder)),
+        mClientCallFunc(std::move(aClientCallFunc)),
+        mClient(std::move(aClient)) {}
+
+  NS_IMETHOD Run() override {
+    auto result = mClientCallFunc(mClient);
+    if (result.isOk()) {
+      mHolder.Resolve(result.unwrap(), mMethodName);
+    } else {
+      mHolder.Reject(result.unwrapErr(), mMethodName);
+    }
+    return NS_OK;
+  }
+
+ private:
+  ~ClientCallRunnable() override {
+    mHolder.RejectIfExists(NS_ERROR_ABORT, mMethodName);
+  }
+
+  StaticString mMethodName;
+  MozPromiseHolder<MozPromise<T, nsresult, true>> mHolder;
+  U mClientCallFunc;
+  std::shared_ptr<content_analysis::sdk::Client> mClient;
+};
+
+}  // anonymous namespace
+
 template <typename T, typename U>
 RefPtr<MozPromise<T, nsresult, true>> ExternalAgentBackend::CallClientWithRetry(
     StaticString aMethodName, U&& aClientCallFunc) {
+  using PromiseType = MozPromise<T, nsresult, true>;
   AssertIsOnMainThread();
-  auto promise =
-      MakeRefPtr<typename MozPromise<T, nsresult, true>::Private>(aMethodName);
 
-  // Make a copy of aClientCallFunc so the retry path can re-invoke it.
-  auto reconnectAndRetry = [clientCallFunc = aClientCallFunc, aMethodName,
-                            promise, self = RefPtr{this}](nsresult rv) mutable {
+  nsCOMPtr<nsISerialEventTarget> target = GetCurrentSerialEventTarget();
+
+  static_assert(std::is_copy_constructible_v<std::decay_t<U>>,
+                "aClientCallFunc is copied so the retry path can re-invoke it");
+  // Keeps its own copy of aClientCallFunc so the retry path can re-invoke it.
+  auto dispatchToThreadPool =
+      [aMethodName, clientCallFunc = std::forward<U>(aClientCallFunc)](
+          std::shared_ptr<content_analysis::sdk::Client> client,
+          const RefPtr<ExternalAgentBackend>& self) -> RefPtr<PromiseType> {
+    MozPromiseHolder<PromiseType> holder;
+    RefPtr<PromiseType> promise = holder.Ensure(aMethodName);
+    nsCOMPtr<nsIRunnable> runnable = new ClientCallRunnable<T, std::decay_t<U>>(
+        aMethodName, std::move(holder), clientCallFunc, std::move(client));
+    nsresult rv = self->mThreadPool->Dispatch(runnable.forget());
+    if (NS_FAILED(rv)) {
+      LOGE("Failed to launch background task for %s, error=%s",
+           aMethodName.get(), SafeGetStaticErrorName(rv));
+    }
+    return promise;
+  };
+
+  auto reconnectAndRetry =
+      [aMethodName, target, dispatchToThreadPool,
+       self = RefPtr{this}](nsresult aRv) -> RefPtr<PromiseType> {
     AssertIsOnMainThread();
     LOGD("Failed to get client - trying to reconnect: %s",
-         SafeGetStaticErrorName(rv));
-    rv = self->CreateClientIfNecessary(/* aForceCreate */ true);
+         SafeGetStaticErrorName(aRv));
+    nsresult rv = self->CreateClientIfNecessary(/* aForceCreate */ true);
     if (NS_FAILED(rv)) {
       LOGD("Failed to reconnect to client: %s", SafeGetStaticErrorName(rv));
-      self->mClientPromise->Reject(rv, aMethodName);
-      promise->Reject(rv, aMethodName);
-      return;
+      self->mClientHolder.RejectIfExists(rv, aMethodName);
+      return PromiseType::CreateAndReject(rv, aMethodName);
     }
-    self->mClientPromise->Then(
-        GetCurrentSerialEventTarget(), aMethodName,
-        [aMethodName, promise, self,
-         clientCallFunc = std::move(clientCallFunc)](
-            std::shared_ptr<content_analysis::sdk::Client> client) mutable {
-          nsresult rv =
-              self->mThreadPool->Dispatch(NS_NewCancelableRunnableFunction(
-                  aMethodName, [aMethodName, promise,
-                                clientCallFunc = std::move(clientCallFunc),
-                                client = std::move(client)]() mutable {
-                    auto result = clientCallFunc(client);
-                    if (result.isOk()) {
-                      promise->Resolve(result.unwrap(), aMethodName);
-                    } else {
-                      promise->Reject(result.unwrapErr(), aMethodName);
-                    }
-                  }));
-          if (NS_FAILED(rv)) {
-            LOGE(
-                "Failed to launch background task in second call for %s, "
-                "error=%s",
-                aMethodName.get(), SafeGetStaticErrorName(rv));
-            promise->Reject(rv, aMethodName);
-          }
+    return self->mClientPromise->Then(
+        target, aMethodName,
+        [dispatchToThreadPool,
+         self](std::shared_ptr<content_analysis::sdk::Client> client)
+            -> RefPtr<PromiseType> {
+          return dispatchToThreadPool(std::move(client), self);
         },
-        [aMethodName, promise](nsresult rv) {
+        [aMethodName](nsresult rv) -> RefPtr<PromiseType> {
           LOGE("Failed to get client again for %s, error=%s", aMethodName.get(),
                SafeGetStaticErrorName(rv));
-          promise->Reject(rv, aMethodName);
+          return PromiseType::CreateAndReject(rv, aMethodName);
         });
   };
 
-  mClientPromise->Then(
-      GetCurrentSerialEventTarget(), aMethodName,
-      [aMethodName, promise, self = RefPtr{this},
-       clientCallFunc = std::forward<U>(aClientCallFunc), reconnectAndRetry](
-          std::shared_ptr<content_analysis::sdk::Client> client) mutable {
-        nsresult rv =
-            self->mThreadPool->Dispatch(NS_NewCancelableRunnableFunction(
-                aMethodName, [aMethodName, promise,
-                              clientCallFunc = std::move(clientCallFunc),
-                              reconnectAndRetry = std::move(reconnectAndRetry),
-                              client = std::move(client)]() mutable {
-                  auto result = clientCallFunc(client);
-                  if (result.isOk()) {
-                    promise->Resolve(result.unwrap(), aMethodName);
-                    return;
-                  }
-                  nsresult rv = result.unwrapErr();
-                  NS_DispatchToMainThread(NS_NewCancelableRunnableFunction(
-                      "reconnect to Content Analysis client",
-                      [rv, reconnectAndRetry =
-                               std::move(reconnectAndRetry)]() mutable {
-                        reconnectAndRetry(rv);
-                      }));
-                }));
-        if (NS_FAILED(rv)) {
-          LOGE(
-              "Failed to launch background task in first call for %s, "
-              "error=%s",
-              aMethodName.get(), SafeGetStaticErrorName(rv));
-          promise->Reject(rv, aMethodName);
-        }
+  return mClientPromise->Then(
+      target, aMethodName,
+      [aMethodName, target, dispatchToThreadPool, reconnectAndRetry,
+       self =
+           RefPtr{this}](std::shared_ptr<content_analysis::sdk::Client> client)
+          -> RefPtr<PromiseType> {
+        return dispatchToThreadPool(std::move(client), self)
+            ->Then(target, aMethodName,
+                   [aMethodName, reconnectAndRetry](
+                       typename PromiseType::ResolveOrRejectValue&& aValue)
+                       -> RefPtr<PromiseType> {
+                     if (aValue.IsResolve()) {
+                       return PromiseType::CreateAndResolve(
+                           std::move(aValue).ResolveValue(), aMethodName);
+                     }
+                     return reconnectAndRetry(aValue.RejectValue());
+                   });
       },
-      [reconnectAndRetry](nsresult rv) mutable { reconnectAndRetry(rv); });
-  return promise.forget();
+      [reconnectAndRetry](nsresult rv) -> RefPtr<PromiseType> {
+        return reconnectAndRetry(rv);
+      });
 }
 
 nsresult ExternalAgentBackend::Analyze(
@@ -1097,52 +1119,42 @@ nsresult ExternalAgentBackend::Acknowledge(
 RefPtr<ContentAnalysisBackend::DiagnosticInfoPromise>
 ExternalAgentBackend::GetDiagnosticInfo() {
   AssertIsOnMainThread();
-  auto diagnosticInfoPromise =
-      MakeRefPtr<DiagnosticInfoPromise::Private>(__func__);
-
-  CallClientWithRetry<std::nullptr_t>(
-      __func__,
-      [self = RefPtr{this}, diagnosticInfoPromise](
-          std::shared_ptr<content_analysis::sdk::Client> client) mutable
-          -> Result<std::nullptr_t, nsresult> {
-        MOZ_ASSERT(!NS_IsMainThread());
-        // I don't think this will be slow, but do it on the background thread
-        // just to be safe
-        std::string agentPath = client->GetAgentInfo().binary_path;
-        // Need to switch back to main thread to create the
-        // ContentAnalysisDiagnosticInfo and resolve the promise
-        NS_DispatchToMainThread(NS_NewRunnableFunction(
-            __func__,
-            [self, diagnosticInfoPromise = std::move(diagnosticInfoPromise),
-             agentPath = std::move(agentPath)]() {
-              AssertIsOnMainThread();
-              if (IsContentAnalysisShutDown()) {
-                // may be quitting
-                diagnosticInfoPromise->Reject(NS_ERROR_ILLEGAL_DURING_SHUTDOWN,
-                                              __func__);
-                return;
-              }
-              nsString agentWidePath = NS_ConvertUTF8toUTF16(agentPath);
-              // Note that if we made it here, we have successfully connected to
-              // the agent.
-              auto info = MakeRefPtr<ContentAnalysisDiagnosticInfo>(
-                  /* mConnectedToAgent */ true, std::move(agentWidePath), false,
-                  self->mRequestCount);
-              diagnosticInfoPromise->Resolve(info, __func__);
-            }));
-        return nullptr;
-      })
+  return CallClientWithRetry<nsString>(
+             __func__,
+             [](std::shared_ptr<content_analysis::sdk::Client> client)
+                 -> Result<nsString, nsresult> {
+               MOZ_ASSERT(!NS_IsMainThread());
+               // I don't think this will be slow, but do it on the background
+               // thread just to be safe
+               return nsString(
+                   NS_ConvertUTF8toUTF16(client->GetAgentInfo().binary_path));
+             })
       ->Then(
-          GetMainThreadSerialEventTarget(), __func__, []() {},
-          [self = RefPtr{this}, diagnosticInfoPromise](nsresult rv) {
+          GetMainThreadSerialEventTarget(), __func__,
+          [self = RefPtr{this}](
+              nsString&& aAgentWidePath) -> RefPtr<DiagnosticInfoPromise> {
+            AssertIsOnMainThread();
+            if (IsContentAnalysisShutDown()) {
+              // may be quitting
+              return DiagnosticInfoPromise::CreateAndReject(
+                  NS_ERROR_ILLEGAL_DURING_SHUTDOWN, __func__);
+            }
+            // Note that if we made it here, we have successfully connected to
+            // the agent.
+            auto info = MakeRefPtr<ContentAnalysisDiagnosticInfo>(
+                /* mConnectedToAgent */ true, std::move(aAgentWidePath), false,
+                self->mRequestCount);
+            return DiagnosticInfoPromise::CreateAndResolve(std::move(info),
+                                                           __func__);
+          },
+          [self = RefPtr{this}](nsresult rv) -> RefPtr<DiagnosticInfoPromise> {
             AssertIsOnMainThread();
             auto info = MakeRefPtr<ContentAnalysisDiagnosticInfo>(
                 false, EmptyString(), rv == NS_ERROR_INVALID_SIGNATURE,
                 self->mRequestCount);
-            diagnosticInfoPromise->Resolve(info, __func__);
+            return DiagnosticInfoPromise::CreateAndResolve(std::move(info),
+                                                           __func__);
           });
-
-  return diagnosticInfoPromise.forget();
 }
 
 #undef LOGD
