@@ -580,11 +580,8 @@ RefPtr<ModulesTrustPromise> UntrustedModulesProcessor::GetModulesTrust(
   nsCOMPtr<nsIRunnable> idleRunnable(
       NS_NewRunnableFunction(source, std::move(runWrap)));
 
-  nsresult rv = NS_DispatchToMainThreadQueue(idleRunnable.forget(),
-                                             EventQueuePriority::Idle);
-  if (NS_FAILED(rv)) {
-    p->Reject(rv, source);
-  }
+  MOZ_ALWAYS_SUCCEEDS(NS_DispatchToMainThreadQueue(idleRunnable.forget(),
+                                                   EventQueuePriority::Idle));
 
   return p;
 }
@@ -665,12 +662,8 @@ UntrustedModulesProcessor::GetProcessedDataInternalChildProcess() {
   // Dispatch or Then to |mThread| from its creating thread, which is the
   // main thread. Hopefully we can get rid of this in the future and just
   // invoke whenProcessed->Then() directly.
-  nsresult rv = NS_DispatchToMainThread(
-      NS_NewRunnableFunction(__func__, std::move(completionRoutine)));
-  MOZ_ASSERT(NS_SUCCEEDED(rv));
-  if (NS_FAILED(rv)) {
-    p->Reject(rv, __func__);
-  }
+  MOZ_ALWAYS_SUCCEEDS(NS_DispatchToMainThread(
+      NS_NewRunnableFunction(__func__, std::move(completionRoutine))));
 
   return p;
 }
