@@ -137,11 +137,25 @@ void SendRequestAndExpectResponseInternal(
   // start accessing stack values that don't exist anymore)
   RefPtr timedOut = MakeRefPtr<media::Refcountable<BoolStruct>>();
   auto callback = MakeRefPtr<contentanalysis::ContentAnalysisCallback>(
-      [&, timedOut](nsIContentAnalysisResult* result) {
+      [&, timedOut](
+          contentanalysis::ContentAnalysisCallback::CombinedResult&& aResult) {
         EXPECT_TRUE(NS_IsMainThread());
         if (timedOut->mValue) {
           return;
         }
+        if (aResult.isErr()) {
+          nsresult error = aResult.unwrapErr();
+          const char* errorName = mozilla::GetStaticErrorName(error);
+          errorName = errorName ? errorName : "";
+          printf("Got error response code %s(%x)\n", errorName, error);
+          // Errors should not have errorCode NS_OK
+          EXPECT_NE(NS_OK, error);
+          gotResponse = true;
+          // An acknowledgement won't be sent, so don't wait for one
+          gotAcknowledgement = true;
+          FAIL() << "Got error response";
+        }
+        nsIContentAnalysisResult* result = aResult.inspect();
         if (expectedShouldAllow.isSome()) {
           EXPECT_EQ(*expectedShouldAllow, result->GetShouldAllowContent());
         }
@@ -171,21 +185,6 @@ void SendRequestAndExpectResponseInternal(
           EXPECT_EQ(originalUserActionId, userActionId);
         }
         gotResponse = true;
-      },
-      [&gotResponse, &gotAcknowledgement, timedOut](nsresult error) {
-        EXPECT_TRUE(NS_IsMainThread());
-        if (timedOut->mValue) {
-          return;
-        }
-        const char* errorName = mozilla::GetStaticErrorName(error);
-        errorName = errorName ? errorName : "";
-        printf("Got error response code %s(%x)\n", errorName, error);
-        // Errors should not have errorCode NS_OK
-        EXPECT_NE(NS_OK, error);
-        gotResponse = true;
-        // An acknowledgement won't be sent, so don't wait for one
-        gotAcknowledgement = true;
-        FAIL() << "Got error response";
       });
 
   auto rawAcknowledgementObserver = MakeRefPtr<RawAcknowledgementObserver>();

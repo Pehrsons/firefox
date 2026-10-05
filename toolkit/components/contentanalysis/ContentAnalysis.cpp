@@ -2809,9 +2809,14 @@ static nsresult CheckClipboard(
   if (useCache && aStoreInCache && aClipboardSequenceNumber.isSome()) {
     // Add the result to the result cache before we call the caller's callback.
     wrapperCallback = MakeRefPtr<ContentAnalysisCallback>(
-        [aClipboardSequenceNumber, uri,
-         callback = RefPtr(aCallback)](nsIContentAnalysisResult* aResult) {
-          bool allow = aResult->GetShouldAllowContent();
+        [aClipboardSequenceNumber, uri, callback = RefPtr(aCallback)](
+            ContentAnalysisCallback::CombinedResult&& aResult) {
+          if (aResult.isErr()) {
+            callback->Error(aResult.unwrapErr());
+            return;
+          }
+          RefPtr<nsIContentAnalysisResult> result = aResult.unwrap();
+          bool allow = result->GetShouldAllowContent();
           nsCOMPtr<nsIContentAnalysis> contentAnalysis =
               mozilla::components::nsIContentAnalysis::Service();
           if (contentAnalysis) {
@@ -2823,9 +2828,8 @@ static nsresult CheckClipboard(
                       : nsIContentAnalysisResponse::Action::eBlock);
           }
 
-          callback->ContentResult(aResult);
-        },
-        [callback = RefPtr(aCallback)](nsresult rv) { callback->Error(rv); });
+          callback->ContentResult(result);
+        });
   }
 
   respondOnFailure.release();
@@ -3390,8 +3394,6 @@ NS_IMETHODIMP ContentAnalysisCallback::ContentResult(
   } else if (mCombinedCallback) {
     auto cb = std::move(mCombinedCallback);
     cb(RefPtr<nsIContentAnalysisResult>(aResult));
-  } else if (mContentResponseCallback) {
-    mContentResponseCallback(aResult);
   } else {
     MOZ_ASSERT_UNREACHABLE("ContentAnalysisCallback called multiple times");
   }
@@ -3407,8 +3409,6 @@ NS_IMETHODIMP ContentAnalysisCallback::Error(nsresult aError) {
   } else if (mCombinedCallback) {
     auto cb = std::move(mCombinedCallback);
     cb(mozilla::Err(aError));
-  } else if (mErrorCallback) {
-    mErrorCallback(aError);
   } else {
     MOZ_ASSERT_UNREACHABLE("ContentAnalysisCallback called multiple times");
   }

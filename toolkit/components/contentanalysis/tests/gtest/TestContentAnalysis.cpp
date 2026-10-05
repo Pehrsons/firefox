@@ -371,25 +371,25 @@ nsresult ContentAnalysisTest::SendRequestsCancelAndExpectResponse(
   // start accessing stack values that don't exist anymore)
   RefPtr timedOut = MakeRefPtr<media::Refcountable<BoolStruct>>();
   auto callback = MakeRefPtr<ContentAnalysisCallback>(
-      [&, timedOut, aExpectFailure](nsIContentAnalysisResult* result) {
+      [&, timedOut,
+       aExpectFailure](ContentAnalysisCallback::CombinedResult&& aResult) {
         if (timedOut->mValue) {
           return;
         }
-        EXPECT_EQ(false, result->GetShouldAllowContent());
+        if (aResult.isErr()) {
+          nsresult error = aResult.unwrapErr();
+          const char* errorName = mozilla::GetStaticErrorName(error);
+          errorName = errorName ? errorName : "";
+          printf("Got error response code %s(%x)\n", errorName, error);
+          // Errors should not have errorCode NS_OK
+          EXPECT_NE(NS_OK, error);
+          gotResponse = true;
+          EXPECT_EQ(true, aExpectFailure);
+          return;
+        }
+        EXPECT_EQ(false, aResult.inspect()->GetShouldAllowContent());
         EXPECT_EQ(false, aExpectFailure);
         gotResponse = true;
-      },
-      [&gotResponse, timedOut, aExpectFailure](nsresult error) {
-        if (timedOut->mValue) {
-          return;
-        }
-        const char* errorName = mozilla::GetStaticErrorName(error);
-        errorName = errorName ? errorName : "";
-        printf("Got error response code %s(%x)\n", errorName, error);
-        // Errors should not have errorCode NS_OK
-        EXPECT_NE(NS_OK, error);
-        gotResponse = true;
-        EXPECT_EQ(true, aExpectFailure);
       });
 
   nsCOMPtr<nsIObserverService> obsServ =
@@ -464,28 +464,26 @@ void SendRequestsAndExpectNoAgentResponseNoAwait(
     nsIContentAnalysisResponse::CancelError expectedCancelError,
     bool* gotResponse, RefPtr<media::Refcountable<BoolStruct>> timedOut) {
   auto callback = MakeRefPtr<ContentAnalysisCallback>(
-      [=](nsIContentAnalysisResult* result) mutable {
+      [=](ContentAnalysisCallback::CombinedResult&& aResult) mutable {
         if (timedOut->mValue) {
           return;
         }
+        if (aResult.isErr()) {
+          nsresult error = aResult.unwrapErr();
+          const char* errorName = mozilla::GetStaticErrorName(error);
+          errorName = errorName ? errorName : "";
+          printf("Got error response code %s(%x)\n", errorName, error);
+          // Errors should not have errorCode NS_OK
+          EXPECT_NE(NS_OK, error);
+          *gotResponse = true;
+          FAIL() << "Got error response";
+        }
         nsCOMPtr<nsIContentAnalysisResponse> response =
-            do_QueryInterface(result);
+            do_QueryInterface(aResult.inspect());
         EXPECT_TRUE(response);
         EXPECT_EQ(expectedCancelError, response->GetCancelError());
         EXPECT_EQ(expectedShouldAllow, response->GetShouldAllowContent());
         *gotResponse = true;
-      },
-      [=](nsresult error) mutable {
-        if (timedOut->mValue) {
-          return;
-        }
-        const char* errorName = mozilla::GetStaticErrorName(error);
-        errorName = errorName ? errorName : "";
-        printf("Got error response code %s(%x)\n", errorName, error);
-        // Errors should not have errorCode NS_OK
-        EXPECT_NE(NS_OK, error);
-        *gotResponse = true;
-        FAIL() << "Got error response";
       });
 
   MOZ_ALWAYS_SUCCEEDS(contentAnalysis->AnalyzeContentRequestsCallback(
@@ -873,12 +871,22 @@ void SendRequestAndExpectWarnResponse(
   bool warnDialogResponseIsAllow =
       aWarnDialogResponse == WarnDialogResponse::Allow;
   auto callback = MakeRefPtr<ContentAnalysisCallback>(
-      [&, timedOut](nsIContentAnalysisResult* result) {
+      [&, timedOut](ContentAnalysisCallback::CombinedResult&& aResult) {
         if (timedOut->mValue) {
           return;
         }
+        if (aResult.isErr()) {
+          nsresult error = aResult.unwrapErr();
+          const char* errorName = mozilla::GetStaticErrorName(error);
+          errorName = errorName ? errorName : "";
+          printf("Got error response code %s(%x)\n", errorName, error);
+          // Errors should not have errorCode NS_OK
+          EXPECT_NE(NS_OK, error);
+          gotResponse = true;
+          FAIL() << "Got error response";
+        }
         nsCOMPtr<nsIContentAnalysisResponse> response =
-            do_QueryInterface(result);
+            do_QueryInterface(aResult.inspect());
         EXPECT_TRUE(response);
         EXPECT_EQ(warnDialogResponseIsAllow, response->GetShouldAllowContent());
         EXPECT_EQ(warnDialogResponseIsAllow
@@ -889,18 +897,6 @@ void SendRequestAndExpectWarnResponse(
         MOZ_ALWAYS_SUCCEEDS(response->GetRequestToken(responseRequestToken));
         EXPECT_EQ(requestToken, responseRequestToken);
         gotResponse = true;
-      },
-      [&gotResponse, timedOut](nsresult error) {
-        if (timedOut->mValue) {
-          return;
-        }
-        const char* errorName = mozilla::GetStaticErrorName(error);
-        errorName = errorName ? errorName : "";
-        printf("Got error response code %s(%x)\n", errorName, error);
-        // Errors should not have errorCode NS_OK
-        EXPECT_NE(NS_OK, error);
-        gotResponse = true;
-        FAIL() << "Got error response";
       });
 
   AutoTArray<RefPtr<nsIContentAnalysisRequest>, 1> requests{request.get()};

@@ -553,13 +553,6 @@ class ContentAnalysisCallback final : public nsIContentAnalysisCallback {
  public:
   NS_DECL_THREADSAFE_ISUPPORTS
   NS_DECL_NSICONTENTANALYSISCALLBACK
-  ContentAnalysisCallback(
-      mozilla::MoveOnlyFunction<void(nsIContentAnalysisResult*)>&&
-          aContentResponseCallback,
-      mozilla::MoveOnlyFunction<void(nsresult)>&& aErrorCallback)
-      : mContentResponseCallback(std::move(aContentResponseCallback)),
-        mErrorCallback(std::move(aErrorCallback)) {}
-
   explicit ContentAnalysisCallback(
       mozilla::MoveOnlyFunction<void(nsIContentAnalysisResult*)>&&
           aContentResponseCallback);
@@ -572,35 +565,29 @@ class ContentAnalysisCallback final : public nsIContentAnalysisCallback {
 
   // Wrap a given callback, in case it doesn't provide the guarantees that
   // this one does (such as checking that it is eventually called).
-  explicit ContentAnalysisCallback(nsIContentAnalysisCallback* aDecoratedCB) {
-    mContentResponseCallback = [decoratedCB = RefPtr{aDecoratedCB}](
-                                   nsIContentAnalysisResult* aResult) {
-      decoratedCB->ContentResult(aResult);
-    };
-    mErrorCallback = [decoratedCB = RefPtr{aDecoratedCB}](nsresult aRv) {
-      decoratedCB->Error(aRv);
-    };
-  }
+  explicit ContentAnalysisCallback(nsIContentAnalysisCallback* aDecoratedCB)
+      : mCombinedCallback(
+            [decoratedCB = RefPtr{aDecoratedCB}](CombinedResult&& aResult) {
+              if (aResult.isOk()) {
+                decoratedCB->ContentResult(aResult.inspect());
+              } else {
+                decoratedCB->Error(aResult.inspectErr());
+              }
+            }) {}
 
  private:
   virtual ~ContentAnalysisCallback() {
-    MOZ_ASSERT(!mContentResponseCallback && !mErrorCallback &&
-                   !mCombinedCallback && !mPromise,
+    MOZ_ASSERT(!mCombinedCallback && !mPromise,
                "ContentAnalysisCallback never called!");
   }
 
   // Called after callbacks are called.
   void ClearCallbacks() {
-    mContentResponseCallback = nullptr;
-    mErrorCallback = nullptr;
     mCombinedCallback = nullptr;
     mPromise = nullptr;
   }
 
   explicit ContentAnalysisCallback(dom::Promise* aPromise);
-  mozilla::MoveOnlyFunction<void(nsIContentAnalysisResult*)>
-      mContentResponseCallback;
-  mozilla::MoveOnlyFunction<void(nsresult)> mErrorCallback;
   mozilla::MoveOnlyFunction<void(CombinedResult&&)> mCombinedCallback;
   RefPtr<dom::Promise> mPromise;
   friend class ContentAnalysis;
