@@ -5,9 +5,13 @@
 #ifndef mozilla_dom_PromiseNativeHandler_h
 #define mozilla_dom_PromiseNativeHandler_h
 
+#include <type_traits>
+
 #include "js/TypeDecls.h"
 #include "js/Value.h"
 #include "mozilla/ErrorResult.h"
+#include "mozilla/MoveOnlyFunction.h"
+#include "mozilla/MozPromise.h"
 #include "mozilla/StaticString.h"
 #include "nsISupports.h"
 
@@ -34,40 +38,62 @@ class PromiseNativeHandler : public nsISupports {
 
 // This base class exists solely to use NS_IMPL_ISUPPORTS because it doesn't
 // support template classes.
-class MozPromiseRejectOnDestructionBase : public PromiseNativeHandler {
+class MozPromiseNativeHandlerBase : public PromiseNativeHandler {
   NS_DECL_ISUPPORTS
 
-  void ResolvedCallback(JSContext* aCx, JS::Handle<JS::Value> aValue,
-                        ErrorResult& aRv) override {}
-  void RejectedCallback(JSContext* aCx, JS::Handle<JS::Value> aValue,
-                        ErrorResult& aRv) override {}
-
  protected:
-  ~MozPromiseRejectOnDestructionBase() override = default;
+  ~MozPromiseNativeHandlerBase() override = default;
 };
 
-// Use this when you subscribe to a JS promise to settle a MozPromise that is
-// not guaranteed to be settled by anyone else.
-template <typename T>
-class MozPromiseRejectOnDestruction final
-    : public MozPromiseRejectOnDestructionBase {
+// Use this when you subscribe to a JS promise to settle a MozPromise. It
+// creates the MozPromise, which is exposed through Promise(). A JS promise is
+// not guaranteed to settle, so the MozPromise is rejected with
+// NS_BINDING_ABORTED if the handler goes away first.
+//
+// The handler is not cycle collected, so the SettleFns must not capture objects
+// that are, or they might leak.
+template <typename PromiseType>
+class MozPromiseNativeHandler final : public MozPromiseNativeHandlerBase {
+  static_assert(std::is_same_v<typename PromiseType::RejectValueType, nsresult>,
+                "The MozPromise must reject with an nsresult");
+
  public:
-  // (Accepting RefPtr<T> instead of T* because compiler fails to implicitly
-  // convert it at call sites)
-  MozPromiseRejectOnDestruction(const RefPtr<T>& aMozPromise,
-                                StaticString aCallSite)
-      : mMozPromise(aMozPromise), mCallSite(aCallSite) {
-    MOZ_ASSERT(aMozPromise);
+  // Called with the value the JS promise resolved or rejected with. Returns the
+  // MozPromise to settle the owned MozPromise with.
+  using SettleFn =
+      MoveOnlyFunction<RefPtr<PromiseType>(JSContext*, JS::Handle<JS::Value>)>;
+
+  MozPromiseNativeHandler(SettleFn&& aResolve, SettleFn&& aReject,
+                          StaticString aCallSite)
+      : mPromise(mHolder.Ensure(aCallSite)),
+        mCallSite(aCallSite),
+        mResolve(std::move(aResolve)),
+        mReject(std::move(aReject)) {}
+
+  RefPtr<PromiseType> Promise() const { return mPromise; }
+
+  MOZ_CAN_RUN_SCRIPT
+  void ResolvedCallback(JSContext* aCx, JS::Handle<JS::Value> aValue,
+                        ErrorResult&) override {
+    mResolve(aCx, aValue)->ChainTo(std::move(mHolder), mCallSite);
   }
 
- protected:
-  ~MozPromiseRejectOnDestruction() override {
-    // Rejecting will be no-op if the promise is already settled
-    mMozPromise->Reject(NS_BINDING_ABORTED, mCallSite);
+  MOZ_CAN_RUN_SCRIPT
+  void RejectedCallback(JSContext* aCx, JS::Handle<JS::Value> aValue,
+                        ErrorResult&) override {
+    mReject(aCx, aValue)->ChainTo(std::move(mHolder), mCallSite);
   }
 
-  RefPtr<T> mMozPromise;
-  StaticString mCallSite;
+ private:
+  ~MozPromiseNativeHandler() override {
+    mHolder.RejectIfExists(NS_BINDING_ABORTED, mCallSite);
+  }
+
+  MozPromiseHolder<PromiseType> mHolder;
+  const RefPtr<PromiseType> mPromise;
+  const StaticString mCallSite;
+  SettleFn mResolve;
+  SettleFn mReject;
 };
 
 }  // namespace mozilla::dom

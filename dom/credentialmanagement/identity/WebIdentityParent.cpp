@@ -8,6 +8,7 @@
 #include "mozilla/IdentityCredentialRequestManager.h"
 #include "mozilla/dom/IdentityNetworkHelpers.h"
 #include "mozilla/dom/NavigatorLogin.h"
+#include "mozilla/dom/PromiseNativeHandler.h"
 #include "mozilla/dom/WindowGlobalParent.h"
 #include "nsIEffectiveTLDService.h"
 #include "nsIIdentityCredentialPromptService.h"
@@ -1039,36 +1040,29 @@ PromptUserToSelectProvider(
     const Sequence<IdentityProviderRequestOptions>& aProviders,
     const Sequence<GetManifestPromise::ResolveOrRejectValue>& aManifests) {
   MOZ_ASSERT(aBrowsingContext);
-  RefPtr<GetIdentityProviderRequestOptionsWithManifestPromise::Private>
-      resultPromise =
-          new GetIdentityProviderRequestOptionsWithManifestPromise::Private(
-              __func__);
+  using PromiseType = GetIdentityProviderRequestOptionsWithManifestPromise;
 
   if (NS_WARN_IF(!aBrowsingContext)) {
-    resultPromise->Reject(NS_ERROR_FAILURE, __func__);
-    return resultPromise;
+    return PromiseType::CreateAndReject(NS_ERROR_FAILURE, __func__);
   }
 
   nsresult error;
   nsCOMPtr<nsIIdentityCredentialPromptService> icPromptService =
       mozilla::components::IdentityCredentialPromptService::Service(&error);
   if (NS_WARN_IF(!icPromptService)) {
-    resultPromise->Reject(error, __func__);
-    return resultPromise;
+    return PromiseType::CreateAndReject(error, __func__);
   }
 
   nsCOMPtr<nsIXPConnectWrappedJS> wrapped = do_QueryInterface(icPromptService);
   AutoJSAPI jsapi;
   if (NS_WARN_IF(!jsapi.Init(wrapped->GetJSObjectGlobal()))) {
-    resultPromise->Reject(NS_ERROR_FAILURE, __func__);
-    return resultPromise;
+    return PromiseType::CreateAndReject(NS_ERROR_FAILURE, __func__);
   }
 
   JS::Rooted<JS::Value> providersJS(jsapi.cx());
   bool success = ToJSValue(jsapi.cx(), aProviders, &providersJS);
   if (NS_WARN_IF(!success)) {
-    resultPromise->Reject(NS_ERROR_FAILURE, __func__);
-    return resultPromise;
+    return PromiseType::CreateAndReject(NS_ERROR_FAILURE, __func__);
   }
 
   // Convert each settled MozPromise into a Nullable<ResolveValue>
@@ -1077,22 +1071,19 @@ PromptUserToSelectProvider(
     if (manifest.IsResolve()) {
       if (NS_WARN_IF(
               !manifests.AppendElement(manifest.ResolveValue(), fallible))) {
-        resultPromise->Reject(NS_ERROR_FAILURE, __func__);
-        return resultPromise;
+        return PromiseType::CreateAndReject(NS_ERROR_FAILURE, __func__);
       }
     } else {
       if (NS_WARN_IF(!manifests.AppendElement(
               Nullable<IdentityProviderAPIConfig>(), fallible))) {
-        resultPromise->Reject(NS_ERROR_FAILURE, __func__);
-        return resultPromise;
+        return PromiseType::CreateAndReject(NS_ERROR_FAILURE, __func__);
       }
     }
   }
   JS::Rooted<JS::Value> manifestsJS(jsapi.cx());
   success = ToJSValue(jsapi.cx(), manifests, &manifestsJS);
   if (NS_WARN_IF(!success)) {
-    resultPromise->Reject(NS_ERROR_FAILURE, __func__);
-    return resultPromise;
+    return PromiseType::CreateAndReject(NS_ERROR_FAILURE, __func__);
   }
 
   RefPtr<Promise> showPromptPromise;
@@ -1100,35 +1091,31 @@ PromptUserToSelectProvider(
                                       manifestsJS,
                                       getter_AddRefs(showPromptPromise));
 
-  showPromptPromise->AddCallbacksWithCycleCollectedArgs(
-      [aProviders, aManifests, resultPromise](
-          JSContext*, JS::Handle<JS::Value> aValue, ErrorResult&) {
+  auto handler = MakeRefPtr<MozPromiseNativeHandler<PromiseType>>(
+      [aProviders, aManifests](
+          JSContext*, JS::Handle<JS::Value> aValue) -> RefPtr<PromiseType> {
         int32_t result = aValue.toInt32();
         if (result < 0 || (uint32_t)result > aProviders.Length() ||
             (uint32_t)result > aManifests.Length()) {
-          resultPromise->Reject(NS_ERROR_FAILURE, __func__);
-          return;
+          return PromiseType::CreateAndReject(NS_ERROR_FAILURE, __func__);
         }
         const IdentityProviderRequestOptions& resolvedProvider =
             aProviders.ElementAt(result);
         if (!aManifests.ElementAt(result).IsResolve()) {
-          resultPromise->Reject(NS_ERROR_FAILURE, __func__);
-          return;
+          return PromiseType::CreateAndReject(NS_ERROR_FAILURE, __func__);
         }
         const IdentityProviderAPIConfig& resolvedManifest =
             aManifests.ElementAt(result).ResolveValue();
-        resultPromise->Resolve(
+        return PromiseType::CreateAndResolve(
             std::make_tuple(resolvedProvider, resolvedManifest), __func__);
       },
-      [resultPromise](JSContext*, JS::Handle<JS::Value> aValue, ErrorResult&) {
-        resultPromise->Reject(
+      [](JSContext*, JS::Handle<JS::Value> aValue) -> RefPtr<PromiseType> {
+        return PromiseType::CreateAndReject(
             Promise::TryExtractNSResultFromRejectionValue(aValue), __func__);
-      });
-  // Working around https://gcc.gnu.org/bugzilla/show_bug.cgi?id=85883
-  showPromptPromise->AppendNativeHandler(
-      new MozPromiseRejectOnDestruction{resultPromise, __func__});
-
-  return resultPromise;
+      },
+      __func__);
+  showPromptPromise->AppendNativeHandler(handler);
+  return handler->Promise();
 }
 
 // static
@@ -1138,48 +1125,40 @@ RefPtr<GetAccountPromise> PromptUserToSelectAccount(
     const IdentityProviderRequestOptions& aProvider,
     const IdentityProviderAPIConfig& aManifest) {
   MOZ_ASSERT(aBrowsingContext);
-  RefPtr<GetAccountPromise::Private> resultPromise =
-      new GetAccountPromise::Private(__func__);
 
   if (NS_WARN_IF(!aBrowsingContext)) {
-    resultPromise->Reject(NS_ERROR_FAILURE, __func__);
-    return resultPromise;
+    return GetAccountPromise::CreateAndReject(NS_ERROR_FAILURE, __func__);
   }
 
   nsresult error;
   nsCOMPtr<nsIIdentityCredentialPromptService> icPromptService =
       mozilla::components::IdentityCredentialPromptService::Service(&error);
   if (NS_WARN_IF(!icPromptService)) {
-    resultPromise->Reject(error, __func__);
-    return resultPromise;
+    return GetAccountPromise::CreateAndReject(error, __func__);
   }
 
   nsCOMPtr<nsIXPConnectWrappedJS> wrapped = do_QueryInterface(icPromptService);
   AutoJSAPI jsapi;
   if (NS_WARN_IF(!jsapi.Init(wrapped->GetJSObjectGlobal()))) {
-    resultPromise->Reject(NS_ERROR_FAILURE, __func__);
-    return resultPromise;
+    return GetAccountPromise::CreateAndReject(NS_ERROR_FAILURE, __func__);
   }
 
   JS::Rooted<JS::Value> accountsJS(jsapi.cx());
   bool success = ToJSValue(jsapi.cx(), aAccounts, &accountsJS);
   if (NS_WARN_IF(!success)) {
-    resultPromise->Reject(NS_ERROR_FAILURE, __func__);
-    return resultPromise;
+    return GetAccountPromise::CreateAndReject(NS_ERROR_FAILURE, __func__);
   }
 
   JS::Rooted<JS::Value> providerJS(jsapi.cx());
   success = ToJSValue(jsapi.cx(), aProvider, &providerJS);
   if (NS_WARN_IF(!success)) {
-    resultPromise->Reject(NS_ERROR_FAILURE, __func__);
-    return resultPromise;
+    return GetAccountPromise::CreateAndReject(NS_ERROR_FAILURE, __func__);
   }
 
   JS::Rooted<JS::Value> manifestJS(jsapi.cx());
   success = ToJSValue(jsapi.cx(), aManifest, &manifestJS);
   if (NS_WARN_IF(!success)) {
-    resultPromise->Reject(NS_ERROR_FAILURE, __func__);
-    return resultPromise;
+    return GetAccountPromise::CreateAndReject(NS_ERROR_FAILURE, __func__);
   }
 
   RefPtr<Promise> showPromptPromise;
@@ -1187,29 +1166,27 @@ RefPtr<GetAccountPromise> PromptUserToSelectAccount(
                                          providerJS, manifestJS,
                                          getter_AddRefs(showPromptPromise));
 
-  showPromptPromise->AddCallbacksWithCycleCollectedArgs(
-      [aAccounts, resultPromise, aManifest](
-          JSContext*, JS::Handle<JS::Value> aValue, ErrorResult&) {
+  auto handler = MakeRefPtr<MozPromiseNativeHandler<GetAccountPromise>>(
+      [aAccounts, aManifest](JSContext*, JS::Handle<JS::Value> aValue)
+          -> RefPtr<GetAccountPromise> {
         int32_t result = aValue.toInt32();
         if (!aAccounts.mAccounts.WasPassed() || result < 0 ||
             (uint32_t)result > aAccounts.mAccounts.Value().Length()) {
-          resultPromise->Reject(NS_ERROR_FAILURE, __func__);
-          return;
+          return GetAccountPromise::CreateAndReject(NS_ERROR_FAILURE, __func__);
         }
         const IdentityProviderAccount& resolved =
             aAccounts.mAccounts.Value().ElementAt(result);
-        resultPromise->Resolve(std::make_tuple(aManifest, resolved, false),
-                               __func__);
+        return GetAccountPromise::CreateAndResolve(
+            std::make_tuple(aManifest, resolved, false), __func__);
       },
-      [resultPromise](JSContext*, JS::Handle<JS::Value> aValue, ErrorResult&) {
-        resultPromise->Reject(
+      [](JSContext*,
+         JS::Handle<JS::Value> aValue) -> RefPtr<GetAccountPromise> {
+        return GetAccountPromise::CreateAndReject(
             Promise::TryExtractNSResultFromRejectionValue(aValue), __func__);
-      });
-  // Working around https://gcc.gnu.org/bugzilla/show_bug.cgi?id=85883
-  showPromptPromise->AppendNativeHandler(
-      new MozPromiseRejectOnDestruction{resultPromise, __func__});
-
-  return resultPromise;
+      },
+      __func__);
+  showPromptPromise->AppendNativeHandler(handler);
+  return handler->Promise();
 }
 
 // static

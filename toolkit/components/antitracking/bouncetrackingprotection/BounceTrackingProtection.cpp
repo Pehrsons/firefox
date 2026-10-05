@@ -20,7 +20,6 @@
 #include "mozilla/Maybe.h"
 #include "mozilla/Services.h"
 #include "mozilla/StaticPrefs_privacy.h"
-#include "mozilla/dom/Promise-inl.h"
 #include "mozilla/dom/PromiseNativeHandler.h"
 #include "nsComponentManagerUtils.h"
 #include "nsDebug.h"
@@ -943,19 +942,18 @@ BounceTrackingProtection::EnsureRemoteExceptionListService() {
 
   // Convert to MozPromise so it can be handled from C++ side. Also store the
   // promise so that subsequent calls to this method can wait for init too.
-  RefPtr<GenericNonExclusivePromise::Private> resultPromise =
-      new GenericNonExclusivePromise::Private(__func__);
-  mRemoteExceptionListInitPromise = resultPromise;
-
-  jsPromise->AddCallbacksWithCycleCollectedArgs(
-      [resultPromise](JSContext*, JS::Handle<JS::Value>, ErrorResult&) {
-        resultPromise->Resolve(true, __func__);
-      },
-      [resultPromise](JSContext*, JS::Handle<JS::Value>, ErrorResult&) {
-        resultPromise->Reject(NS_ERROR_FAILURE, __func__);
-      });
-  jsPromise->AppendNativeHandler(
-      new dom::MozPromiseRejectOnDestruction{resultPromise, __func__});
+  auto handler =
+      MakeRefPtr<dom::MozPromiseNativeHandler<GenericNonExclusivePromise>>(
+          [](JSContext*, JS::Handle<JS::Value>) {
+            return GenericNonExclusivePromise::CreateAndResolve(true, __func__);
+          },
+          [](JSContext*, JS::Handle<JS::Value>) {
+            return GenericNonExclusivePromise::CreateAndReject(NS_ERROR_FAILURE,
+                                                               __func__);
+          },
+          __func__);
+  mRemoteExceptionListInitPromise = handler->Promise();
+  jsPromise->AppendNativeHandler(handler);
 
   return mRemoteExceptionListInitPromise;
 }
