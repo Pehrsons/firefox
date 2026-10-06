@@ -971,47 +971,51 @@ RefPtr<MozPromise<bool, nsresult, true>> DisconnectInMainProcess(
     return MozPromise<bool, nsresult, true>::CreateAndReject(rv, __func__);
   }
 
-  RefPtr<MozPromise<bool, nsresult, true>::Private> resultPromise =
-      new MozPromise<bool, nsresult, true>::Private(__func__);
+  using DisconnectPromise = MozPromise<bool, nsresult, true>;
+  using DisconnectAccountPromise =
+      MozPromise<DisconnectedAccount, nsresult, true>;
 
   RefPtr<nsIURI> configURI;
   rv = NS_NewURI(getter_AddRefs(configURI), aOptions.mConfigURL);
   if (NS_FAILED(rv)) {
-    resultPromise->Reject(NS_ERROR_DOM_MALFORMED_URI, __func__);
-    return resultPromise;
+    return DisconnectPromise::CreateAndReject(NS_ERROR_DOM_MALFORMED_URI,
+                                              __func__);
   }
 
   nsCOMPtr<nsIPrincipal> principal(aDocumentPrincipal);
   nsCOMPtr<nsIPrincipal> idpPrincipal = BasePrincipal::CreateContentPrincipal(
       configURI, principal->OriginAttributesRef());
 
-  FetchManifest(principal, aOptions)
+  return FetchManifest(principal, aOptions)
       ->Then(
           GetCurrentSerialEventTarget(), __func__,
-          [resultPromise, aOptions, icStorageService, configURI, idpPrincipal,
-           principal](const IdentityProviderAPIConfig& aConfig) {
+          [aOptions, icStorageService, configURI, idpPrincipal,
+           principal](GetManifestPromise::ResolveOrRejectValue&& aManifest)
+              -> RefPtr<DisconnectPromise> {
+            if (aManifest.IsReject()) {
+              return DisconnectPromise::CreateAndReject(aManifest.RejectValue(),
+                                                        __func__);
+            }
+            const IdentityProviderAPIConfig& aConfig = aManifest.ResolveValue();
             if (!aConfig.mDisconnect_endpoint.WasPassed()) {
-              resultPromise->Reject(NS_ERROR_DOM_NETWORK_ERR, __func__);
-              return MozPromise<DisconnectedAccount, nsresult,
-                                true>::CreateAndReject(NS_OK, __func__);
+              return DisconnectPromise::CreateAndReject(
+                  NS_ERROR_DOM_NETWORK_ERR, __func__);
             }
             RefPtr<nsIURI> disconnectURI;
             nsCString disconnectArgument = aConfig.mDisconnect_endpoint.Value();
             nsresult rv = NS_NewURI(getter_AddRefs(disconnectURI),
                                     disconnectArgument, nullptr, configURI);
             if (NS_FAILED(rv)) {
-              resultPromise->Reject(NS_ERROR_DOM_NETWORK_ERR, __func__);
-              return MozPromise<DisconnectedAccount, nsresult,
-                                true>::CreateAndReject(NS_OK, __func__);
+              return DisconnectPromise::CreateAndReject(
+                  NS_ERROR_DOM_NETWORK_ERR, __func__);
             }
 
             bool connected = false;
             rv = icStorageService->Connected(principal, idpPrincipal,
                                              &connected);
             if (NS_WARN_IF(NS_FAILED(rv)) || !connected) {
-              resultPromise->Reject(NS_ERROR_DOM_NETWORK_ERR, __func__);
-              return MozPromise<DisconnectedAccount, nsresult,
-                                true>::CreateAndReject(NS_OK, __func__);
+              return DisconnectPromise::CreateAndReject(
+                  NS_ERROR_DOM_NETWORK_ERR, __func__);
             }
 
             // Create a new request
@@ -1021,65 +1025,40 @@ RefPtr<MozPromise<bool, nsresult, true>> DisconnectInMainProcess(
             nsAutoCString bodyCString;
             bodyValue.Serialize(bodyCString, true);
             return IdentityNetworkHelpers::FetchDisconnectHelper(
-                disconnectURI, bodyCString, principal);
-          },
-          [resultPromise](nsresult aError) {
-            resultPromise->Reject(aError, __func__);
-            // We reject with NS_OK, so that we don't disconnect accounts in the
-            // reject callback here.
-            return MozPromise<DisconnectedAccount, nsresult,
-                              true>::CreateAndReject(NS_OK, __func__);
-          })
-      ->Then(
-          GetCurrentSerialEventTarget(), __func__,
-          [icStorageService, principal, idpPrincipal,
-           resultPromise](const DisconnectedAccount& token) {
-            bool registered = false, notUsed = false;
-            nsresult rv = icStorageService->GetState(principal, idpPrincipal,
-                                                     token.mAccount_id,
-                                                     &registered, &notUsed);
-            if (NS_WARN_IF(NS_FAILED(rv))) {
-              resultPromise->Reject(NS_ERROR_UNEXPECTED, __func__);
-              return;
-            }
-            if (registered) {
-              nsresult rv = icStorageService->Delete(principal, idpPrincipal,
-                                                     token.mAccount_id);
-              if (NS_WARN_IF(NS_FAILED(rv))) {
-                resultPromise->Reject(NS_ERROR_UNEXPECTED, __func__);
-                return;
-              }
-              resultPromise->Resolve(true, __func__);
-            } else {
-              nsresult rv =
-                  icStorageService->Disconnect(principal, idpPrincipal);
-              if (NS_WARN_IF(NS_FAILED(rv))) {
-                resultPromise->Reject(NS_ERROR_UNEXPECTED, __func__);
-                return;
-              }
-              resultPromise->Resolve(true, __func__);
-            }
-            return;
-          },
-          [icStorageService, principal, idpPrincipal,
-           resultPromise](nsresult error) {
-            // Bail out if we already rejected the result above.
-            if (error == NS_OK) {
-              return;
-            }
-
-            // If we issued the request and it failed, fall back
-            // to clearing all.
-            nsresult rv = icStorageService->Disconnect(principal, idpPrincipal);
-            if (NS_WARN_IF(NS_FAILED(rv))) {
-              resultPromise->Reject(NS_ERROR_UNEXPECTED, __func__);
-              return;
-            }
-            resultPromise->Resolve(true, __func__);
-            return;
+                       disconnectURI, bodyCString, principal)
+                ->Then(GetCurrentSerialEventTarget(), __func__,
+                       [icStorageService, principal, idpPrincipal](
+                           DisconnectAccountPromise::ResolveOrRejectValue&&
+                               aResponse) -> RefPtr<DisconnectPromise> {
+                         nsresult rv;
+                         if (aResponse.IsReject()) {
+                           // If we issued the request and it failed, fall back
+                           // to clearing all.
+                           rv = icStorageService->Disconnect(principal,
+                                                             idpPrincipal);
+                         } else {
+                           const DisconnectedAccount& token =
+                               aResponse.ResolveValue();
+                           bool registered = false, notUsed = false;
+                           rv = icStorageService->GetState(
+                               principal, idpPrincipal, token.mAccount_id,
+                               &registered, &notUsed);
+                           if (NS_SUCCEEDED(rv)) {
+                             rv = registered ? icStorageService->Delete(
+                                                   principal, idpPrincipal,
+                                                   token.mAccount_id)
+                                             : icStorageService->Disconnect(
+                                                   principal, idpPrincipal);
+                           }
+                         }
+                         if (NS_WARN_IF(NS_FAILED(rv))) {
+                           return DisconnectPromise::CreateAndReject(
+                               NS_ERROR_UNEXPECTED, __func__);
+                         }
+                         return DisconnectPromise::CreateAndResolve(true,
+                                                                    __func__);
+                       });
           });
-
-  return resultPromise;
 }
 
 // static
