@@ -130,45 +130,45 @@ NativeMessagingProxy::GetAvailable(JSContext* aCx, dom::Promise** aPromise) {
   MOZ_ASSERT(aPromise);
 
   if (!mAvailablePromise) {
-    auto holder = MakeRefPtr<GenericNonExclusivePromise::Private>(__func__);
-
-    widget::CreateDBusProxyForBus(
-        G_BUS_TYPE_SESSION, GDBusProxyFlags(G_DBUS_PROXY_FLAGS_NONE),
-        /* aInterfaceInfo = */ nullptr, kNativeMessagingProxyName,
-        kNativeMessagingProxyObjectPath, kNativeMessagingProxyInterface,
-        mCancellable)
-        ->Then(
-            GetCurrentSerialEventTarget(), __func__,
-            [self = RefPtr{this}, this, holder](RefPtr<GDBusProxy>&& aProxy) {
-              mProxy = std::move(aProxy);
-              bool available = false;
-              RefPtr<GVariant> version = dont_AddRef(
-                  g_dbus_proxy_get_cached_property(mProxy, "version"));
-              if (!version ||
-                  !g_variant_is_of_type(version, G_VARIANT_TYPE_UINT32)) {
-                LOG_NMPROXY(
-                    "failed to get version for "
-                    "org.freedesktop.NativeMessagingProxy");
-                mProxy = nullptr;
-                holder->Resolve(false, __func__);
-                return;
-              }
-              if (g_variant_get_uint32(version) >= 1) {
-                available = true;
-              } else {
-                mProxy = nullptr;
-              }
-              LOG_NMPROXY("is %savailable", available ? "" : "not ");
-              holder->Resolve(available, __func__);
-            },
-            [self = RefPtr{this}, holder](GUniquePtr<GError>&& aError) {
-              LOG_NMPROXY(
-                  "failed to get dbus proxy for "
-                  "org.freedesktop.NativeMessagingProxy: %s",
-                  aError->message);
-              holder->Resolve(false, __func__);
-            });
-    mAvailablePromise = holder;
+    mAvailablePromise =
+        widget::CreateDBusProxyForBus(
+            G_BUS_TYPE_SESSION, GDBusProxyFlags(G_DBUS_PROXY_FLAGS_NONE),
+            /* aInterfaceInfo = */ nullptr, kNativeMessagingProxyName,
+            kNativeMessagingProxyObjectPath, kNativeMessagingProxyInterface,
+            mCancellable)
+            ->Then(
+                GetCurrentSerialEventTarget(), __func__,
+                [self = RefPtr{this}, this](RefPtr<GDBusProxy>&& aProxy) {
+                  mProxy = std::move(aProxy);
+                  bool available = false;
+                  RefPtr<GVariant> version = dont_AddRef(
+                      g_dbus_proxy_get_cached_property(mProxy, "version"));
+                  if (!version ||
+                      !g_variant_is_of_type(version, G_VARIANT_TYPE_UINT32)) {
+                    LOG_NMPROXY(
+                        "failed to get version for "
+                        "org.freedesktop.NativeMessagingProxy");
+                    mProxy = nullptr;
+                    return GenericNonExclusivePromise::CreateAndResolve(
+                        false, __func__);
+                  }
+                  if (g_variant_get_uint32(version) >= 1) {
+                    available = true;
+                  } else {
+                    mProxy = nullptr;
+                  }
+                  LOG_NMPROXY("is %savailable", available ? "" : "not ");
+                  return GenericNonExclusivePromise::CreateAndResolve(available,
+                                                                      __func__);
+                },
+                [self = RefPtr{this}](GUniquePtr<GError>&& aError) {
+                  LOG_NMPROXY(
+                      "failed to get dbus proxy for "
+                      "org.freedesktop.NativeMessagingProxy: %s",
+                      aError->message);
+                  return GenericNonExclusivePromise::CreateAndResolve(false,
+                                                                      __func__);
+                });
   }
 
   nsIGlobalObject* globalObject = xpc::CurrentNativeGlobal(aCx);
