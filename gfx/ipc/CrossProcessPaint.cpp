@@ -289,14 +289,12 @@ RefPtr<CrossProcessPaint::SnapshotPromise> CrossProcessPaint::Start(
     resolver->QueuePaint(aRoot, aRect, aBackgroundColor, aFlags);
   }
 
-  auto snapshotPromise = MakeRefPtr<SnapshotPromise::Private>(__func__);
-  promise->Then(
+  return promise->Then(
       GetMainThreadSerialEventTarget(), __func__,
-      [snapshotPromise, rootTabId](ResolvedFragmentMap&& aFragments) {
+      [rootTabId](ResolvedFragmentMap&& aFragments) {
         RefPtr<RecordedDependentSurface> root = aFragments.Get(rootTabId);
         if (!root) {
-          snapshotPromise->Reject(NS_ERROR_FAILURE, __func__);
-          return;
+          return SnapshotPromise::CreateAndReject(NS_ERROR_FAILURE, __func__);
         }
 
         // Create the destination draw target.
@@ -307,8 +305,7 @@ RefPtr<CrossProcessPaint::SnapshotPromise> CrossProcessPaint::Start(
           CPP_LOG("Couldn't create (%d x %d) surface for fragment %" PRIu64
                   ".\n",
                   root->mSize.width, root->mSize.height, (uint64_t)rootTabId);
-          snapshotPromise->Reject(NS_ERROR_FAILURE, __func__);
-          return;
+          return SnapshotPromise::CreateAndReject(NS_ERROR_FAILURE, __func__);
         }
 
         // Translate the recording using our child tabs.
@@ -319,23 +316,19 @@ RefPtr<CrossProcessPaint::SnapshotPromise> CrossProcessPaint::Start(
                                              root->mRecording.mLen)) {
             CPP_LOG("Couldn't translate recording for fragment %" PRIu64 ".\n",
                     (uint64_t)rootTabId);
-            snapshotPromise->Reject(NS_ERROR_FAILURE, __func__);
-            return;
+            return SnapshotPromise::CreateAndReject(NS_ERROR_FAILURE, __func__);
           }
         }
 
         RefPtr<SourceSurface> snapshot = drawTarget->Snapshot();
         if (!snapshot) {
-          snapshotPromise->Reject(NS_ERROR_FAILURE, __func__);
-          return;
+          return SnapshotPromise::CreateAndReject(NS_ERROR_FAILURE, __func__);
         }
-        snapshotPromise->Resolve(std::move(snapshot), __func__);
+        return SnapshotPromise::CreateAndResolve(std::move(snapshot), __func__);
       },
-      [snapshotPromise](const nsresult& aRv) {
-        snapshotPromise->Reject(aRv, __func__);
+      [](const nsresult& aRv) {
+        return SnapshotPromise::CreateAndReject(aRv, __func__);
       });
-
-  return snapshotPromise;
 }
 
 CrossProcessPaint::CrossProcessPaint(float aScale, dom::TabId aRootTabId,
