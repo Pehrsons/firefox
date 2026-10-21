@@ -3823,9 +3823,10 @@ void MediaTrackGraphImpl::FinishCollectReports(
   manager->EndReport();
 }
 
-SourceMediaTrack* MediaTrackGraph::CreateSourceTrack(MediaSegment::Type aType) {
+SourceMediaTrack* MediaTrackGraph::CreateSourceTrack(MediaSegment::Type aType,
+                                                     MediaTrack::Flags aFlags) {
   SourceMediaTrack* track = new SourceMediaTrack(aType, GraphRate());
-  AddTrack(track, {});
+  AddTrack(track, aFlags);
   return track;
 }
 
