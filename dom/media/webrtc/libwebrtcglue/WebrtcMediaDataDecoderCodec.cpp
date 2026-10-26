@@ -112,6 +112,32 @@ std::optional<uint8_t> WebrtcMediaDataDecoder::ExtractQp(
   return std::nullopt;
 }
 
+// Returns the sizes of the frames in aImage. libwebrtc concatenates the spatial
+// layers of a VP9 SVC frame, each a shown frame, into one buffer without a
+// superframe index. These are split into one sample per layer, like ffmpeg's
+// vp9_superframe_split bitstream filter does with an indexed superframe, as
+// decoders taking a single frame per sample decode only the first frame, and
+// VideoToolbox rejects superframes with several shown frames.
+static AutoTArray<size_t, 3> FrameSizes(const webrtc::EncodedImage& aImage,
+                                        bool aIsVp9) {
+  AutoTArray<size_t, 3> sizes;
+  if (aIsVp9) {
+    size_t totalSize = 0;
+    for (int i = 0; i <= aImage.SpatialIndex().value_or(0); ++i) {
+      if (std::optional<size_t> size = aImage.SpatialLayerFrameSize(i)) {
+        sizes.AppendElement(*size);
+        totalSize += *size;
+      }
+    }
+    if (totalSize == aImage.size()) {
+      return sizes;
+    }
+    sizes.Clear();
+  }
+  sizes.AppendElement(aImage.size());
+  return sizes;
+}
+
 int32_t WebrtcMediaDataDecoder::Decode(const webrtc::EncodedImage& aInputImage,
                                        bool aMissingFrames,
                                        int64_t aRenderTimeMs) {
@@ -134,29 +160,49 @@ int32_t WebrtcMediaDataDecoder::Decode(const webrtc::EncodedImage& aInputImage,
   auto disabledHardwareAcceleration =
       MakeScopeExit([&] { mDisabledHardwareAcceleration = true; });
 
-  RefPtr compressedFrame =
-      MakeRefPtr<MediaRawData>(aInputImage.data(), aInputImage.size());
-  if (!compressedFrame->Data()) {
-    return WEBRTC_VIDEO_CODEC_MEMORY;
+  const AutoTArray<size_t, 3> frameSizes =
+      FrameSizes(aInputImage, mInfo.mMimeType.EqualsLiteral("video/vp9"));
+  AutoTArray<RefPtr<MediaRawData>, 3> compressedFrames;
+  size_t offset = 0;
+  for (size_t size : frameSizes) {
+    RefPtr compressedFrame =
+        MakeRefPtr<MediaRawData>(aInputImage.data() + offset, size);
+    if (!compressedFrame->Data()) {
+      return WEBRTC_VIDEO_CODEC_MEMORY;
+    }
+    compressedFrame->mTime =
+        media::TimeUnit::FromMicroseconds(aInputImage.RtpTimestamp());
+    compressedFrame->mTimecode =
+        media::TimeUnit::FromMicroseconds(aRenderTimeMs * 1000);
+    // Only the lowest spatial layer of an SVC keyframe is a keyframe.
+    compressedFrame->mKeyframe =
+        offset == 0 &&
+        aInputImage._frameType == webrtc::VideoFrameType::kVideoFrameKey;
+    compressedFrames.AppendElement(std::move(compressedFrame));
+    offset += size;
   }
-
-  compressedFrame->mTime =
-      media::TimeUnit::FromMicroseconds(aInputImage.RtpTimestamp());
-  compressedFrame->mTimecode =
-      media::TimeUnit::FromMicroseconds(aRenderTimeMs * 1000);
-  compressedFrame->mKeyframe =
-      aInputImage._frameType == webrtc::VideoFrameType::kVideoFrameKey;
   {
-    media::Await(
-        do_AddRef(mThreadPool), mDecoder->Decode(compressedFrame),
-        [&](const MediaDataDecoder::DecodedData& aResults) {
-          mResults = aResults.Clone();
-          mError = NS_OK;
-        },
-        [&](const MediaResult& aError) { mError = aError; });
+    for (const RefPtr<MediaRawData>& compressedFrame : compressedFrames) {
+      media::Await(
+          do_AddRef(mThreadPool), mDecoder->Decode(compressedFrame),
+          [&](const MediaDataDecoder::DecodedData& aResults) {
+            mResults.AppendElements(aResults);
+            mError = NS_OK;
+          },
+          [&](const MediaResult& aError) { mError = aError; });
+      if (NS_FAILED(mError)) {
+        break;
+      }
+    }
 
     const std::optional<uint8_t> qp = ExtractQp(aInputImage);
-    for (auto& frame : mResults) {
+    for (size_t i = 0; i < mResults.Length(); ++i) {
+      const RefPtr<MediaData>& frame = mResults[i];
+      // There is one picture per spatial layer of a VP9 SVC frame. Only the
+      // last one, the highest layer, is to be shown.
+      if (i + 1 < mResults.Length() && mResults[i + 1]->mTime == frame->mTime) {
+        continue;
+      }
       MOZ_ASSERT(frame->mType == MediaData::Type::VIDEO_DATA);
       RefPtr<VideoData> video = frame->As<VideoData>();
       MOZ_ASSERT(video);
