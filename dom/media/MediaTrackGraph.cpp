@@ -1198,7 +1198,6 @@ void MediaTrackGraphImpl::PrepareUpdatesToMainThreadState(bool aFinalUpdate) {
             track->GraphTimeToTrackTime(mProcessedTime));
       }
     }
-    mNextMainThreadGraphTime = mProcessedTime;
     if (!mPendingUpdateRunnables.IsEmpty()) {
       mUpdateRunnables.AppendElements(std::move(mPendingUpdateRunnables));
     }
@@ -2062,8 +2061,6 @@ void MediaTrackGraphImpl::RunInStableState(bool aSourceIsMTG) {
       }
     }
     mTrackUpdates.Clear();
-
-    mMainThreadGraphTime = mNextMainThreadGraphTime;
 
     if (LifecycleState() == LIFECYCLE_WAITING_FOR_MAIN_THREAD_CLEANUP &&
         IsEmpty()) {
@@ -3499,7 +3496,6 @@ MediaTrackGraphImpl::MediaTrackGraphImpl(uint64_t aWindowID,
       mCanRunMessagesSynchronously(false)
 #endif
       ,
-      mMainThreadGraphTime(0, "MediaTrackGraphImpl::mMainThreadGraphTime"),
       mAudioOutputLatency(0.0),
       mMaxOutputChannelCount(0) {
 }
@@ -4301,11 +4297,6 @@ void MediaTrackGraph::DispatchToMainThreadStableState(
   AssertOnGraphThreadOrNotRunning();
   static_cast<MediaTrackGraphImpl*>(this)
       ->mPendingUpdateRunnables.AppendElement(std::move(aRunnable));
-}
-
-Watchable<mozilla::GraphTime>& MediaTrackGraphImpl::CurrentTime() {
-  MOZ_ASSERT(NS_IsMainThread());
-  return mMainThreadGraphTime;
 }
 
 GraphTime MediaTrackGraph::ProcessedTime() const {
