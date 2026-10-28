@@ -153,7 +153,7 @@ TEST_F(TestDeviceInputTrack, DeviceInputConsumerTrack) {
   };
 
   const PrincipalHandle testPrincipal =
-      MakePrincipalHandle(nsContentUtils::GetSystemPrincipal());
+      PrincipalHandle(nsContentUtils::GetSystemPrincipal());
 
   const CubebUtils::AudioDeviceID device1 = (void*)1;
   RefPtr<TestAudioDataListener> listener1 = new TestAudioDataListener(1, false);
@@ -186,7 +186,7 @@ TEST_F(TestDeviceInputTrack, NativeInputTrackData) {
   buffer.AppendElements(bufferSize);
 
   const PrincipalHandle testPrincipal =
-      MakePrincipalHandle(nsContentUtils::GetSystemPrincipal());
+      PrincipalHandle(nsContentUtils::GetSystemPrincipal());
 
   // Setup: Create a NativeInputTrack and add it to mGraph
   RefPtr<NativeInputTrack> track =
@@ -254,7 +254,7 @@ TEST_F(TestDeviceInputTrack, StartAndStop) {
   const CubebUtils::AudioDeviceID deviceId = (CubebUtils::AudioDeviceID)1;
   const uint32_t channels = 2;
   const PrincipalHandle testPrincipal =
-      MakePrincipalHandle(nsContentUtils::GetSystemPrincipal());
+      PrincipalHandle(nsContentUtils::GetSystemPrincipal());
   const TrackRate rate = 48000;
 
   // Setup: Create a NonNativeInputTrack and add it to mGraph.
@@ -361,7 +361,7 @@ TEST_F(TestDeviceInputTrack, NonNativeInputTrackData) {
   const CubebUtils::AudioDeviceID deviceId = (CubebUtils::AudioDeviceID)1;
   const uint32_t channels = 2;
   const PrincipalHandle testPrincipal =
-      MakePrincipalHandle(nsContentUtils::GetSystemPrincipal());
+      PrincipalHandle(nsContentUtils::GetSystemPrincipal());
   const TrackRate rate = 48000;
 
   // Setup: Create a NonNativeInputTrack and add it to mGraph.
@@ -452,7 +452,7 @@ TEST_F(TestDeviceInputTrack, NonNativeDeviceChangedCallback) {
   const CubebUtils::AudioDeviceID deviceId = (CubebUtils::AudioDeviceID)1;
   const uint32_t channels = 2;
   const PrincipalHandle testPrincipal =
-      MakePrincipalHandle(nsContentUtils::GetSystemPrincipal());
+      PrincipalHandle(nsContentUtils::GetSystemPrincipal());
   const TrackRate rate = 48000;
 
   // Setup: Create a NonNativeInputTrack and add it to mGraph.
@@ -509,7 +509,7 @@ TEST_F(TestDeviceInputTrack, NonNativeErrorCallback) {
   const CubebUtils::AudioDeviceID deviceId = (CubebUtils::AudioDeviceID)1;
   const uint32_t channels = 2;
   const PrincipalHandle testPrincipal =
-      MakePrincipalHandle(nsContentUtils::GetSystemPrincipal());
+      PrincipalHandle(nsContentUtils::GetSystemPrincipal());
   const TrackRate rate = 48000;
 
   // Setup: Create a NonNativeInputTrack and add it to mGraph.
