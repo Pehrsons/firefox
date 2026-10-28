@@ -11,7 +11,7 @@ using namespace mozilla;
 TEST(TestAudioChunkList, Basic1)
 {
   const PrincipalHandle testPrincipal =
-      MakePrincipalHandle(nsContentUtils::GetSystemPrincipal());
+      PrincipalHandle(nsContentUtils::GetSystemPrincipal());
   AudioChunkList list(256, 2, testPrincipal);
   list.SetSampleFormat(AUDIO_FORMAT_FLOAT32);
   EXPECT_EQ(list.ChunkCapacity(), 128u);
@@ -45,7 +45,7 @@ TEST(TestAudioChunkList, Basic1)
 TEST(TestAudioChunkList, Basic2)
 {
   const PrincipalHandle testPrincipal =
-      MakePrincipalHandle(nsContentUtils::GetSystemPrincipal());
+      PrincipalHandle(nsContentUtils::GetSystemPrincipal());
   AudioChunkList list(256, 2, testPrincipal);
   list.SetSampleFormat(AUDIO_FORMAT_S16);
   EXPECT_EQ(list.ChunkCapacity(), 256u);

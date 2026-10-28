@@ -256,9 +256,9 @@ TEST(TestAudioInputProcessing, ProcessDataWithDifferentPrincipals)
 
   RefPtr<nsIPrincipal> dummy_principal =
       NullPrincipal::CreateWithoutOriginAttributes();
-  const PrincipalHandle principal1 = MakePrincipalHandle(dummy_principal.get());
+  const PrincipalHandle principal1 = PrincipalHandle(dummy_principal.get());
   const PrincipalHandle principal2 =
-      MakePrincipalHandle(nsContentUtils::GetSystemPrincipal());
+      PrincipalHandle(nsContentUtils::GetSystemPrincipal());
 
   // Total 4800 frames. It's easier to test with frames of multiples of 480.
   nsTArray<std::pair<TrackTime, PrincipalHandle>> framesWithPrincipal = {

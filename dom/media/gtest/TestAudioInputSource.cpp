@@ -44,7 +44,7 @@ TEST(TestAudioInputSource, StartAndStop)
   const CubebUtils::AudioDeviceID deviceId = (CubebUtils::AudioDeviceID)1;
   const uint32_t channels = 2;
   const PrincipalHandle testPrincipal =
-      MakePrincipalHandle(nsContentUtils::GetSystemPrincipal());
+      PrincipalHandle(nsContentUtils::GetSystemPrincipal());
   const TrackRate sourceRate = 44100;
   const TrackRate targetRate = 48000;
 
@@ -113,7 +113,7 @@ TEST(TestAudioInputSource, DataOutputBeforeStartAndAfterStop)
   const CubebUtils::AudioDeviceID deviceId = (CubebUtils::AudioDeviceID)1;
   const uint32_t channels = 2;
   const PrincipalHandle testPrincipal =
-      MakePrincipalHandle(nsContentUtils::GetSystemPrincipal());
+      PrincipalHandle(nsContentUtils::GetSystemPrincipal());
   const TrackRate sourceRate = 44100;
   const TrackRate targetRate = 48000;
 
@@ -196,7 +196,7 @@ TEST(TestAudioInputSource, ErrorCallback)
   const CubebUtils::AudioDeviceID deviceId = (CubebUtils::AudioDeviceID)1;
   const uint32_t channels = 2;
   const PrincipalHandle testPrincipal =
-      MakePrincipalHandle(nsContentUtils::GetSystemPrincipal());
+      PrincipalHandle(nsContentUtils::GetSystemPrincipal());
   const TrackRate sourceRate = 44100;
   const TrackRate targetRate = 48000;
 
@@ -246,7 +246,7 @@ TEST(TestAudioInputSource, DeviceChangedCallback)
   const CubebUtils::AudioDeviceID deviceId = (CubebUtils::AudioDeviceID)1;
   const uint32_t channels = 2;
   const PrincipalHandle testPrincipal =
-      MakePrincipalHandle(nsContentUtils::GetSystemPrincipal());
+      PrincipalHandle(nsContentUtils::GetSystemPrincipal());
   const TrackRate sourceRate = 44100;
   const TrackRate targetRate = 48000;
 
@@ -294,7 +294,7 @@ TEST(TestAudioInputSource, InputProcessing)
   const CubebUtils::AudioDeviceID deviceId = (CubebUtils::AudioDeviceID)1;
   const uint32_t channels = 2;
   const PrincipalHandle testPrincipal =
-      MakePrincipalHandle(nsContentUtils::GetSystemPrincipal());
+      PrincipalHandle(nsContentUtils::GetSystemPrincipal());
   const TrackRate sourceRate = 44100;
   const TrackRate targetRate = 48000;
   using ProcessingPromise =
