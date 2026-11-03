@@ -22,7 +22,14 @@ class VideoStreamTrack : public MediaStreamTrack {
       MediaStreamTrackSource* aSource,
       MediaStreamTrackState aState = MediaStreamTrackState::Live,
       bool aMuted = false,
-      const MediaTrackConstraints& aConstraints = MediaTrackConstraints());
+      const MediaTrackConstraints& aConstraints = MediaTrackConstraints(),
+      MediaTrackGraph* aFallbackGraph = nullptr);
+
+  VideoStreamTrack(nsIGlobalObject* aGlobal,
+                   already_AddRefed<GraphTrackHolder> aHolder,
+                   MediaStreamTrackSource* aSource,
+                   MediaStreamTrackState aReadyState, bool aMuted,
+                   const MediaTrackConstraints& aConstraints);
 
   already_AddRefed<MediaStreamTrack> Clone(nsIGlobalObject* aGlobal) override;
 

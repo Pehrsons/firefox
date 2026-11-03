@@ -19,9 +19,18 @@ class AudioStreamTrack : public MediaStreamTrack {
       MediaStreamTrackSource* aSource,
       MediaStreamTrackState aReadyState = MediaStreamTrackState::Live,
       bool aMuted = false,
-      const MediaTrackConstraints& aConstraints = MediaTrackConstraints())
+      const MediaTrackConstraints& aConstraints = MediaTrackConstraints(),
+      MediaTrackGraph* aFallbackGraph = nullptr)
       : MediaStreamTrack(aGlobal, aInputTrack, aSource, aReadyState, aMuted,
-                         aConstraints) {}
+                         aConstraints, aFallbackGraph) {}
+
+  AudioStreamTrack(nsIGlobalObject* aGlobal,
+                   already_AddRefed<GraphTrackHolder> aHolder,
+                   MediaStreamTrackSource* aSource,
+                   MediaStreamTrackState aReadyState, bool aMuted,
+                   const MediaTrackConstraints& aConstraints)
+      : MediaStreamTrack(aGlobal, std::move(aHolder), aSource, aReadyState,
+                         aMuted, aConstraints) {}
 
   already_AddRefed<MediaStreamTrack> Clone(nsIGlobalObject* aGlobal) override;
 

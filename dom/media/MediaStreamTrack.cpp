@@ -4,17 +4,18 @@
 
 #include "MediaStreamTrack.h"
 
+#include <memory>
+
 #include "AudioStreamTrack.h"
 #include "DOMMediaStream.h"
 #include "GraphTrackHolder.h"
 #include "MediaSegment.h"
 #include "MediaStreamError.h"
-#include "MediaStreamTrackSourceHandle.h"
 #include "MediaTrackGraph.h"
 #include "MediaTrackGraphImpl.h"
 #include "MediaTrackListener.h"
-#include "TransferredTrackSource.h"
 #include "VideoStreamTrack.h"
+#include "WorkerTrackSourceProxy.h"
 #include "mozilla/AbstractThread.h"
 #include "mozilla/BasePrincipal.h"
 #include "mozilla/StaticPrefs_media.h"
@@ -119,13 +120,57 @@ static AbstractThread* OwningAbstractThread() {
   return AbstractThread::GetCurrent();
 }
 
+static already_AddRefed<GraphTrackHolder> CreateHolder(
+    nsIGlobalObject* aGlobal, mozilla::MediaTrack* aInputTrack,
+    MediaStreamTrackState aReadyState, MediaTrackGraph* aFallbackGraph) {
+  if (!NS_IsMainThread()) {
+    // TODO(Bug 1991619): Tracks transferred to a worker have no
+    // MediaTrackGraph representation yet.
+    MOZ_ASSERT(!aInputTrack || aReadyState == MediaStreamTrackState::Ended);
+    return nullptr;
+  }
+  if (aReadyState == MediaStreamTrackState::Ended) {
+    return GraphTrackHolder::Create(nullptr, nullptr, true);
+  }
+
+  MOZ_ASSERT(aInputTrack);
+  MediaTrackGraph* graph = nullptr;
+  if (!aInputTrack->IsDestroyed()) {
+    graph = aInputTrack->Graph();
+  } else if (aFallbackGraph) {
+    graph = aFallbackGraph;
+  } else {
+    graph = MediaTrackGraph::GetInstanceIfExists(
+        aGlobal ? aGlobal->GetAsInnerWindow() : nullptr,
+        aInputTrack->mSampleRate, MediaTrackGraph::DEFAULT_OUTPUT_DEVICE);
+  }
+  MOZ_DIAGNOSTIC_ASSERT(graph,
+                        "A destroyed input track is only expected when "
+                        "cloning, but since we're live there must be another "
+                        "live track that is keeping the graph alive");
+  return GraphTrackHolder::Create(aInputTrack, graph, true);
+}
+
 MediaStreamTrack::MediaStreamTrack(nsIGlobalObject* aGlobal,
                                    mozilla::MediaTrack* aInputTrack,
                                    MediaStreamTrackSource* aSource,
                                    MediaStreamTrackState aReadyState,
                                    bool aMuted,
+                                   const MediaTrackConstraints& aConstraints,
+                                   MediaTrackGraph* aFallbackGraph)
+    : MediaStreamTrack(
+          aGlobal,
+          CreateHolder(aGlobal, aInputTrack, aReadyState, aFallbackGraph),
+          aSource, aReadyState, aMuted, aConstraints) {}
+
+MediaStreamTrack::MediaStreamTrack(nsIGlobalObject* aGlobal,
+                                   already_AddRefed<GraphTrackHolder> aHolder,
+                                   MediaStreamTrackSource* aSource,
+                                   MediaStreamTrackState aReadyState,
+                                   bool aMuted,
                                    const MediaTrackConstraints& aConstraints)
     : DOMEventTargetHelper(aGlobal),
+      mHolder(aHolder),
       mSource(aSource),
       mSink(std::make_unique<TrackSink>(this)),
       mPrincipal(aSource->GetPrincipal()),
@@ -138,6 +183,7 @@ MediaStreamTrack::MediaStreamTrack(nsIGlobalObject* aGlobal,
       mTrackEnded(mAbstractThread, false, "MediaStreamTrack::mTrackEnded"),
       mTrackPrincipalHandle(mAbstractThread, PRINCIPAL_HANDLE_NONE,
                             "MediaStreamTrack::mTrackPrincipalHandle") {
+  MOZ_ASSERT(NS_IsMainThread() == !!mHolder);
   nsresult rv;
   nsCOMPtr<nsIUUIDGenerator> uuidgen =
       do_GetService("@mozilla.org/uuid-generator;1", &rv);
@@ -153,29 +199,16 @@ MediaStreamTrack::MediaStreamTrack(nsIGlobalObject* aGlobal,
   mID = NS_ConvertASCIItoUTF16(chars);
 
   if (Ended()) {
+    if (mHolder) {
+      mHolder->Shutdown();
+    }
     return;
   }
   GetSource().RegisterSink(mSink.get());
 
-  if (!NS_IsMainThread()) {
-    // TODO(Bug 1991619): Tracks transferred to a worker have no
-    // MediaTrackGraph representation yet.
-    MOZ_ASSERT(!aInputTrack);
-    return;
+  if (mHolder) {
+    SetGraphTrack(mHolder->GraphTrack());
   }
-
-  MOZ_ASSERT(aInputTrack);
-  auto graph = aInputTrack->IsDestroyed()
-                   ? MediaTrackGraph::GetInstanceIfExists(
-                         GetOwnerWindow(), aInputTrack->mSampleRate,
-                         MediaTrackGraph::DEFAULT_OUTPUT_DEVICE)
-                   : aInputTrack->Graph();
-  MOZ_DIAGNOSTIC_ASSERT(graph,
-                        "A destroyed input track is only expected when "
-                        "cloning, but since we're live there must be another "
-                        "live track that is keeping the graph alive");
-  mHolder = GraphTrackHolder::Create(aInputTrack, graph, mEnabled);
-  SetGraphTrack(mHolder->GraphTrack());
 }
 
 void MediaStreamTrack::SetGraphTrack(ProcessedMediaTrack* aTrack) {
@@ -192,6 +225,10 @@ void MediaStreamTrack::SetGraphTrack(ProcessedMediaTrack* aTrack) {
 mozilla::MediaTrack* MediaStreamTrack::InputTrack() const {
   NS_ASSERT_OWNINGTHREAD(MediaStreamTrack);
   return mHolder ? mHolder->InputTrack() : nullptr;
+}
+
+MediaTrackGraph* MediaStreamTrack::GraphIfLive() const {
+  return mTrack ? mTrack->Graph() : nullptr;
 }
 
 MediaStreamTrack::~MediaStreamTrack() { Destroy(); }
@@ -257,7 +294,7 @@ MediaStreamTrack::TransferredData::TransferredData(
     const MediaStreamTrackSourceCapabilities& aCapabilities,
     const nsAString& aDeviceId, const nsAString& aGroupId,
     MediaSourceEnum aMediaSource, bool aHasAlpha,
-    RefPtr<MediaStreamTrackSourceHandle> aSource)
+    RefPtr<GraphTrackHolder> aSource)
     : mId(aId),
       mKind(aKind),
       mLabel(aLabel),
@@ -302,26 +339,24 @@ UniquePtr<MediaStreamTrack::TransferredData> MediaStreamTrack::Transfer() {
   //     contentHint is not implemented.
   nsString label;
   GetSource().GetLabel(label);
-  // The transferred track stays tied to its source through a handle. A track
-  // proxying to a source already has one. A main-thread track creates one
-  // and hands over its holder, or an ended holder if it has already ended.
-  RefPtr<MediaStreamTrackSourceHandle> sourceHandle =
-      GetSource().TransferHandle();
-  if (!sourceHandle) {
+  // The transferred track stays tied to its source through its holder. A
+  // track proxying to a source already has the holder through it. A main-thread
+  // track hands over its own, live or ended, and the holder attaches to its
+  // source before this track unregisters its sink, so that the source keeps
+  // a sink.
+  RefPtr<GraphTrackHolder> holder = GetSource().TransferHolder();
+  if (!holder) {
     MOZ_ASSERT(NS_IsMainThread());
-    RefPtr<GraphTrackHolder> holder = std::move(mHolder);
-    if (!holder) {
-      holder = GraphTrackHolder::Create(nullptr, nullptr, mEnabled);
-    }
-    sourceHandle = MediaStreamTrackSourceHandle::Create(
-        holder.forget(), mSource, mEnabled, mMuted);
+    MOZ_ASSERT(mHolder);
+    holder = std::move(mHolder);
+    holder->Attach(mSource, mMuted);
   }
-  auto data = MakeUnique<TransferredData>(
+  auto data = std::make_unique<TransferredData>(
       mID, AsAudioStreamTrack() ? MediaSegment::AUDIO : MediaSegment::VIDEO,
       label, mReadyState, mEnabled, mMuted, mConstraints,
       GetSource().Settings(), GetSource().Capabilities(), GetSource().mDeviceId,
       GetSource().mGroupId, GetSource().GetMediaSource(),
-      GetSource().HasAlpha(), std::move(sourceHandle));
+      GetSource().HasAlpha(), std::move(holder));
 
   LOG(LogLevel::Info, ("MediaStreamTrack {} transferred", fmt::ptr(this)));
 
@@ -330,11 +365,15 @@ UniquePtr<MediaStreamTrack::TransferredData> MediaStreamTrack::Transfer() {
 
   // 13. Set value.[[ReadyState]] to "ended" (without stopping the underlying
   //     source or firing an ended event).
-  // The TransferredData created above keeps the source alive when unregistering
-  // this track's sink here. Consumers are notified like for Stop() so that a
-  // containing MediaStream updates its active state.
+  // The holder in the TransferredData created above keeps the source alive
+  // when unregistering this track's sink here. Consumers are notified like for
+  // Stop() so that a containing MediaStream updates its active state, unless
+  // the track had already ended and notified them.
+  const bool wasLive = !Ended();
   SetReadyState(MediaStreamTrackState::Ended);
-  NotifyEnded();
+  if (wasLive) {
+    NotifyEnded();
+  }
 
   return data;
 }
@@ -352,15 +391,16 @@ already_AddRefed<MediaStreamTrack> MediaStreamTrack::FromTransferred(
   // Implicit, see Transfer().
 
   // 9. Initialize the underlying source of track to dataHolder.[[source]].
-  // Done up front since the track constructor needs the source.
+  // Done up front since the track constructor needs the source. The track on
+  // the main thread takes over the holder, which stays attached to the source
+  // until the track has registered its own sink with it.
+  RefPtr<GraphTrackHolder> holder;
   RefPtr<MediaStreamTrackSource> source;
-  RefPtr<mozilla::MediaTrack> inputTrack;
   if (NS_IsMainThread()) {
-    GraphTrackHolder* holder = aData.mSource->Holder();
+    holder = aData.mSource;
     source = &holder->Source();
-    inputTrack = holder->InputTrack();
   } else {
-    source = TransferredTrackSource::Create(aData);
+    source = WorkerTrackSourceProxy::Create(aData);
     if (!source) {
       return nullptr;
     }
@@ -378,14 +418,19 @@ already_AddRefed<MediaStreamTrack> MediaStreamTrack::FromTransferred(
   // 10. Set track's constraints to dataHolder.[[constraints]].
   RefPtr<MediaStreamTrack> track;
   if (aData.mKind == MediaSegment::AUDIO) {
-    track = new AudioStreamTrack(aGlobal, inputTrack, source, aData.mReadyState,
-                                 aData.mMuted, aData.mConstraints);
+    track = new AudioStreamTrack(aGlobal, holder.forget(), source,
+                                 aData.mReadyState, aData.mMuted,
+                                 aData.mConstraints);
   } else {
-    track = new VideoStreamTrack(aGlobal, inputTrack, source, aData.mReadyState,
-                                 aData.mMuted, aData.mConstraints);
+    track = new VideoStreamTrack(aGlobal, holder.forget(), source,
+                                 aData.mReadyState, aData.mMuted,
+                                 aData.mConstraints);
   }
   track->AssignId(aData.mId);
   track->SetEnabled(aData.mEnabled);
+  if (NS_IsMainThread()) {
+    aData.mSource->Unattach();
+  }
 
   LOG(LogLevel::Info,
       ("MediaStreamTrack {} created from transfer, {}", fmt::ptr(track.get()),
@@ -754,7 +799,6 @@ void MediaStreamTrack::SetReadyState(MediaStreamTrackState aState) {
     }
     if (mHolder) {
       mHolder->Shutdown();
-      mHolder = nullptr;
     }
   }
 

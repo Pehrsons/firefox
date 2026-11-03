@@ -321,7 +321,6 @@ UNIFIED_SOURCES += [
     "MediaShutdownManager.cpp",
     "MediaStreamError.cpp",
     "MediaStreamTrack.cpp",
-    "MediaStreamTrackSourceHandle.cpp",
     "MediaStreamWindowCapturer.cpp",
     "MediaTimer.cpp",
     "MediaTrack.cpp",
@@ -337,7 +336,6 @@ UNIFIED_SOURCES += [
     "SeekJob.cpp",
     "TimeUnits.cpp",
     "Tracing.cpp",
-    "TransferredTrackSource.cpp",
     "VideoFrameContainer.cpp",
     "VideoPlaybackQuality.cpp",
     "VideoSegment.cpp",
@@ -345,6 +343,7 @@ UNIFIED_SOURCES += [
     "VideoTrack.cpp",
     "VideoTrackList.cpp",
     "VideoUtils.cpp",
+    "WorkerTrackSourceProxy.cpp",
     "XiphExtradata.cpp",
 ]
 

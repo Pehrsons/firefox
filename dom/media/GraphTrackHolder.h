@@ -6,10 +6,10 @@
 #define DOM_MEDIA_GRAPHTRACKHOLDER_H_
 
 #include "MediaStreamTrack.h"
+#include "MediaTrackConstraints.h"
 #include "mozilla/RefPtr.h"
 #include "mozilla/StateMirroring.h"
 #include "mozilla/StateWatching.h"
-#include "mozilla/ThreadSafeWeakPtr.h"
 #include "nsThreadUtils.h"
 
 namespace mozilla {
@@ -21,31 +21,62 @@ class ProcessedMediaTrack;
 
 namespace dom {
 
-class MediaStreamTrackSourceHandle;
-
 /**
  * Owns the MediaTrackGraph track of a MediaStreamTrack, which borrows it. Only
  * the main thread creates and destroys graph objects, so this lets tracks on
- * other threads, i.e., in dedicated workers, have a graph track too.
+ * other threads, i.e., in dedicated workers, have a graph track too. It also
+ * lets a MediaStreamTrack stay tied to its source as if it was created in the
+ * source's context when it is transferred, per the MediaStreamTrack transfer
+ * steps in
+ * https://w3c.github.io/mediacapture-extensions/#transferable-mediastreamtrack
  *
- * A main-thread MediaStreamTrack creates its own holder and is the source's
- * sink itself. When the track is transferred, the holder moves to a
- * MediaStreamTrackSourceHandle and takes on the main-thread duties of the
- * track on the other thread: it becomes a keep-alive sink of the source, so
- * the source stays alive and follows that track's enabled state, and notifies
- * the handle of state changes. See Attach().
+ * There is one holder, and one graph track, per MediaStreamTrack, which moves
+ * with the track when it is transferred:
+ *  - A MediaStreamTrack on the main thread owns its holder for as long as it
+ *    lives, also once it has ended, when the holder has shut down. The holder
+ *    is unattached: the track's own sink is the source's sink and the holder
+ *    does not reference the source. The track owning it would otherwise reach
+ *    the source through a reference the cycle collector cannot see.
+ *  - When the track is transferred the holder moves to the transferred data
+ *    and Attach()es to the source. Now it is a keep-alive sink of the source,
+ *    which stays alive and follows the enabled state of the track on the other
+ *    thread, and it publishes the state of the track through Canonicals for
+ *    the track on the other thread to mirror.
+ *  - A track transferred to a worker is owned by that worker's
+ *    WorkerTrackSourceProxy, which keeps the holder attached. The track on the
+ *    main thread that the holder is then transferred to takes it over as its
+ *    own, and calls Unattach().
  *
- * The graph track is destroyed in Shutdown() and nowhere else, not even when
- * the holder ends because the source or the graph track ended, so the track
- * borrowing it can rely on it until the holder's owner shuts the holder down.
- * The holder is refcounted since pending watch callbacks hold it, so the owner
- * must Shutdown() it before dropping its reference.
+ * The holder is refcounted thread-safely, may be AddRefed and Released on any
+ * thread and is destroyed on the main thread when the last reference is
+ * released. Everything else is main thread only.
  *
- * Main thread only.
+ * The graph track is destroyed in Shutdown() and the destructor, not when the
+ * holder ends because the source or the graph track ended, so the track
+ * borrowing it can rely on it until its owner shuts the holder down. An owner
+ * that ends calls Shutdown() but keeps its reference, so that it can still
+ * pass the holder on, and its source, if it is transferred while ended.
+ *
+ * TODO(Bug 1991618): The holder always lives on the main thread, as does the
+ * source. A source owned by a worker (e.g., a VideoTrackGenerator in a worker
+ * whose track is transferred to the main thread or another worker) would need
+ * the holder to live on that worker, kept alive with a ThreadSafeWorkerRef
+ * while other threads may dispatch to it.
  */
 class GraphTrackHolder final : public MediaStreamTrackSource::Sink {
  public:
-  NS_INLINE_DECL_REFCOUNTING(GraphTrackHolder)
+  NS_INLINE_DECL_THREADSAFE_REFCOUNTING_WITH_DELETE_ON_MAIN_THREAD(
+      GraphTrackHolder)
+
+  /**
+   * What the holder provides to the track on another thread: the Canonicals of
+   * the holder's source. Null unless the holder is attached and live.
+   */
+  struct HolderState {
+    RefPtr<AbstractCanonical<MediaStreamTrackSourceSettings>> mSettings;
+    RefPtr<AbstractCanonical<MediaStreamTrackSourceCapabilities>> mCapabilities;
+    bool operator==(const HolderState&) const = default;
+  };
 
   /**
    * Creates a holder for aInputTrack, the MediaTrack that a MediaStreamTrack's
@@ -58,20 +89,32 @@ class GraphTrackHolder final : public MediaStreamTrackSource::Sink {
       mozilla::MediaTrack* aInputTrack, MediaTrackGraph* aGraph, bool aEnabled);
 
   /**
-   * Makes this holder aSource's sink on behalf of the track aHandle is for,
-   * and notify aHandle of state changes for as long as it is alive. Until then
-   * the main-thread MediaStreamTrack that created the holder is the sink, and
-   * the holder does not reference the source: the track owning it would
-   * otherwise reach the source through a reference the cycle collector cannot
-   * see.
+   * Makes this holder aSource's sink, on behalf of the track on the other
+   * thread that the holder is transferred to. aMuted is the muted state of the
+   * track being transferred, which the source does not expose itself. Until
+   * now the main-thread MediaStreamTrack owning the holder was the sink.
+   * Takes a reference to aSource, which is the source of the transferred track
+   * even if the holder has ended, until Unattach() or until destroyed.
    */
-  void Attach(MediaStreamTrackSourceHandle* aHandle,
-              MediaStreamTrackSource* aSource);
+  void Attach(MediaStreamTrackSource* aSource, bool aMuted);
 
   /**
-   * Ends the holder if live, and destroys the graph track.
+   * For a main-thread MediaStreamTrack taking the holder over from a transfer,
+   * after it has registered its own sink with the source. Unregisters this
+   * holder as sink if it is, and drops the reference to the source.
+   */
+  void Unattach();
+
+  /**
+   * Ends the holder if live, and destroys the graph track. Idempotent. The
+   * owner keeps its reference.
    */
   void Shutdown();
+
+  /**
+   * Shuts the holder down on the main thread. For an owner on another thread.
+   */
+  void ShutdownAsync();
 
   // Once attached.
   MediaStreamTrackSource& Source() const {
@@ -91,14 +134,29 @@ class GraphTrackHolder final : public MediaStreamTrackSource::Sink {
   }
   bool Ended() const {
     MOZ_ASSERT(NS_IsMainThread());
-    return mEnded;
+    return mEnded.Ref();
   }
 
   /**
-   * Sets the enabled state of the track on the other thread. Applies to the
+   * Sets the enabled state of the track tied to this holder. Applies to the
    * source like MediaStreamTrack::SetEnabled does once attached.
    */
   void SetEnabled(bool aEnabled);
+
+  /**
+   * Like SetEnabled for the track on another thread that the holder is
+   * attached on behalf of, which is applied on the main thread. Ignored if the
+   * holder is no longer attached by then.
+   */
+  void SetEnabledAsync(bool aEnabled);
+
+  // The holder's state, owned by the main thread, for the track on another
+  // thread to mirror. The accessors may be called from any thread.
+  AbstractCanonical<bool>* CanonicalMuted() { return &mMuted; }
+  AbstractCanonical<bool>* CanonicalEnded() { return &mEnded; }
+  AbstractCanonical<HolderState>* CanonicalHolderState() {
+    return &mHolderState;
+  }
 
   // MediaStreamTrackSource::Sink
   bool KeepsSourceAlive() const override { return true; }
@@ -122,17 +180,21 @@ class GraphTrackHolder final : public MediaStreamTrackSource::Sink {
   void OnTrackEnded();
 
   // Unregisters from the source if attached, stops mirroring the graph track
-  // and notifies the handle. Leaves the graph track alive. Idempotent.
+  // and publishes that we ended. Leaves the graph track alive. Idempotent.
   void End();
 
-  // The handle owning us once attached, notified of state changes while alive.
-  ThreadSafeWeakPtr<MediaStreamTrackSourceHandle> mHandle;
-  // Set by Attach(). Invisible to the cycle collector, which therefore cannot
-  // unlink the source through us. We must drop it once no track needs it.
+  // Any thread.
+  template <typename Function>
+  static void DispatchToMainThread(const char* aName, Function&& aFunction);
+
+  // Set by Attach() and cleared by Unattach(). Invisible to the cycle
+  // collector, which therefore cannot unlink the source through us. We must
+  // drop it once no track needs it.
   RefPtr<MediaStreamTrackSource> mSource;
   // The input MediaTrack assigned us by the data producer. Owned by the
-  // producer, which decides its lifetime. Null if created ended.
-  const RefPtr<mozilla::MediaTrack> mInputTrack;
+  // producer, which decides its lifetime. Null if created ended or after
+  // Shutdown().
+  RefPtr<mozilla::MediaTrack> mInputTrack;
   // The MediaTrack representing the MediaStreamTrack in the MediaTrackGraph,
   // which it borrows. Set on construction if we have an input track. Owned by
   // us. Destroyed only in Shutdown().
@@ -143,9 +205,11 @@ class GraphTrackHolder final : public MediaStreamTrackSource::Sink {
   WatchManager<GraphTrackHolder> mWatchManager;
   // Mirrors mTrack's ended state from the MediaTrackGraph while live.
   Mirror<bool> mTrackEnded;
+  Canonical<bool> mMuted;
+  // Whether we have ended. See End().
+  Canonical<bool> mEnded;
+  Canonical<HolderState> mHolderState;
   bool mEnabled;
-  bool mAttached = false;
-  bool mEnded = false;
 };
 
 }  // namespace dom

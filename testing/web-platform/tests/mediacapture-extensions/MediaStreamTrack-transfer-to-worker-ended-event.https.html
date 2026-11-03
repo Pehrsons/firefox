@@ -1,0 +1,37 @@
+<!doctype html>
+<meta charset=utf-8>
+<title>A MediaStreamTrack transferred to a dedicated worker fires ended when its source ends</title>
+<link rel="help" href="https://w3c.github.io/mediacapture-extensions/#transferable-mediastreamtrack">
+<script src=/resources/testharness.js></script>
+<script src=/resources/testharnessreport.js></script>
+<script src=support/transfer-helper.js></script>
+<script>
+"use strict";
+
+promise_test(async t => {
+  const pc1 = new RTCPeerConnection();
+  const pc2 = new RTCPeerConnection();
+  t.add_cleanup(() => {
+    pc1.close();
+    pc2.close();
+  });
+  pc1.addTransceiver("video");
+  const received = new Promise(resolve => {
+    pc2.ontrack = e => resolve(e.track);
+  });
+  await pc1.setLocalDescription();
+  await pc2.setRemoteDescription(pc1.localDescription);
+  const track = await received;
+
+  const worker = await createWorker(t, TRACK_WORKER_SCRIPT);
+  const before = await callWorker(worker, {type: "receive", track}, [track]);
+  assert_equals(before.readyState, "live", "live in the worker");
+  pc2.close();
+  await callWorker(worker, {type: "waitForEvent", name: "ended"});
+  assert_equals((await callWorker(worker, {type: "state"})).readyState,
+                "ended");
+  await new Promise(resolve => t.step_timeout(resolve, 100));
+  assert_array_equals(await callWorker(worker, {type: "events"}), [],
+                      "one ended event");
+}, "Ending the source of a track in a worker fires ended on the track");
+</script>

@@ -4,9 +4,9 @@
 
 #include "GraphTrackHolder.h"
 
-#include "MediaStreamTrackSourceHandle.h"
 #include "MediaTrackGraph.h"
 #include "mozilla/AbstractThread.h"
+#include "mozilla/AppShutdown.h"
 #include "mozilla/Logging.h"
 #include "nsThreadUtils.h"
 
@@ -32,10 +32,14 @@ GraphTrackHolder::GraphTrackHolder(mozilla::MediaTrack* aInputTrack,
       mWatchManager(this, AbstractThread::MainThread()),
       mTrackEnded(AbstractThread::MainThread(), false,
                   "GraphTrackHolder::mTrackEnded"),
+      mMuted(AbstractThread::MainThread(), false, "GraphTrackHolder::mMuted"),
+      mEnded(AbstractThread::MainThread(), !aInputTrack,
+             "GraphTrackHolder::mEnded"),
+      mHolderState(AbstractThread::MainThread(), HolderState(),
+                   "GraphTrackHolder::mHolderState"),
       mEnabled(aEnabled) {
   if (!mInputTrack) {
     LOG(LogLevel::Info, ("GraphTrackHolder {} created ended", fmt::ptr(this)));
-    mEnded = true;
     return;
   }
 
@@ -54,26 +58,47 @@ GraphTrackHolder::GraphTrackHolder(mozilla::MediaTrack* aInputTrack,
 
 GraphTrackHolder::~GraphTrackHolder() {
   MOZ_ASSERT(NS_IsMainThread());
-  MOZ_ASSERT(mEnded && !mTrack, "The owner must Shutdown() the holder");
+  LOG(LogLevel::Debug, ("GraphTrackHolder {} destroyed", fmt::ptr(this)));
+  Shutdown();
 }
 
-void GraphTrackHolder::Attach(MediaStreamTrackSourceHandle* aHandle,
-                              MediaStreamTrackSource* aSource) {
+template <typename Function>
+/* static */
+void GraphTrackHolder::DispatchToMainThread(const char* aName,
+                                            Function&& aFunction) {
+  // A failed dispatch only happens during shutdown.
+  (void)NS_DispatchToMainThread(
+      NS_NewRunnableFunction(aName, std::forward<Function>(aFunction)));
+}
+
+void GraphTrackHolder::Attach(MediaStreamTrackSource* aSource, bool aMuted) {
   MOZ_ASSERT(NS_IsMainThread());
-  MOZ_ASSERT(aHandle);
   MOZ_ASSERT(aSource);
-  MOZ_ASSERT(!mAttached);
-  mAttached = true;
-  mHandle = RefPtr(aHandle);
+  MOZ_ASSERT(!mSource);
   mSource = aSource;
-  LOG(LogLevel::Info,
-      ("GraphTrackHolder {} attached to handle {} for source {}",
-       fmt::ptr(this), fmt::ptr(aHandle), fmt::ptr(aSource)));
-  if (mEnded) {
+  LOG(LogLevel::Info, ("GraphTrackHolder {} attached to source {}",
+                       fmt::ptr(this), fmt::ptr(aSource)));
+  mMuted = aMuted;
+  if (mEnded.Ref()) {
     return;
   }
   mSource->RegisterSink(this);
+  mHolderState =
+      HolderState{.mSettings = &mSource->CanonicalSettings(),
+                  .mCapabilities = &mSource->CanonicalCapabilities()};
   mSource->SinkEnabledStateChanged();
+}
+
+void GraphTrackHolder::Unattach() {
+  MOZ_ASSERT(NS_IsMainThread());
+  MOZ_ASSERT(mSource);
+  LOG(LogLevel::Info, ("GraphTrackHolder {} unattached from source {}",
+                       fmt::ptr(this), fmt::ptr(mSource.get())));
+  RefPtr<MediaStreamTrackSource> source = std::move(mSource);
+  mHolderState = HolderState();
+  if (!mEnded.Ref()) {
+    source->UnregisterSink(this);
+  }
 }
 
 void GraphTrackHolder::SetEnabled(bool aEnabled) {
@@ -82,17 +107,31 @@ void GraphTrackHolder::SetEnabled(bool aEnabled) {
     return;
   }
   mEnabled = aEnabled;
-  if (mEnded || !mAttached) {
+  if (mEnded.Ref() || !mSource) {
     return;
   }
   mSource->SinkEnabledStateChanged();
 }
 
+void GraphTrackHolder::SetEnabledAsync(bool aEnabled) {
+  MOZ_ASSERT(!NS_IsMainThread());
+  DispatchToMainThread("GraphTrackHolder::SetEnabled",
+                       [self = RefPtr(this), aEnabled] {
+                         if (self->mSource) {
+                           self->SetEnabled(aEnabled);
+                         }
+                       });
+}
+
+void GraphTrackHolder::ShutdownAsync() {
+  MOZ_ASSERT(!NS_IsMainThread());
+  DispatchToMainThread("GraphTrackHolder::Shutdown",
+                       [self = RefPtr(this)] { self->Shutdown(); });
+}
+
 void GraphTrackHolder::MutedChanged(bool aNewState) {
   MOZ_ASSERT(NS_IsMainThread());
-  if (RefPtr<MediaStreamTrackSourceHandle> handle(mHandle); handle) {
-    handle->HolderMutedChanged(aNewState);
-  }
+  mMuted = aNewState;
 }
 
 void GraphTrackHolder::OverrideEnded() {
@@ -112,6 +151,7 @@ void GraphTrackHolder::OnTrackEnded() {
 void GraphTrackHolder::Shutdown() {
   MOZ_ASSERT(NS_IsMainThread());
   End();
+  mInputTrack = nullptr;
   if (!mTrack) {
     return;
   }
@@ -125,19 +165,24 @@ void GraphTrackHolder::Shutdown() {
 
 void GraphTrackHolder::End() {
   MOZ_ASSERT(NS_IsMainThread());
-  if (mEnded) {
+  if (mEnded.Ref()) {
     return;
   }
-  mEnded = true;
   LOG(LogLevel::Info, ("GraphTrackHolder {} ended", fmt::ptr(this)));
-  if (mAttached) {
+  // The final shutdown cycle collection runs after
+  // AbstractThread::ShutdownMainThread(), and nothing mirrors the holder's
+  // Canonicals by then.
+  MOZ_DIAGNOSTIC_ASSERT_IF(
+      !AbstractThread::GetCurrent(),
+      AppShutdown::IsInOrBeyond(ShutdownPhase::XPCOMShutdownFinal));
+  if (AbstractThread::GetCurrent()) {
+    mEnded = true;
+  }
+  if (mSource) {
     mSource->UnregisterSink(this);
   }
   mWatchManager.Shutdown();
   mTrackEnded.DisconnectIfConnected();
-  if (RefPtr<MediaStreamTrackSourceHandle> handle(mHandle); handle) {
-    handle->HolderEnded();
-  }
 }
 
 }  // namespace mozilla::dom

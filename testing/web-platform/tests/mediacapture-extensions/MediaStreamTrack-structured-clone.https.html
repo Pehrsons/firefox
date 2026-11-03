@@ -75,4 +75,16 @@ promise_test(async t => {
   assert_throws_dom("DataCloneError",
                     () => structuredClone(track, {transfer: [track]}));
 }, "A track in the transfer list is detached even if the value does not reference it");
+
+promise_test(async t => {
+  const track = await getTrack(t);
+  track.stop();
+  const copy = structuredClone(track, {transfer: [track]});
+  assert_true(copy instanceof MediaStreamTrack);
+  assert_equals(copy.id, track.id, "id");
+  assert_equals(copy.kind, track.kind, "kind");
+  assert_equals(copy.label, track.label, "label");
+  assert_equals(copy.readyState, "ended");
+  copy.stop();
+}, "Transferring a stopped track yields an ended track");
 </script>

@@ -1,0 +1,81 @@
+<!doctype html>
+<meta charset=utf-8>
+<title>An ended MediaStreamTrack in a dedicated worker can be transferred on</title>
+<link rel="help" href="https://w3c.github.io/mediacapture-extensions/#transferable-mediastreamtrack">
+<script src=/resources/testharness.js></script>
+<script src=/resources/testharnessreport.js></script>
+<script src=/resources/testdriver.js></script>
+<script src=/resources/testdriver-vendor.js></script>
+<script src=/mediacapture-streams/permission-helper.js></script>
+<script src=support/transfer-helper.js></script>
+<script>
+"use strict";
+
+promise_setup(() => setMediaPermission());
+
+function assertEndedLike(t, track, before) {
+  assert_true(track instanceof MediaStreamTrack, "is a MediaStreamTrack");
+  assert_equals(track.readyState, "ended", "readyState");
+  assert_equals(track.id, before.id, "id");
+  assert_equals(track.kind, before.kind, "kind");
+  assert_equals(track.label, before.label, "label");
+  let endedFired = false;
+  track.addEventListener("ended", () => endedFired = true);
+  return new Promise(resolve => t.step_timeout(resolve, 100)).then(() => {
+    assert_false(endedFired, "no ended event for a track received ended");
+  });
+}
+
+for (const kind of ["video", "audio"]) {
+  promise_test(async t => {
+    const worker = await createWorker(t, TRACK_WORKER_SCRIPT);
+    const track = await getTrack(t, kind);
+    const before = await callWorker(worker, {type: "receive", track}, [track]);
+    await callWorker(worker, {type: "stop"});
+    const back = await callWorker(worker, {type: "transferOut"});
+    await assertEndedLike(t, back, before);
+    back.stop();
+    assert_equals(back.clone().readyState, "ended", "clone");
+  }, `A ${kind} track stopped in a worker transfers back to the window ended`);
+}
+
+promise_test(async t => {
+  const worker1 = await createWorker(t, TRACK_WORKER_SCRIPT);
+  const worker2 = await createWorker(t, TRACK_WORKER_SCRIPT);
+  const {port1, port2} = new MessageChannel();
+  await callWorker(worker1, {type: "setPort", port: port1}, [port1]);
+  await callWorker(worker2, {type: "listenForTrack", port: port2}, [port2]);
+  const track = await getTrack(t, "video");
+  const before = await callWorker(worker1, {type: "receive", track}, [track]);
+  await callWorker(worker1, {type: "stop"});
+  await callWorker(worker1, {type: "transferToPort"});
+  await callWorker(worker2, {type: "startListening"});
+  const after = await callWorker(worker2, {type: "takeArrivedTrack"});
+  assert_equals(after.readyState, "ended", "readyState");
+  assert_equals(after.id, before.id, "id");
+  assert_equals(after.kind, before.kind, "kind");
+  assert_equals(after.label, before.label, "label");
+  await new Promise(resolve => t.step_timeout(resolve, 100));
+  assert_array_equals(await callWorker(worker2, {type: "events"}), []);
+}, "A track stopped in a worker transfers to another worker ended");
+
+promise_test(async t => {
+  const worker = await createWorker(t, TRACK_WORKER_SCRIPT);
+  const iframe = document.createElement("iframe");
+  t.add_cleanup(() => iframe.remove());
+  const received = new Promise(resolve => {
+    window.addEventListener("message", e => resolve(e.data), {once: true});
+  });
+  iframe.src = "support/iframe-getUserMedia-transfer.html";
+  document.body.appendChild(iframe);
+  const track = await received;
+  assert_true(track instanceof MediaStreamTrack,
+              `got a track from the iframe: ${JSON.stringify(track)}`);
+
+  const before = await callWorker(worker, {type: "receive", track}, [track]);
+  iframe.remove();
+  await callWorker(worker, {type: "waitForEvent", name: "ended"});
+  const back = await callWorker(worker, {type: "transferOut"});
+  await assertEndedLike(t, back, before);
+}, "A track ended by its source in a worker transfers back to the window ended");
+</script>

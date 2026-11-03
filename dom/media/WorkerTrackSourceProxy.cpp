@@ -2,7 +2,7 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this file,
  * You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-#include "TransferredTrackSource.h"
+#include "WorkerTrackSourceProxy.h"
 
 #include "MediaStreamError.h"
 #include "mozilla/Logging.h"
@@ -20,25 +20,24 @@ namespace mozilla::dom {
 
 static AbstractThread* WorkerAbstractThread() {
   MOZ_RELEASE_ASSERT(IsCurrentThreadRunningWorker(),
-                     "TransferredTrackSource lives on worker threads only");
+                     "WorkerTrackSourceProxy lives on worker threads only");
   return AbstractThread::GetCurrent();
 }
 
-NS_IMPL_ISUPPORTS_INHERITED0(TransferredTrackSource, MediaStreamTrackSource)
+NS_IMPL_ISUPPORTS_INHERITED0(WorkerTrackSourceProxy, MediaStreamTrackSource)
 
 /* static */
-already_AddRefed<TransferredTrackSource> TransferredTrackSource::Create(
+already_AddRefed<WorkerTrackSourceProxy> WorkerTrackSourceProxy::Create(
     const MediaStreamTrack::TransferredData& aData) {
-  RefPtr<TransferredTrackSource> source = new TransferredTrackSource(
+  RefPtr<WorkerTrackSourceProxy> source = new WorkerTrackSourceProxy(
       aData.mSource, WorkerAbstractThread(), aData.mLabel, aData.mMediaSource,
       aData.mHasAlpha, aData.mMuted, aData.mSettings, aData.mCapabilities,
       aData.mDeviceId, aData.mGroupId);
 
   if (aData.mReadyState == MediaStreamTrackState::Ended) {
     // An ended track never registers as a sink, so there is nothing to keep
-    // alive or mirror.
+    // alive or mirror. We only keep the holder, to pass it on.
     source->mDetached = true;
-    source->mHandle = nullptr;
     return source.forget();
   }
 
@@ -50,106 +49,110 @@ already_AddRefed<TransferredTrackSource> TransferredTrackSource::Create(
 
 // aOwnerThread is the current thread's AbstractThread. Callers create it ahead
 // of us so that the MediaStreamTrackSource Canonicals find it.
-TransferredTrackSource::TransferredTrackSource(
-    MediaStreamTrackSourceHandle* aHandle, AbstractThread* aOwnerThread,
+WorkerTrackSourceProxy::WorkerTrackSourceProxy(
+    GraphTrackHolder* aHolder, AbstractThread* aOwnerThread,
     const nsAString& aLabel, MediaSourceEnum aMediaSource, bool aHasAlpha,
     bool aMuted, const MediaStreamTrackSourceSettings& aSettings,
     const MediaStreamTrackSourceCapabilities& aCapabilities,
     const nsAString& aDeviceId, const nsAString& aGroupId)
     : MediaStreamTrackSource(nullptr, nsString(aLabel), TrackingId(),
                              nsString(aDeviceId), nsString(aGroupId)),
-      mHandle(aHandle),
+      mHolder(aHolder),
       mOwnerThread(GetCurrentSerialEventTarget()),
       mAbstractThread(aOwnerThread),
       mMediaSource(aMediaSource),
       mHasAlpha(aHasAlpha),
       mWatchManager(this, mAbstractThread),
-      mMuted(mAbstractThread, aMuted, "TransferredTrackSource::mMuted"),
-      mEnded(mAbstractThread, false, "TransferredTrackSource::mEnded"),
+      mMuted(mAbstractThread, aMuted, "WorkerTrackSourceProxy::mMuted"),
+      mEnded(mAbstractThread, false, "WorkerTrackSourceProxy::mEnded"),
       mHolderState(mAbstractThread, HolderState(),
-                   "TransferredTrackSource::mHolderState"),
+                   "WorkerTrackSourceProxy::mHolderState"),
       mOriginalSettings(mAbstractThread, aSettings,
-                        "TransferredTrackSource::mOriginalSettings"),
+                        "WorkerTrackSourceProxy::mOriginalSettings"),
       mOriginalCapabilities(mAbstractThread, aCapabilities,
-                            "TransferredTrackSource::mOriginalCapabilities") {
-  MOZ_ASSERT(mHandle);
+                            "WorkerTrackSourceProxy::mOriginalCapabilities") {
+  MOZ_ASSERT(mHolder);
   MOZ_ASSERT(mAbstractThread == AbstractThread::GetCurrent());
   mSettings = aSettings;
   mCapabilities = aCapabilities;
-  LOG(LogLevel::Info, ("TransferredTrackSource {} created for handle {}",
-                       fmt::ptr(this), fmt::ptr(mHandle.get())));
+  LOG(LogLevel::Info, ("WorkerTrackSourceProxy {} created for holder {}",
+                       fmt::ptr(this), fmt::ptr(mHolder.get())));
 }
 
-TransferredTrackSource::~TransferredTrackSource() { Detach(); }
+WorkerTrackSourceProxy::~WorkerTrackSourceProxy() { Detach(); }
 
-bool TransferredTrackSource::Init(bool aEnabled) {
-  NS_ASSERT_OWNINGTHREAD(TransferredTrackSource);
+bool WorkerTrackSourceProxy::Init(bool aEnabled) {
+  NS_ASSERT_OWNINGTHREAD(WorkerTrackSourceProxy);
   MOZ_ASSERT(!mDetached);
 
   if (WorkerPrivate* workerPrivate = GetCurrentThreadWorkerPrivate()) {
     RefPtr<StrongWorkerRef> workerRef = StrongWorkerRef::Create(
-        workerPrivate, "TransferredTrackSource", [self = RefPtr{this}] {
-          LOG(LogLevel::Info, ("TransferredTrackSource {} worker is going away",
+        workerPrivate, "WorkerTrackSourceProxy", [self = RefPtr{this}] {
+          LOG(LogLevel::Info, ("WorkerTrackSourceProxy {} worker is going away",
                                fmt::ptr(self.get())));
           self->Detach();
         });
     if (NS_WARN_IF(!workerRef)) {
       mDetached = true;
-      mHandle = nullptr;
       return false;
     }
     mWorkerRef = std::move(workerRef);
   }
 
-  mHandle->SetEnabled(aEnabled);
-  mMuted.Connect(mHandle->CanonicalMuted());
-  mWatchManager.Watch(mMuted, &TransferredTrackSource::OnMutedChanged);
-  mEnded.Connect(mHandle->CanonicalEnded());
-  mWatchManager.Watch(mEnded, &TransferredTrackSource::OnEnded);
-  mHolderState.Connect(mHandle->CanonicalHolderState());
+  mHolder->SetEnabledAsync(aEnabled);
+  mMuted.Connect(mHolder->CanonicalMuted());
+  mWatchManager.Watch(mMuted, &WorkerTrackSourceProxy::OnMutedChanged);
+  mEnded.Connect(mHolder->CanonicalEnded());
+  mWatchManager.Watch(mEnded, &WorkerTrackSourceProxy::OnEnded);
+  mHolderState.Connect(mHolder->CanonicalHolderState());
   mWatchManager.Watch(mHolderState,
-                      &TransferredTrackSource::OnHolderStateChanged);
+                      &WorkerTrackSourceProxy::OnHolderStateChanged);
   return true;
 }
 
-already_AddRefed<MediaStreamTrackSourceHandle>
-TransferredTrackSource::TransferHandle() {
-  // A track transferred again stays tied to the original source only.
-  return do_AddRef(mHandle);
+already_AddRefed<GraphTrackHolder> WorkerTrackSourceProxy::TransferHolder() {
+  NS_ASSERT_OWNINGTHREAD(WorkerTrackSourceProxy);
+  // A track transferred again stays tied to the original source only. The
+  // holder carries on with the new owner, and must not shut down when our
+  // track ends as part of the transfer.
+  mHolderTransferred = true;
+  return do_AddRef(mHolder);
 }
 
-void TransferredTrackSource::Destroy() {
-  NS_ASSERT_OWNINGTHREAD(TransferredTrackSource);
+void WorkerTrackSourceProxy::Destroy() {
+  NS_ASSERT_OWNINGTHREAD(WorkerTrackSourceProxy);
   Detach();
 }
 
-void TransferredTrackSource::Detach() {
-  NS_ASSERT_OWNINGTHREAD(TransferredTrackSource);
+void WorkerTrackSourceProxy::Detach() {
+  NS_ASSERT_OWNINGTHREAD(WorkerTrackSourceProxy);
   if (mDetached) {
     return;
   }
   mDetached = true;
-  LOG(LogLevel::Info, ("TransferredTrackSource {} detaching", fmt::ptr(this)));
+  LOG(LogLevel::Info, ("WorkerTrackSourceProxy {} detaching", fmt::ptr(this)));
   mWatchManager.Shutdown();
   mMuted.DisconnectIfConnected();
   mEnded.DisconnectIfConnected();
   mHolderState.DisconnectIfConnected();
   mOriginalSettings.DisconnectIfConnected();
   mOriginalCapabilities.DisconnectIfConnected();
-  mHandle = nullptr;
+  if (!mHolderTransferred) {
+    mHolder->ShutdownAsync();
+  }
   if (mWorkerRef) {
     // Detach() may run from the WorkerRef callback, during which the
     // WorkerPrivate iterates its WorkerRefs. Destroying the ref synchronously
     // would break that iteration, so release it from a later runnable.
-    NS_ProxyRelease("TransferredTrackSource::mWorkerRef", mOwnerThread,
+    NS_ProxyRelease("WorkerTrackSourceProxy::mWorkerRef", mOwnerThread,
                     mWorkerRef.forget(), true);
   }
 }
 
 RefPtr<MediaStreamTrackSource::ApplyConstraintsPromise>
-TransferredTrackSource::ApplyConstraints(
+WorkerTrackSourceProxy::ApplyConstraints(
     const MediaTrackConstraints& aConstraints, CallerType aCallerType) {
-  // TODO(Bug 1991619): Proxy to the original source through mHandle and
+  // TODO(Bug 1991619): Proxy to the original source through mHolder and
   // resolve on this thread. Note that MediaStreamTrack::ApplyConstraints
   // rejects before getting here when there is no window.
   return ApplyConstraintsPromise::CreateAndReject(
@@ -157,43 +160,43 @@ TransferredTrackSource::ApplyConstraints(
       __func__);
 }
 
-void TransferredTrackSource::Stop() {
-  NS_ASSERT_OWNINGTHREAD(TransferredTrackSource);
-  LOG(LogLevel::Info, ("TransferredTrackSource {} stopped", fmt::ptr(this)));
+void WorkerTrackSourceProxy::Stop() {
+  NS_ASSERT_OWNINGTHREAD(WorkerTrackSourceProxy);
+  LOG(LogLevel::Info, ("WorkerTrackSourceProxy {} stopped", fmt::ptr(this)));
   // Our track no longer keeps the original source alive. Whether it stops is
-  // up to its remaining sinks.
+  // up to its remaining sinks, once the holder is shut down.
   Detach();
 }
 
-void TransferredTrackSource::Disable() {
-  NS_ASSERT_OWNINGTHREAD(TransferredTrackSource);
+void WorkerTrackSourceProxy::Disable() {
+  NS_ASSERT_OWNINGTHREAD(WorkerTrackSourceProxy);
   if (!mDetached) {
-    mHandle->SetEnabled(false);
+    mHolder->SetEnabledAsync(false);
   }
 }
 
-void TransferredTrackSource::Enable() {
-  NS_ASSERT_OWNINGTHREAD(TransferredTrackSource);
+void WorkerTrackSourceProxy::Enable() {
+  NS_ASSERT_OWNINGTHREAD(WorkerTrackSourceProxy);
   if (!mDetached) {
-    mHandle->SetEnabled(true);
+    mHolder->SetEnabledAsync(true);
   }
 }
 
-void TransferredTrackSource::OnMutedChanged() {
-  NS_ASSERT_OWNINGTHREAD(TransferredTrackSource);
+void WorkerTrackSourceProxy::OnMutedChanged() {
+  NS_ASSERT_OWNINGTHREAD(WorkerTrackSourceProxy);
   MutedChanged(mMuted);
 }
 
-void TransferredTrackSource::OnEnded() {
-  NS_ASSERT_OWNINGTHREAD(TransferredTrackSource);
+void WorkerTrackSourceProxy::OnEnded() {
+  NS_ASSERT_OWNINGTHREAD(WorkerTrackSourceProxy);
   if (!mEnded) {
     return;
   }
   OverrideEnded();
 }
 
-void TransferredTrackSource::OnHolderStateChanged() {
-  NS_ASSERT_OWNINGTHREAD(TransferredTrackSource);
+void WorkerTrackSourceProxy::OnHolderStateChanged() {
+  NS_ASSERT_OWNINGTHREAD(WorkerTrackSourceProxy);
   const HolderState& state = mHolderState.Ref();
   if (!state.mSettings) {
     return;
@@ -202,19 +205,19 @@ void TransferredTrackSource::OnHolderStateChanged() {
   mHolderReady = true;
   mOriginalSettings.Connect(state.mSettings);
   mWatchManager.Watch(mOriginalSettings,
-                      &TransferredTrackSource::OnSettingsChanged);
+                      &WorkerTrackSourceProxy::OnSettingsChanged);
   mOriginalCapabilities.Connect(state.mCapabilities);
   mWatchManager.Watch(mOriginalCapabilities,
-                      &TransferredTrackSource::OnCapabilitiesChanged);
+                      &WorkerTrackSourceProxy::OnCapabilitiesChanged);
 }
 
-void TransferredTrackSource::OnSettingsChanged() {
-  NS_ASSERT_OWNINGTHREAD(TransferredTrackSource);
+void WorkerTrackSourceProxy::OnSettingsChanged() {
+  NS_ASSERT_OWNINGTHREAD(WorkerTrackSourceProxy);
   mSettings = mOriginalSettings.Ref();
 }
 
-void TransferredTrackSource::OnCapabilitiesChanged() {
-  NS_ASSERT_OWNINGTHREAD(TransferredTrackSource);
+void WorkerTrackSourceProxy::OnCapabilitiesChanged() {
+  NS_ASSERT_OWNINGTHREAD(WorkerTrackSourceProxy);
   mCapabilities = mOriginalCapabilities.Ref();
 }
 
