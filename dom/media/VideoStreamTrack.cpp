@@ -17,9 +17,19 @@ VideoStreamTrack::VideoStreamTrack(nsIGlobalObject* aGlobal,
                                    MediaStreamTrackSource* aSource,
                                    MediaStreamTrackState aReadyState,
                                    bool aMuted,
-                                   const MediaTrackConstraints& aConstraints)
+                                   const MediaTrackConstraints& aConstraints,
+                                   MediaTrackGraph* aFallbackGraph)
     : MediaStreamTrack(aGlobal, aInputTrack, aSource, aReadyState, aMuted,
-                       aConstraints) {}
+                       aConstraints, aFallbackGraph) {}
+
+VideoStreamTrack::VideoStreamTrack(nsIGlobalObject* aGlobal,
+                                   already_AddRefed<GraphTrackHolder> aHolder,
+                                   MediaStreamTrackSource* aSource,
+                                   MediaStreamTrackState aReadyState,
+                                   bool aMuted,
+                                   const MediaTrackConstraints& aConstraints)
+    : MediaStreamTrack(aGlobal, std::move(aHolder), aSource, aReadyState,
+                       aMuted, aConstraints) {}
 
 void VideoStreamTrack::Destroy() {
   mVideoOutputs.Clear();

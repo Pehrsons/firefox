@@ -44,8 +44,8 @@ test(() => {
 
 promise_test(async t => {
   const worker = createWorker(t);
-  const reply = new Promise(r => worker.onmessage = e => r(e.data));
   worker.postMessage("probe");
+  const reply = new Promise(r => worker.onmessage = e => r(e.data));
   for (const [name, type, present] of await reply) {
     assert_equals(type, "undefined", `typeof ${name}`);
     assert_false(present, `${name} in self`);

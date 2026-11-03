@@ -89,6 +89,26 @@ const TRACK_WORKER_SCRIPT = `
     self.track.stop();
     return describeTrack(self.track);
   };
+  handlers.transferOut = () => transfer(self.track, [self.track]);
+  handlers.setPort = ({port}) => { self.port = port; };
+  handlers.transferToPort = () => {
+    self.port.postMessage(self.track, [self.track]);
+  };
+  handlers.listenForTrack = ({port}) => {
+    self.trackArrived = new Promise(resolve => {
+      port.addEventListener("message", e => {
+        self.track = e.data;
+        logEvents(self.track, ["ended", "mute", "unmute"]);
+        resolve();
+      }, {once: true});
+    });
+    self.listenPort = port;
+  };
+  handlers.startListening = () => self.listenPort.start();
+  handlers.takeArrivedTrack = async () => {
+    await self.trackArrived;
+    return describeTrack(self.track);
+  };
   handlers.noop = () => {};
 `;
 

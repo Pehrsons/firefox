@@ -46,7 +46,6 @@ namespace dom {
 class AudioStreamTrack;
 class GraphTrackHolder;
 class VideoStreamTrack;
-class MediaStreamTrackSourceHandle;
 class RTCStatsTimestampMaker;
 enum class CallerType : uint32_t;
 
@@ -58,9 +57,9 @@ using MediaStreamTrackSourceCapabilities = MediaEngineSourceCapabilities;
  * producer on the thread owning the track.
  *
  * Sources of tracks created on the main thread live on the main thread. A
- * track transferred to a worker gets a TransferredTrackSource living on the
- * worker thread, which proxies to the original source through a
- * MediaStreamTrackSourceHandle.
+ * track transferred to a worker gets a WorkerTrackSourceProxy living on the
+ * worker thread, which proxies to the original source through the track's
+ * GraphTrackHolder.
  *
  * Kept alive by a strong ref in all MediaStreamTracks (original and clones)
  * sharing this source.
@@ -250,13 +249,13 @@ class MediaStreamTrackSource : public nsISupports {
   }
 
   /**
-   * Returns the thread-safe handle this source proxies to, if it is a
-   * TransferredTrackSource, so that a track transferred multiple times stays
+   * Returns the holder this source proxies to, if it is a
+   * WorkerTrackSourceProxy, so that a track transferred multiple times stays
    * tied to the original source only. Sources living on the main thread return
-   * null, and the track being transferred creates a handle holding this
-   * source instead. See MediaStreamTrackSourceHandle.
+   * null, and the main-thread track being transferred hands over its own
+   * holder and attaches it to this source instead. See GraphTrackHolder.
    */
-  virtual already_AddRefed<MediaStreamTrackSourceHandle> TransferHandle() {
+  virtual already_AddRefed<GraphTrackHolder> TransferHolder() {
     return nullptr;
   }
 
@@ -499,8 +498,8 @@ class MediaStreamTrackConsumer : public SupportsWeakPtr {
  *   (*) is a copy of A's input track
  *
  * Only the main thread creates and destroys graph objects. When a track is
- * transferred to a dedicated worker, its holder moves to a
- * MediaStreamTrackSourceHandle on the main thread.
+ * transferred, its holder moves with it, to the main-thread owner of the track
+ * on the other thread, or to a dedicated worker's WorkerTrackSourceProxy.
  */
 // clang-format on
 class MediaStreamTrack : public DOMEventTargetHelper, public SupportsWeakPtr {
@@ -529,7 +528,7 @@ class MediaStreamTrack : public DOMEventTargetHelper, public SupportsWeakPtr {
                     const MediaStreamTrackSourceCapabilities& aCapabilities,
                     const nsAString& aDeviceId, const nsAString& aGroupId,
                     MediaSourceEnum aMediaSource, bool aHasAlpha,
-                    RefPtr<MediaStreamTrackSourceHandle> aSource);
+                    RefPtr<GraphTrackHolder> aSource);
     ~TransferredData();
 
     // [[id]]
@@ -557,16 +556,35 @@ class MediaStreamTrack : public DOMEventTargetHelper, public SupportsWeakPtr {
     const MediaSourceEnum mMediaSource;
     const bool mHasAlpha;
 
-    // [[source]]
-    const RefPtr<MediaStreamTrackSourceHandle> mSource;
+    // [[source]]. The track's holder, attached to the underlying source.
+    const RefPtr<GraphTrackHolder> mSource;
   };
 
+  /**
+   * Creates a track for aInputTrack, the MediaTrack that its producer produces
+   * its media into. On the main thread it gets a holder with a graph track
+   * forwarding aInputTrack in its graph, unless it is created ended. Tracks on
+   * other threads have no input track. If aInputTrack has been destroyed, its
+   * graph track is created in aFallbackGraph if given.
+   */
   MediaStreamTrack(
       nsIGlobalObject* aGlobal, mozilla::MediaTrack* aInputTrack,
       MediaStreamTrackSource* aSource,
       MediaStreamTrackState aReadyState = MediaStreamTrackState::Live,
       bool aMuted = false,
-      const MediaTrackConstraints& aConstraints = MediaTrackConstraints());
+      const MediaTrackConstraints& aConstraints = MediaTrackConstraints(),
+      MediaTrackGraph* aFallbackGraph = nullptr);
+
+  /**
+   * Creates a track on the main thread that takes over aHolder, and its graph
+   * track, from the track on another thread that it was transferred from, see
+   * FromTransferred(). The holder is still attached to aSource.
+   */
+  MediaStreamTrack(nsIGlobalObject* aGlobal,
+                   already_AddRefed<GraphTrackHolder> aHolder,
+                   MediaStreamTrackSource* aSource,
+                   MediaStreamTrackState aReadyState, bool aMuted,
+                   const MediaTrackConstraints& aConstraints);
 
   NS_DECL_ISUPPORTS_INHERITED
   NS_DECL_CYCLE_COLLECTION_CLASS_INHERITED(MediaStreamTrack,
@@ -772,6 +790,9 @@ class MediaStreamTrack : public DOMEventTargetHelper, public SupportsWeakPtr {
   // The input track of our holder, for cloning. Null without a holder.
   mozilla::MediaTrack* InputTrack() const;
 
+  // The graph of mTrack, for cloning. Null without mTrack.
+  MediaTrackGraph* GraphIfLive() const;
+
   /**
    * Called when this track's readyState transitions to "ended".
    * Notifies all MediaStreamTrackConsumers that this track ended.
@@ -825,9 +846,11 @@ class MediaStreamTrack : public DOMEventTargetHelper, public SupportsWeakPtr {
       cloneRes.mSource = mSource;
       cloneRes.mInputTrack = InputTrack();
     }
-    auto newTrack =
-        MakeRefPtr<TrackType>(aGlobal, cloneRes.mInputTrack, cloneRes.mSource,
-                              ReadyState(), Muted(), mConstraints);
+    // The input track is destroyed if its source ended while cloning. If we are
+    // live our graph track is valid, so its graph is as well.
+    auto newTrack = MakeRefPtr<TrackType>(aGlobal, cloneRes.mInputTrack,
+                                          cloneRes.mSource, ReadyState(),
+                                          Muted(), mConstraints, GraphIfLive());
     newTrack->SetEnabled(Enabled());
     newTrack->SetMuted(Muted());
     return newTrack.forget();
@@ -839,8 +862,9 @@ class MediaStreamTrack : public DOMEventTargetHelper, public SupportsWeakPtr {
   nsTArray<WeakPtr<MediaStreamTrackConsumer>> mConsumers;
 
   // Holds the input track assigned us by the data producer and owns mTrack.
-  // Set on construction if we're live and on the main thread. Valid until we
-  // end. Shut down and released when we end or are transferred.
+  // Always set on the main thread, where it is shut down when we end. Handed
+  // off to the TransferredData when we are transferred. Tracks on other threads
+  // reach their holder through their WorkerTrackSourceProxy.
   RefPtr<GraphTrackHolder> mHolder;
   // The MediaTrack representing this MediaStreamTrack in the MediaTrackGraph.
   // Borrowed from mHolder, which guarantees it is not destroyed while we
