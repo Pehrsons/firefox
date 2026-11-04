@@ -1,0 +1,49 @@
+<!doctype html>
+<meta charset=utf-8>
+<title>A MediaStreamTrack disabled in a dedicated worker can be enabled in the window it is transferred to</title>
+<link rel="help" href="https://w3c.github.io/mediacapture-extensions/#transferable-mediastreamtrack">
+<script src=/resources/testharness.js></script>
+<script src=/resources/testharnessreport.js></script>
+<script src=/resources/testdriver.js></script>
+<script src=/resources/testdriver-vendor.js></script>
+<script src=/mediacapture-streams/permission-helper.js></script>
+<script src=support/transfer-helper.js></script>
+<script>
+"use strict";
+
+promise_setup(() => setMediaPermission("granted", ["camera"]));
+
+promise_test(async t => {
+  const worker = await createWorker(t, TRACK_WORKER_SCRIPT);
+  const track = await getTrack(t, "video");
+  await callWorker(worker, {type: "receive", track}, [track]);
+  const received =
+    await callWorker(worker, {type: "disableAndTransferOut"});
+  t.add_cleanup(() => received.stop());
+  assert_false(received.enabled, "disabled when transferred");
+  received.enabled = true;
+  assert_true(received.enabled, "enabled right after receiving it");
+  assert_equals(received.readyState, "live", "live");
+
+  const video = document.createElement("video");
+  t.add_cleanup(() => { video.srcObject = null; });
+  video.muted = true;
+  video.srcObject = new MediaStream([received]);
+  await video.play();
+  const canvas = document.createElement("canvas");
+  const context = canvas.getContext("2d", {willReadFrequently: true});
+  const isBlack = () => {
+    canvas.width = video.videoWidth;
+    canvas.height = video.videoHeight;
+    context.drawImage(video, 0, 0);
+    const {data} = context.getImageData(0, 0, canvas.width, canvas.height);
+    return data.every((value, i) => i % 4 == 3 || value == 0);
+  };
+  for (let i = 0; i < 100 && (!video.videoWidth || isBlack()); i++) {
+    await new Promise(r => t.step_timeout(r, 50));
+  }
+  assert_false(isBlack(), "the video is not black");
+  assert_true(received.enabled, "still enabled");
+  assert_equals(received.readyState, "live", "still live");
+}, "A video track disabled in a worker and enabled when received in the window is not black");
+</script>

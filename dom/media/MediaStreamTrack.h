@@ -12,6 +12,7 @@
 #include "PrincipalChangeObserver.h"
 #include "PrincipalHandle.h"
 #include "mozilla/DOMEventTargetHelper.h"
+#include "mozilla/MozPromise.h"
 #include "mozilla/StateMirroring.h"
 #include "mozilla/StateWatching.h"
 #include "mozilla/UniquePtr.h"
@@ -42,6 +43,13 @@ class SourceStreamInfo;
 class MediaMgrError;
 
 namespace dom {
+
+/**
+ * Not exclusive, as the track receiving a transfer, its holder and the holder's
+ * shutdown all wait for it.
+ */
+using TransferFencePromise =
+    MozPromise<bool, nsresult, /* IsExclusive = */ false>;
 
 class AudioStreamTrack;
 class GraphTrackHolder;
@@ -537,7 +545,8 @@ class MediaStreamTrack : public DOMEventTargetHelper, public SupportsWeakPtr {
                     const nsAString& aDeviceId, const nsAString& aGroupId,
                     MediaSourceEnum aMediaSource, bool aHasAlpha,
                     RefPtr<GraphTrackHolder> aSource,
-                    RefPtr<ProcessedMediaTrack> aTrack);
+                    RefPtr<ProcessedMediaTrack> aTrack,
+                    RefPtr<TransferFencePromise> aFence);
     ~TransferredData();
 
     // [[id]]
@@ -572,6 +581,13 @@ class MediaStreamTrack : public DOMEventTargetHelper, public SupportsWeakPtr {
     // being created, in which case the receiving track gets it through its
     // WorkerTrackSourceProxy.
     const RefPtr<ProcessedMediaTrack> mTrack;
+    // Resolves when the graph operations that the transferring track queued
+    // for mTrack, like disconnecting its mirrors and removing its listeners,
+    // have run, after which the receiving track may use mTrack. Operations
+    // are queued from the thread that dispatches them, not in order across
+    // threads, and this message may be received before the transferring thread
+    // has dispatched them. Null if there is nothing to wait for.
+    const RefPtr<TransferFencePromise> mFence;
   };
 
   /**
@@ -591,14 +607,16 @@ class MediaStreamTrack : public DOMEventTargetHelper, public SupportsWeakPtr {
 
   /**
    * Creates a track on the main thread that takes over aHolder, and its graph
-   * track, from the track on another thread that it was transferred from, see
-   * FromTransferred(). The holder is still attached to aSource.
+   * track, from the track that it was transferred from, see FromTransferred().
+   * The holder is still attached to aSource. aFence is the fence of the
+   * transfer, if any. See SetGraphTrack().
    */
   MediaStreamTrack(nsIGlobalObject* aGlobal,
                    already_AddRefed<GraphTrackHolder> aHolder,
                    MediaStreamTrackSource* aSource,
                    MediaStreamTrackState aReadyState, bool aMuted,
-                   const MediaTrackConstraints& aConstraints);
+                   const MediaTrackConstraints& aConstraints,
+                   TransferFencePromise* aFence);
 
   NS_DECL_ISUPPORTS_INHERITED
   NS_DECL_CYCLE_COLLECTION_CLASS_INHERITED(MediaStreamTrack,
@@ -803,13 +821,28 @@ class MediaStreamTrack : public DOMEventTargetHelper, public SupportsWeakPtr {
   void OnTrackEnded();
 
   /**
-   * Sets mTrack for a live track borrowing it from another thread's holder,
-   * once that holder has made it available.
-   * TODO(Bug 1991619): Let such tracks add listeners to it and disable it, for
-   * consumers on their thread. Until then their holder applies the enabled
-   * state.
+   * Sets mTrack for a live track borrowing it from a holder, once the holder
+   * has made it available. Consumers on this thread may use it from now on.
+   * Connects to it, see ConnectGraphTrack(), at once or, if aFence is given,
+   * once it has resolved, as the graph track was used by the track that this
+   * one was transferred from. Until then what we would do to mTrack is only
+   * recorded.
+   * TODO(Bug 1991619): Let tracks on other threads add listeners to it and
+   * disable it, for consumers on their thread. Until then their holder applies
+   * the enabled state.
    */
-  void SetGraphTrack(ProcessedMediaTrack* aTrack);
+  void SetGraphTrack(ProcessedMediaTrack* aTrack,
+                     TransferFencePromise* aFence = nullptr);
+
+  /**
+   * Starts doing things to mTrack that are queued for the MediaTrackGraph:
+   * mirroring its state and applying our enabled state and listeners. Once.
+   * aInherited is whether another track used mTrack before, which may have
+   * left it disabled.
+   */
+  void ConnectGraphTrack(bool aInherited);
+
+  void OnFenceResolved(const TransferFencePromise::ResolveOrRejectValue&);
 
   // The input track of our holder, for cloning. Null without a holder.
   mozilla::MediaTrack* InputTrack() const;
@@ -899,6 +932,13 @@ class MediaStreamTrack : public DOMEventTargetHelper, public SupportsWeakPtr {
   // TODO(Bug 1991619): Null for tracks transferred to a worker, which have no
   // MediaTrackGraph representation yet.
   RefPtr<ProcessedMediaTrack> mTrack;
+  // Whether we mirror mTrack and apply our state to it, see
+  // ConnectGraphTrack().
+  bool mTrackConnected = false;
+  // The fence that ConnectGraphTrack() waits for, and our request for it, until
+  // it resolved or we ended.
+  RefPtr<TransferFencePromise> mPendingFence;
+  MozPromiseRequestHolder<TransferFencePromise> mFenceRequest;
   RefPtr<MediaStreamTrackSource> mSource;
   const UniquePtr<TrackSink> mSink;
   nsCOMPtr<nsIPrincipal> mPrincipal;

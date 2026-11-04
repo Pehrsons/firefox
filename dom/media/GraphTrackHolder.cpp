@@ -16,6 +16,18 @@ extern mozilla::LazyLogModule gMediaStreamTrackLog;
 
 namespace mozilla::dom {
 
+// aPort is null for a graph track without input.
+static void DestroyGraphObjects(ProcessedMediaTrack* aTrack,
+                                MediaInputPort* aPort) {
+  MOZ_ASSERT(NS_IsMainThread());
+  LOG(LogLevel::Info,
+      ("GraphTrackHolder destroying graph track {}", fmt::ptr(aTrack)));
+  if (aPort) {
+    aPort->Destroy();
+  }
+  aTrack->Destroy();
+}
+
 /* static */
 already_AddRefed<GraphTrackHolder> GraphTrackHolder::Create(
     mozilla::MediaTrack* aInputTrack, MediaTrackGraph* aGraph, bool aEnabled) {
@@ -61,11 +73,12 @@ GraphTrackHolder::GraphTrackHolder(mozilla::MediaTrack* aInputTrack,
     LOG(LogLevel::Info, ("GraphTrackHolder {} created ended", fmt::ptr(this)));
     return;
   }
-  InitGraphTrack(aInputTrack, aGraph);
+  InitGraphTrack(aInputTrack->mType, aGraph, aInputTrack);
 }
 
-void GraphTrackHolder::InitGraphTrack(mozilla::MediaTrack* aInputTrack,
-                                      MediaTrackGraph* aGraph) {
+void GraphTrackHolder::InitGraphTrack(MediaSegment::Type aType,
+                                      MediaTrackGraph* aGraph,
+                                      mozilla::MediaTrack* aInputTrack) {
   MOZ_ASSERT(NS_IsMainThread());
   MOZ_ASSERT(!mTrack);
   // Even if the input track is destroyed we need a graph track so that methods
@@ -74,8 +87,10 @@ void GraphTrackHolder::InitGraphTrack(mozilla::MediaTrack* aInputTrack,
   // source soon enough.
   mInputTrack = aInputTrack;
   mTrack = aGraph->CreateForwardedInputTrack(
-      mInputTrack->mType, mozilla::MediaTrack::Flag::EnableCanonicals);
-  mPort = mTrack->AllocateInputPort(mInputTrack);
+      aType, mozilla::MediaTrack::Flag::EnableCanonicals);
+  if (mInputTrack) {
+    mPort = mTrack->AllocateInputPort(mInputTrack);
+  }
   mTrackEnded.Connect(&mTrack->CanonicalEnded());
   mWatchManager.Watch(mTrackEnded, &GraphTrackHolder::OnTrackEnded);
   LOG(LogLevel::Info, ("GraphTrackHolder {} created with graph track {}",
@@ -85,15 +100,32 @@ void GraphTrackHolder::InitGraphTrack(mozilla::MediaTrack* aInputTrack,
 void GraphTrackHolder::InitializeClone(GraphTrackHolder* aOriginal) {
   MOZ_ASSERT(NS_IsMainThread());
   MOZ_ASSERT(!mSource && !mTrack);
-  if (!aOriginal->mSource || aOriginal->mEnded.Ref() ||
-      aOriginal->mInputTrack->IsDestroyed()) {
-    // The original has not been initialized or its producer has stopped, and
-    // the source will not notify a sink registering now, so the clone starts
-    // out ended.
-    LOG(LogLevel::Info, ("GraphTrackHolder {} cannot clone {}: it is ended",
+  if (!aOriginal->mSource || !aOriginal->mTrack) {
+    // The original has not been initialized or has no graph track, so the clone
+    // starts out ended.
+    LOG(LogLevel::Info, ("GraphTrackHolder {} cannot clone {}: it has no "
+                         "graph track",
                          fmt::ptr(this), fmt::ptr(aOriginal)));
     End();
     mSource = aOriginal->mSource;
+    return;
+  }
+  MOZ_ASSERT(!aOriginal->mTrack->IsDestroyed());
+  if (aOriginal->mEnded.Ref() || aOriginal->mInputTrack->IsDestroyed()) {
+    // The original's producer has stopped, and the source will not notify a
+    // sink registering now. Our graph track gets no input so that it ends,
+    // like a track whose source ended while it was in flight, and we do not
+    // register as a sink.
+    LOG(LogLevel::Info,
+        ("GraphTrackHolder {} cloning {}: it is ended, so we end too",
+         fmt::ptr(this), fmt::ptr(aOriginal)));
+    InitGraphTrack(aOriginal->mTrack->mType, aOriginal->mTrack->Graph(),
+                   nullptr);
+    mSource = aOriginal->mSource;
+    mHolderState =
+        HolderState{.mGraphTrack = mTrack,
+                    .mSettings = &mSource->CanonicalSettings(),
+                    .mCapabilities = &mSource->CanonicalCapabilities()};
     return;
   }
 
@@ -105,7 +137,8 @@ void GraphTrackHolder::InitializeClone(GraphTrackHolder* aOriginal) {
     cloneRes.mSource = aOriginal->mSource;
     cloneRes.mInputTrack = aOriginal->mInputTrack;
   }
-  InitGraphTrack(cloneRes.mInputTrack, aOriginal->mTrack->Graph());
+  InitGraphTrack(cloneRes.mInputTrack->mType, aOriginal->mTrack->Graph(),
+                 cloneRes.mInputTrack);
   Attach(cloneRes.mSource, mMuted.Ref());
 }
 
@@ -181,6 +214,32 @@ void GraphTrackHolder::SetEnabledAsync(bool aEnabled) {
                        });
 }
 
+void GraphTrackHolder::SetFence(TransferFencePromise* aFence) {
+  MOZ_ASSERT(aFence);
+  if (!NS_IsMainThread()) {
+    DispatchToMainThread("GraphTrackHolder::SetFence",
+                         [self = RefPtr(this), fence = RefPtr(aFence)] {
+                           self->SetFence(fence);
+                         });
+    return;
+  }
+  MOZ_ASSERT(mTrack, "A holder is not shut down while its track is live");
+  mFenceRequest.DisconnectIfExists();
+  mFence = aFence;
+  // Keeps us alive until the fence has resolved.
+  mFence
+      ->Then(AbstractThread::MainThread(), __func__, this,
+             &GraphTrackHolder::OnFenceResolved)
+      ->Track(mFenceRequest);
+}
+
+void GraphTrackHolder::OnFenceResolved(
+    const TransferFencePromise::ResolveOrRejectValue&) {
+  MOZ_ASSERT(NS_IsMainThread());
+  mFenceRequest.Complete();
+  mFence = nullptr;
+}
+
 void GraphTrackHolder::ShutdownAsync() {
   MOZ_ASSERT(!NS_IsMainThread());
   DispatchToMainThread("GraphTrackHolder::Shutdown",
@@ -213,12 +272,20 @@ void GraphTrackHolder::Shutdown() {
   if (!mTrack) {
     return;
   }
-  LOG(LogLevel::Info, ("GraphTrackHolder {} destroying graph track {}",
-                       fmt::ptr(this), fmt::ptr(mTrack.get())));
-  mPort->Destroy();
-  mTrack->Destroy();
-  mPort = nullptr;
-  mTrack = nullptr;
+  RefPtr<ProcessedMediaTrack> track = std::move(mTrack);
+  RefPtr<MediaInputPort> port = std::move(mPort);
+  if (!mFence) {
+    DestroyGraphObjects(track, port);
+    return;
+  }
+  LOG(LogLevel::Info, ("GraphTrackHolder {} waiting for its fence to destroy "
+                       "graph track {}",
+                       fmt::ptr(this), fmt::ptr(track.get())));
+  mFence->Then(
+      AbstractThread::MainThread(), __func__,
+      [track, port](const TransferFencePromise::ResolveOrRejectValue&) {
+        DestroyGraphObjects(track, port);
+      });
 }
 
 void GraphTrackHolder::End() {

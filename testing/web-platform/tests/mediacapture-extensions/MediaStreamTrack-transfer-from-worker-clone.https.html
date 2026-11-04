@@ -1,0 +1,31 @@
+<!doctype html>
+<meta charset=utf-8>
+<title>A clone of a MediaStreamTrack made in a dedicated worker can be transferred on</title>
+<link rel="help" href="https://w3c.github.io/mediacapture-extensions/#transferable-mediastreamtrack">
+<script src=/resources/testharness.js></script>
+<script src=/resources/testharnessreport.js></script>
+<script src=/resources/testdriver.js></script>
+<script src=/resources/testdriver-vendor.js></script>
+<script src=/mediacapture-streams/permission-helper.js></script>
+<script src=support/transfer-helper.js></script>
+<script>
+"use strict";
+
+promise_setup(() => setMediaPermission());
+
+for (const kind of ["video", "audio"]) {
+  promise_test(async t => {
+    const worker = await createWorker(t, TRACK_WORKER_SCRIPT);
+    const track = await getTrack(t, kind);
+    const before = await callWorker(worker, {type: "receive", track}, [track]);
+    const clone = await callWorker(worker, {type: "cloneAndTransferOut"});
+    t.add_cleanup(() => clone.stop());
+    assert_true(clone instanceof MediaStreamTrack, "is a MediaStreamTrack");
+    assert_equals(clone.kind, before.kind, "kind");
+    assert_not_equals(clone.id, before.id, "a clone has its own id");
+    assert_equals(clone.readyState, "live", "live in the window");
+    clone.stop();
+    assert_equals(clone.readyState, "ended", "stop() ends it");
+  }, `A ${kind} clone made in a worker transfers back to the window live`);
+}
+</script>

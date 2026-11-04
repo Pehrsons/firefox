@@ -27,9 +27,10 @@ VideoStreamTrack::VideoStreamTrack(nsIGlobalObject* aGlobal,
                                    MediaStreamTrackSource* aSource,
                                    MediaStreamTrackState aReadyState,
                                    bool aMuted,
-                                   const MediaTrackConstraints& aConstraints)
+                                   const MediaTrackConstraints& aConstraints,
+                                   TransferFencePromise* aFence)
     : MediaStreamTrack(aGlobal, std::move(aHolder), aSource, aReadyState,
-                       aMuted, aConstraints) {}
+                       aMuted, aConstraints, aFence) {}
 
 void VideoStreamTrack::Destroy() {
   mVideoOutputs.Clear();

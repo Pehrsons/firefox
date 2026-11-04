@@ -7,6 +7,7 @@
 
 #include "MediaStreamTrack.h"
 #include "MediaTrackConstraints.h"
+#include "mozilla/MozPromise.h"
 #include "mozilla/RefPtr.h"
 #include "mozilla/StateMirroring.h"
 #include "mozilla/StateWatching.h"
@@ -60,6 +61,13 @@ namespace dom {
  * that ends calls Shutdown() but keeps its reference, so that it can still
  * pass the holder on, and its source, if it is transferred while ended.
  *
+ * What the previous owner of a transferred holder queued for the graph track
+ * from its own thread, like disconnecting mirrors, may not have reached the
+ * MediaTrackGraph when the holder is shut down by the next owner, and the graph
+ * track must not be destroyed before. A transferring track therefore gives the
+ * holder a fence, see SetFence(), which Shutdown() waits for, and which keeps
+ * the holder alive.
+ *
  * TODO(Bug 1991618): The holder always lives on the main thread, as does the
  * source. A source owned by a worker (e.g., a VideoTrackGenerator in a worker
  * whose track is transferred to the main thread or another worker) would need
@@ -98,7 +106,9 @@ class GraphTrackHolder final : public MediaStreamTrackSource::Sink {
    * another thread. Any thread. aEnabled and aMuted are the clone's states,
    * which CanonicalMuted() reports until the holder is initialized on the main
    * thread, by cloning aOriginal's source where it supports that, and attached
-   * to it. A clone of an ended holder starts out ended.
+   * to it. A clone of an ended holder gets a graph track without input in the
+   * original's graph, which ends it at once, unless the original has no graph
+   * track.
    */
   static already_AddRefed<GraphTrackHolder> CreateClone(
       GraphTrackHolder* aOriginal, bool aEnabled, bool aMuted);
@@ -121,8 +131,17 @@ class GraphTrackHolder final : public MediaStreamTrackSource::Sink {
   void Unattach();
 
   /**
-   * Ends the holder if live, and destroys the graph track. Idempotent. The
-   * owner keeps its reference.
+   * Makes the holder wait for aFence before destroying the graph track, and
+   * stay alive until then. The track that the holder is transferred from
+   * ensures that aFence resolves after what it queued for the graph track. Any
+   * thread. Replaces an earlier fence, as the transferring track's fence
+   * resolves after that.
+   */
+  void SetFence(TransferFencePromise* aFence);
+
+  /**
+   * Ends the holder if live, and destroys the graph track, once the fence has
+   * resolved if there is one. Idempotent. The owner keeps its reference.
    */
   void Shutdown();
 
@@ -198,15 +217,18 @@ class GraphTrackHolder final : public MediaStreamTrackSource::Sink {
                    bool aEnabled, bool aMuted, bool aPending);
   ~GraphTrackHolder();
 
-  // Creates the graph track forwarding aInputTrack in aGraph.
-  void InitGraphTrack(mozilla::MediaTrack* aInputTrack,
-                      MediaTrackGraph* aGraph);
+  // Creates the graph track of type aType in aGraph, forwarding aInputTrack if
+  // given. Without input it ends at once.
+  void InitGraphTrack(MediaSegment::Type aType, MediaTrackGraph* aGraph,
+                      mozilla::MediaTrack* aInputTrack);
 
   // Initializes a pending holder as a clone of aOriginal. Main thread.
   void InitializeClone(GraphTrackHolder* aOriginal);
 
   // Called on the main thread when mTrackEnded changes.
   void OnTrackEnded();
+
+  void OnFenceResolved(const TransferFencePromise::ResolveOrRejectValue&);
 
   // Unregisters from the source if attached, stops mirroring the graph track
   // and publishes that we ended. Leaves the graph track alive. Idempotent.
@@ -231,6 +253,10 @@ class GraphTrackHolder final : public MediaStreamTrackSource::Sink {
   // The MediaInputPort connecting mInputTrack to mTrack. Set on construction
   // if we have an input track. Owned by us. Destroyed only in Shutdown().
   RefPtr<MediaInputPort> mPort;
+  // Pending until the previous owner's operations on mTrack have reached the
+  // MediaTrackGraph, see SetFence(), and our request for it.
+  RefPtr<TransferFencePromise> mFence;
+  MozPromiseRequestHolder<TransferFencePromise> mFenceRequest;
   WatchManager<GraphTrackHolder> mWatchManager;
   // Mirrors mTrack's ended state from the MediaTrackGraph while live.
   Mirror<bool> mTrackEnded;

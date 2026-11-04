@@ -29,7 +29,8 @@ class VideoStreamTrack : public MediaStreamTrack {
                    already_AddRefed<GraphTrackHolder> aHolder,
                    MediaStreamTrackSource* aSource,
                    MediaStreamTrackState aReadyState, bool aMuted,
-                   const MediaTrackConstraints& aConstraints);
+                   const MediaTrackConstraints& aConstraints,
+                   TransferFencePromise* aFence);
 
   already_AddRefed<MediaStreamTrack> Clone(nsIGlobalObject* aGlobal) override;
 
