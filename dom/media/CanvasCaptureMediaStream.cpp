@@ -61,6 +61,7 @@ void CanvasCaptureTrackSource::Stop() {
   }
 
   mCaptureStream->StopCapture();
+  mCaptureStream = nullptr;
 }
 
 void CanvasCaptureTrackSource::SetCanvasSize(const CSSIntSize& aSize) {
