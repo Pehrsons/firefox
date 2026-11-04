@@ -459,8 +459,7 @@ class MediaStreamTrack : public DOMEventTargetHelper, public SupportsWeakPtr {
   JSObject* WrapObject(JSContext* aCx,
                        JS::Handle<JSObject*> aGivenProto) override;
 
-  nsIGlobalObject* GetParentObject() const { return mGlobal; }
-  // The window of mGlobal, or null for other globals.
+  // The window of our global, or null for other globals.
   nsGlobalWindowInner* GetOwnerWindow() const;
 
   virtual AudioStreamTrack* AsAudioStreamTrack() { return nullptr; }
@@ -676,8 +675,8 @@ class MediaStreamTrack : public DOMEventTargetHelper, public SupportsWeakPtr {
       cloneRes.mInputTrack = mInputTrack;
     }
     auto newTrack = MakeRefPtr<TrackType>(
-        GetParentObject(), cloneRes.mInputTrack, cloneRes.mSource, ReadyState(),
-        Muted(), mConstraints);
+        GetRelevantGlobal(), cloneRes.mInputTrack, cloneRes.mSource,
+        ReadyState(), Muted(), mConstraints);
     newTrack->SetEnabled(Enabled());
     newTrack->SetMuted(Muted());
     return newTrack.forget();
@@ -688,8 +687,6 @@ class MediaStreamTrack : public DOMEventTargetHelper, public SupportsWeakPtr {
 
   nsTArray<WeakPtr<MediaStreamTrackConsumer>> mConsumers;
 
-  // We need this to track our parent object.
-  nsCOMPtr<nsIGlobalObject> mGlobal;
   // The input MediaTrack assigned us by the data producer.
   // Owned by the producer.
   const RefPtr<mozilla::MediaTrack> mInputTrack;

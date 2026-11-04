@@ -107,7 +107,7 @@ MediaStreamTrack::MediaStreamTrack(nsIGlobalObject* aGlobal,
                                    MediaStreamTrackState aReadyState,
                                    bool aMuted,
                                    const MediaTrackConstraints& aConstraints)
-    : mGlobal(aGlobal),
+    : DOMEventTargetHelper(aGlobal),
       mInputTrack(aInputTrack),
       mSource(aSource),
       mSink(std::make_unique<TrackSink>(this)),
@@ -166,8 +166,9 @@ MediaStreamTrack::MediaStreamTrack(nsIGlobalObject* aGlobal,
 MediaStreamTrack::~MediaStreamTrack() { Destroy(); }
 
 nsGlobalWindowInner* MediaStreamTrack::GetOwnerWindow() const {
-  return mGlobal ? nsGlobalWindowInner::Cast(mGlobal->GetAsInnerWindow())
-                 : nullptr;
+  nsIGlobalObject* global = GetRelevantGlobal();
+  return global ? nsGlobalWindowInner::Cast(global->GetAsInnerWindow())
+                : nullptr;
 }
 
 void MediaStreamTrack::Destroy() {
@@ -187,7 +188,6 @@ NS_IMPL_CYCLE_COLLECTION_CLASS(MediaStreamTrack)
 NS_IMPL_CYCLE_COLLECTION_UNLINK_BEGIN_INHERITED(MediaStreamTrack,
                                                 DOMEventTargetHelper)
   tmp->Destroy();
-  NS_IMPL_CYCLE_COLLECTION_UNLINK(mGlobal)
   NS_IMPL_CYCLE_COLLECTION_UNLINK(mSource)
   NS_IMPL_CYCLE_COLLECTION_UNLINK(mPrincipal)
   NS_IMPL_CYCLE_COLLECTION_UNLINK(mPendingPrincipal)
@@ -196,7 +196,6 @@ NS_IMPL_CYCLE_COLLECTION_UNLINK_END
 
 NS_IMPL_CYCLE_COLLECTION_TRAVERSE_BEGIN_INHERITED(MediaStreamTrack,
                                                   DOMEventTargetHelper)
-  NS_IMPL_CYCLE_COLLECTION_TRAVERSE(mGlobal)
   NS_IMPL_CYCLE_COLLECTION_TRAVERSE(mSource)
   NS_IMPL_CYCLE_COLLECTION_TRAVERSE(mPrincipal)
   NS_IMPL_CYCLE_COLLECTION_TRAVERSE(mPendingPrincipal)
@@ -262,7 +261,7 @@ void MediaStreamTrack::GetSettings(dom::MediaTrackSettings& aResult,
 
   // Spoof values when privacy.resistFingerprinting is true.
   if (!nsContentUtils::ShouldResistFingerprinting(
-          aCallerType, GetParentObject(), RFPTarget::StreamVideoFacingMode)) {
+          aCallerType, GetRelevantGlobal(), RFPTarget::StreamVideoFacingMode)) {
     return;
   }
   if (aResult.mFacingMode.WasPassed()) {
@@ -283,7 +282,7 @@ already_AddRefed<Promise> MediaStreamTrack::ApplyConstraints(
                          fmt::ptr(this), NS_ConvertUTF16toUTF8(str).get()));
   }
 
-  RefPtr<Promise> promise = Promise::Create(GetParentObject(), aRv);
+  RefPtr<Promise> promise = Promise::Create(GetRelevantGlobal(), aRv);
   if (aRv.Failed()) {
     return nullptr;
   }
@@ -524,9 +523,6 @@ void MediaStreamTrack::SetReadyState(MediaStreamTrackState aState) {
 void MediaStreamTrack::OnTrackEnded() {
   MOZ_ASSERT(NS_IsMainThread());
   MOZ_ASSERT(mTrackEnded);
-  if (!GetParentObject()) {
-    return;
-  }
   // OverrideEnded() fires "ended" synchronously to content JS after setting
   // [[ReadyState]], so call it from its own regular task.
   AbstractThread::MainThread()->Dispatch(
