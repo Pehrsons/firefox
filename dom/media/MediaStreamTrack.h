@@ -243,6 +243,10 @@ class MediaStreamTrackSource : public nsISupports {
   /**
    * Called by the source interface when all registered sinks with
    * KeepsSourceAlive() == true have unregistered.
+   *
+   * Must release what the source no longer needs and that can keep other
+   * objects alive: ended tracks, including tracks on other threads, may keep
+   * the source alive until they are collected.
    */
   virtual void Stop() = 0;
 
