@@ -108,7 +108,7 @@ MediaStreamTrack::MediaStreamTrack(nsPIDOMWindowInner* aWindow,
                                    MediaStreamTrackState aReadyState,
                                    bool aMuted,
                                    const MediaTrackConstraints& aConstraints)
-    : mWindow(aWindow),
+    : DOMEventTargetHelper(aWindow),
       mInputTrack(aInputTrack),
       mSource(aSource),
       mSink(std::make_unique<TrackSink>(this)),
@@ -131,7 +131,7 @@ MediaStreamTrack::MediaStreamTrack(nsPIDOMWindowInner* aWindow,
     // MediaStreamTrackSource soon enough.
     auto graph = mInputTrack->IsDestroyed()
                      ? MediaTrackGraph::GetInstanceIfExists(
-                           mWindow, mInputTrack->mSampleRate,
+                           GetOwnerWindow(), mInputTrack->mSampleRate,
                            MediaTrackGraph::DEFAULT_OUTPUT_DEVICE)
                      : mInputTrack->Graph();
     MOZ_DIAGNOSTIC_ASSERT(graph,
@@ -183,7 +183,6 @@ NS_IMPL_CYCLE_COLLECTION_CLASS(MediaStreamTrack)
 NS_IMPL_CYCLE_COLLECTION_UNLINK_BEGIN_INHERITED(MediaStreamTrack,
                                                 DOMEventTargetHelper)
   tmp->Destroy();
-  NS_IMPL_CYCLE_COLLECTION_UNLINK(mWindow)
   NS_IMPL_CYCLE_COLLECTION_UNLINK(mSource)
   NS_IMPL_CYCLE_COLLECTION_UNLINK(mPrincipal)
   NS_IMPL_CYCLE_COLLECTION_UNLINK(mPendingPrincipal)
@@ -192,7 +191,6 @@ NS_IMPL_CYCLE_COLLECTION_UNLINK_END
 
 NS_IMPL_CYCLE_COLLECTION_TRAVERSE_BEGIN_INHERITED(MediaStreamTrack,
                                                   DOMEventTargetHelper)
-  NS_IMPL_CYCLE_COLLECTION_TRAVERSE(mWindow)
   NS_IMPL_CYCLE_COLLECTION_TRAVERSE(mSource)
   NS_IMPL_CYCLE_COLLECTION_TRAVERSE(mPrincipal)
   NS_IMPL_CYCLE_COLLECTION_TRAVERSE(mPendingPrincipal)
@@ -236,7 +234,7 @@ already_AddRefed<MediaStreamTrack> MediaStreamTrack::Clone() {
   // https://html.spec.whatwg.org/multipage/webappapis.html#realms-settings-objects-global-objects
   // recommends. The owner is gone once its global is torn down, but the
   // reflector that `this` is called through is still in that realm.
-  nsCOMPtr<nsPIDOMWindowInner> window = mWindow;
+  nsCOMPtr<nsPIDOMWindowInner> window = GetOwnerWindow();
   if (!window) {
     MOZ_ASSERT(GetWrapper());
     window = xpc::NativeGlobal(GetWrapper())->GetAsInnerWindow();
@@ -272,9 +270,8 @@ void MediaStreamTrack::GetSettings(dom::MediaTrackSettings& aResult,
   GetSource().GetSettings(aResult);
 
   // Spoof values when privacy.resistFingerprinting is true.
-  nsIGlobalObject* global = mWindow ? mWindow->AsGlobal() : nullptr;
   if (!nsContentUtils::ShouldResistFingerprinting(
-          aCallerType, global, RFPTarget::StreamVideoFacingMode)) {
+          aCallerType, GetRelevantGlobal(), RFPTarget::StreamVideoFacingMode)) {
     return;
   }
   if (aResult.mFacingMode.WasPassed()) {
@@ -295,9 +292,7 @@ already_AddRefed<Promise> MediaStreamTrack::ApplyConstraints(
                          fmt::ptr(this), NS_ConvertUTF16toUTF8(str).get()));
   }
 
-  nsIGlobalObject* go = mWindow ? mWindow->AsGlobal() : nullptr;
-
-  RefPtr<Promise> promise = Promise::Create(go, aRv);
+  RefPtr<Promise> promise = Promise::Create(GetRelevantGlobal(), aRv);
   if (aRv.Failed()) {
     return nullptr;
   }
@@ -315,17 +310,18 @@ already_AddRefed<Promise> MediaStreamTrack::ApplyConstraints(
       ->Then(
           GetCurrentSerialEventTarget(), __func__,
           [this, self, promise, aConstraints](bool aDummy) {
-            if (!mWindow || !mWindow->IsCurrentInnerWindow()) {
+            nsGlobalWindowInner* window = GetOwnerWindow();
+            if (!window || !window->IsCurrentInnerWindow()) {
               return;  // Leave Promise pending after navigation by design.
             }
             promise->MaybeResolve(false);
           },
           [this, self, promise](const RefPtr<MediaMgrError>& aError) {
-            if (!mWindow || !mWindow->IsCurrentInnerWindow()) {
+            nsGlobalWindowInner* window = GetOwnerWindow();
+            if (!window || !window->IsCurrentInnerWindow()) {
               return;  // Leave Promise pending after navigation by design.
             }
-            promise->MaybeReject(
-                MakeRefPtr<MediaStreamError>(mWindow, *aError));
+            promise->MaybeReject(MakeRefPtr<MediaStreamError>(window, *aError));
           });
   return promise.forget();
 }
@@ -537,9 +533,6 @@ void MediaStreamTrack::SetReadyState(MediaStreamTrackState aState) {
 void MediaStreamTrack::OnTrackEnded() {
   MOZ_ASSERT(NS_IsMainThread());
   MOZ_ASSERT(mTrackEnded);
-  if (!GetParentObject()) {
-    return;
-  }
   // OverrideEnded() fires "ended" synchronously to content JS after setting
   // [[ReadyState]], so call it from its own regular task.
   AbstractThread::MainThread()->Dispatch(
