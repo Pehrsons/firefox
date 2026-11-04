@@ -83,9 +83,7 @@ class WorkerTrackSourceProxy final : public MediaStreamTrackSource {
   void Stop() override;
   void Disable() override;
   void Enable() override;
-  // TODO(Bug 1991619): Tracks transferred to a worker have no MediaTrackGraph
-  // representation yet, so we give them no holder.
-  void RegisterSink(Sink* aSink) override { AddSink(aSink); }
+  void RegisterSink(Sink* aSink) override;
 
  private:
   using HolderState = GraphTrackHolder::HolderState;
@@ -96,7 +94,7 @@ class WorkerTrackSourceProxy final : public MediaStreamTrackSource {
       bool aMuted, const MediaStreamTrackSourceSettings& aSettings,
       const MediaStreamTrackSourceCapabilities& aCapabilities,
       const nsAString& aDeviceId, const nsAString& aGroupId,
-      ProcessedMediaTrack* aGraphTrack);
+      ProcessedMediaTrack* aGraphTrack, GenericNonExclusivePromise* aFence);
   ~WorkerTrackSourceProxy();
 
   // Takes a worker ref if on a worker and connects to the holder. Returns
@@ -142,6 +140,12 @@ class WorkerTrackSourceProxy final : public MediaStreamTrackSource {
   Mirror<MediaStreamTrackSourceSettings> mOriginalSettings;
   Mirror<MediaStreamTrackSourceCapabilities> mOriginalCapabilities;
   MozPromiseHolder<GenericPromise> mHolderReadyPromise;
+  // The fence of the transfer, which the first track we give the graph track to
+  // waits for.
+  RefPtr<GenericNonExclusivePromise> mFence;
+  // Whether RegisterSink() gave the graph track to our track already, which
+  // OnHolderStateChanged() must not do again.
+  bool mGraphTrackGiven = false;
   bool mHolderReady = false;
   // Set when on a worker thread. Null on the main thread and after Detach().
   // Copies are captured by handlers that must run on this thread, see the

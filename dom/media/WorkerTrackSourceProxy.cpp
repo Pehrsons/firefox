@@ -32,7 +32,7 @@ already_AddRefed<WorkerTrackSourceProxy> WorkerTrackSourceProxy::Create(
   RefPtr<WorkerTrackSourceProxy> source = new WorkerTrackSourceProxy(
       aData.mSource, WorkerAbstractThread(), aData.mLabel, aData.mMediaSource,
       aData.mHasAlpha, aData.mMuted, aData.mSettings, aData.mCapabilities,
-      aData.mDeviceId, aData.mGroupId, aData.mTrack);
+      aData.mDeviceId, aData.mGroupId, aData.mTrack, aData.mFence);
 
   if (aData.mReadyState == MediaStreamTrackState::Ended) {
     // An ended track never registers as a sink, so there is nothing to keep
@@ -55,7 +55,7 @@ WorkerTrackSourceProxy::WorkerTrackSourceProxy(
     bool aMuted, const MediaStreamTrackSourceSettings& aSettings,
     const MediaStreamTrackSourceCapabilities& aCapabilities,
     const nsAString& aDeviceId, const nsAString& aGroupId,
-    ProcessedMediaTrack* aGraphTrack)
+    ProcessedMediaTrack* aGraphTrack, GenericNonExclusivePromise* aFence)
     : MediaStreamTrackSource(/* aInputTrack = */ nullptr,
                              /* aPrincipal = */ nullptr, nsString(aLabel),
                              TrackingId(), nsString(aDeviceId),
@@ -78,6 +78,7 @@ WorkerTrackSourceProxy::WorkerTrackSourceProxy(
   MOZ_ASSERT(mAbstractThread == AbstractThread::GetCurrent());
   mSettings = aSettings;
   mCapabilities = aCapabilities;
+  mFence = aFence;
   LOG(LogLevel::Info, ("WorkerTrackSourceProxy {} created for holder {}",
                        fmt::ptr(this), fmt::ptr(mHolder.get())));
 }
@@ -148,7 +149,7 @@ RefPtr<MediaStreamTrackSource> WorkerTrackSourceProxy::Clone() {
       GraphTrackHolder::CreateClone(mHolder, /* aEnabled = */ true, mMuted);
   RefPtr<WorkerTrackSourceProxy> clone = new WorkerTrackSourceProxy(
       holder, mAbstractThread, mLabel, mMediaSource, mHasAlpha, mMuted,
-      Settings(), Capabilities(), mDeviceId, mGroupId, nullptr);
+      Settings(), Capabilities(), mDeviceId, mGroupId, nullptr, nullptr);
   if (!clone->Init(/* aEnabled = */ true)) {
     // The worker is shutting down. Sharing this source is as good as anything.
     return nullptr;
@@ -156,6 +157,25 @@ RefPtr<MediaStreamTrackSource> WorkerTrackSourceProxy::Clone() {
   LOG(LogLevel::Info, ("WorkerTrackSourceProxy {} cloned into {}",
                        fmt::ptr(this), fmt::ptr(clone.get())));
   return clone;
+}
+
+void WorkerTrackSourceProxy::RegisterSink(Sink* aSink) {
+  NS_ASSERT_OWNINGTHREAD(WorkerTrackSourceProxy);
+  AddSink(aSink);
+  if (!aSink->WantsGraphTrack()) {
+    return;
+  }
+  if (mDetached || !mHolderState.Ref().mGraphTrack) {
+    // OnHolderStateChanged() gives it once the holder has one.
+    return;
+  }
+  mGraphTrackGiven = true;
+  LOG(LogLevel::Debug,
+      ("WorkerTrackSourceProxy {} giving graph track {} to sink {}",
+       fmt::ptr(this), fmt::ptr(mHolderState.Ref().mGraphTrack.get()),
+       fmt::ptr(aSink)));
+  RefPtr<GenericNonExclusivePromise> fence = std::move(mFence);
+  aSink->SetGraphTrack(do_AddRef(mHolder), fence);
 }
 
 void WorkerTrackSourceProxy::Destroy() {
@@ -195,14 +215,26 @@ void WorkerTrackSourceProxy::Detach() {
     }
   }
   if (mWorkerRef) {
-    // Producers on other threads can dispatch updates to our mirrors until
-    // they have processed the disconnections above. Hold the worker until a
-    // round trip through each, queued behind those, is back on this thread.
-    InvokeAsync(AbstractThread::MainThread(), __func__,
-                [] { return GenericPromise::CreateAndResolve(true, __func__); })
-        ->Then(mAbstractThread, __func__,
-               [workerRef = std::move(mWorkerRef)](
-                   const GenericPromise::ResolveOrRejectValue&) {});
+    // Producers on other threads, the graph thread for our track's mirror of
+    // the graph track, can dispatch updates to our mirrors until they have
+    // processed the disconnections above. Hold the worker until a round trip
+    // through each, queued behind those, is back on this thread.
+    auto roundTrip = [](AbstractThread* aThread) {
+      return InvokeAsync(aThread, __func__, [] {
+        return GenericPromise::CreateAndResolve(true, __func__);
+      });
+    };
+    nsTArray<RefPtr<GenericPromise>> roundTrips;
+    roundTrips.AppendElement(roundTrip(AbstractThread::MainThread()));
+    if (graphTrack) {
+      roundTrips.AppendElement(roundTrip(graphTrack->GraphImpl()));
+    }
+    GenericPromise::All(mAbstractThread, roundTrips)
+        ->Then(
+            mAbstractThread, __func__,
+            [workerRef = std::move(mWorkerRef)](
+                const GenericPromise::AllPromiseType::ResolveOrRejectValue&) {
+            });
   }
 }
 
@@ -341,8 +373,10 @@ void WorkerTrackSourceProxy::OnHolderStateChanged() {
   mHolderReadyPromise.ResolveIfExists(true, __func__);
   mSinks.RemoveElementsBy([](const WeakPtr<Sink>& aElem) { return !aElem; });
   for (const auto& sink : mSinks.Clone()) {
-    if (sink->WantsGraphTrack() && !mDetached && state.mGraphTrack) {
-      sink->SetGraphTrack(do_AddRef(mHolder));
+    if (sink->WantsGraphTrack() && !mGraphTrackGiven && !mDetached &&
+        state.mGraphTrack) {
+      RefPtr<GenericNonExclusivePromise> fence = std::move(mFence);
+      sink->SetGraphTrack(do_AddRef(mHolder), fence);
     }
   }
 }

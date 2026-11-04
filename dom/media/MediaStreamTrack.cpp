@@ -107,7 +107,8 @@ void MediaStreamTrackSource::RegisterSink(Sink* aSink) {
                         "A destroyed input track is only expected when "
                         "cloning, but since we're live there must be another "
                         "live track that is keeping the graph alive");
-  aSink->SetGraphTrack(GraphTrackHolder::Create(mInputTrack, graph, true));
+  aSink->SetGraphTrack(GraphTrackHolder::Create(mInputTrack, graph, true),
+                       nullptr);
 }
 
 auto MediaStreamTrackSource::ApplyConstraints(
@@ -162,9 +163,10 @@ class MediaStreamTrack::TrackSink : public MediaStreamTrackSource::Sink {
 
   bool WantsGraphTrack() const override { return mWantsGraphTrack; }
 
-  void SetGraphTrack(already_AddRefed<GraphTrackHolder> aHolder) override {
+  void SetGraphTrack(already_AddRefed<GraphTrackHolder> aHolder,
+                     GenericNonExclusivePromise* aFence) override {
     MOZ_ASSERT(mTrack);
-    mTrack->SetGraphTrack(std::move(aHolder));
+    mTrack->SetGraphTrack(std::move(aHolder), aFence);
   }
 
  private:
@@ -233,7 +235,7 @@ MediaStreamTrack::MediaStreamTrack(nsIGlobalObject* aGlobal,
   mID = NS_ConvertASCIItoUTF16(chars);
 }
 
-void MediaStreamTrack::Init() {
+void MediaStreamTrack::Init(GenericNonExclusivePromise* aFence) {
   if (Ended()) {
     if (mHolder) {
       mHolder->Shutdown();
@@ -242,14 +244,14 @@ void MediaStreamTrack::Init() {
     const bool hasHolder = !!mHolder;
     GetSource().RegisterSink(mSink.get());
     if (hasHolder) {
-      SetGraphTrack(mHolder.forget());
+      SetGraphTrack(mHolder.forget(), aFence);
     }
   }
   MOZ_ASSERT_IF(NS_IsMainThread(), mHolder);
 }
 
-void MediaStreamTrack::SetGraphTrack(
-    already_AddRefed<GraphTrackHolder> aHolder) {
+void MediaStreamTrack::SetGraphTrack(already_AddRefed<GraphTrackHolder> aHolder,
+                                     GenericNonExclusivePromise* aFence) {
   NS_ASSERT_OWNINGTHREAD(MediaStreamTrack);
   RefPtr<GraphTrackHolder> holder = aHolder;
   if (Ended()) {
@@ -259,14 +261,55 @@ void MediaStreamTrack::SetGraphTrack(
   MOZ_ASSERT(!mTrack);
   mHolder = std::move(holder);
   mTrack = mHolder->GraphTrack();
-  LOG(LogLevel::Debug, ("MediaStreamTrack {} borrowing graph track {}",
-                        fmt::ptr(this), fmt::ptr(mTrack.get())));
+  LOG(LogLevel::Debug,
+      ("MediaStreamTrack {} borrowing graph track {}{}", fmt::ptr(this),
+       fmt::ptr(mTrack.get()), aFence ? ", waiting for its fence" : ""));
+  if (!aFence) {
+    ConnectGraphTrack(/* aInherited = */ false);
+    return;
+  }
+  mPendingFence = aFence;
+  // Disconnected when we end.
+  aFence
+      ->Then(
+          mAbstractThread, __func__,
+          [self = RefPtr(this)](
+              const GenericNonExclusivePromise::ResolveOrRejectValue& aValue) {
+            MOZ_ASSERT(aValue.IsResolve(), "Fences are never rejected");
+            self->OnFenceResolved();
+          })
+      ->Track(mFenceRequest);
+}
+
+void MediaStreamTrack::OnFenceResolved() {
+  NS_ASSERT_OWNINGTHREAD(MediaStreamTrack);
+  mFenceRequest.Complete();
+  mPendingFence = nullptr;
+  ConnectGraphTrack(/* aInherited = */ true);
+}
+
+void MediaStreamTrack::ConnectGraphTrack(bool aInherited) {
+  NS_ASSERT_OWNINGTHREAD(MediaStreamTrack);
+  MOZ_ASSERT(mTrack);
+  MOZ_ASSERT(!mTrackConnected);
+  MOZ_ASSERT(!Ended());
+  mTrackConnected = true;
   mTrackEnded.Connect(&mTrack->CanonicalEnded());
   mWatchManager.Watch(mTrackEnded, &MediaStreamTrack::OnTrackEnded);
   if (NS_IsMainThread()) {
     mTrackPrincipalHandle.Connect(&mTrack->CanonicalPrincipalHandle());
     mWatchManager.Watch(mTrackPrincipalHandle,
                         &MediaStreamTrack::OnPrincipalHandleChanged);
+    if (!mEnabled || aInherited) {
+      mTrack->SetDisabledTrackMode(mEnabled ? DisabledTrackMode::ENABLED
+                                            : DisabledTrackMode::SILENCE_BLACK);
+    }
+    for (const auto& listener : mTrackListeners) {
+      mTrack->AddListener(listener);
+    }
+    for (const auto& listener : mDirectTrackListeners) {
+      mTrack->AddDirectListener(listener);
+    }
   }
 }
 
@@ -333,7 +376,8 @@ MediaStreamTrack::TransferredData::TransferredData(
     const MediaStreamTrackSourceCapabilities& aCapabilities,
     const nsAString& aDeviceId, const nsAString& aGroupId,
     MediaSourceEnum aMediaSource, bool aHasAlpha,
-    RefPtr<GraphTrackHolder> aSource, RefPtr<ProcessedMediaTrack> aTrack)
+    RefPtr<GraphTrackHolder> aSource, RefPtr<ProcessedMediaTrack> aTrack,
+    RefPtr<GenericNonExclusivePromise> aFence)
     : mId(aId),
       mKind(aKind),
       mLabel(aLabel),
@@ -348,7 +392,8 @@ MediaStreamTrack::TransferredData::TransferredData(
       mMediaSource(aMediaSource),
       mHasAlpha(aHasAlpha),
       mSource(std::move(aSource)),
-      mTrack(std::move(aTrack)) {}
+      mTrack(std::move(aTrack)),
+      mFence(std::move(aFence)) {}
 
 MediaStreamTrack::TransferredData::~TransferredData() = default;
 
@@ -392,14 +437,27 @@ UniquePtr<MediaStreamTrack::TransferredData> MediaStreamTrack::Transfer() {
     holder->Attach(mSource, mMuted);
   }
   // The transferred track keeps borrowing our graph track, which an ended
-  // track no longer has.
+  // track no longer has. The receiving track must not do anything to it before
+  // what we queued for the graph from this thread, like disconnecting our
+  // mirrors, has run, so it waits for a fence. If we have not connected to the
+  // graph track yet we have queued nothing, and the fence we are waiting for
+  // ourselves stands for what was queued before us.
   RefPtr<ProcessedMediaTrack> graphTrack = mTrack;
+  RefPtr<GenericNonExclusivePromise> fence = mPendingFence;
+  MozPromiseHolder<GenericNonExclusivePromise> fenceHolder;
+  if (!fence && mTrackConnected) {
+    fence = fenceHolder.Ensure(__func__);
+  }
+  if (fence) {
+    holder->SetFence(fence);
+  }
   auto data = std::make_unique<TransferredData>(
       mID, AsAudioStreamTrack() ? MediaSegment::AUDIO : MediaSegment::VIDEO,
       label, mReadyState, mEnabled, mMuted, mConstraints,
       GetSource().Settings(), GetSource().Capabilities(), GetSource().mDeviceId,
       GetSource().mGroupId, GetSource().GetMediaSource(),
-      GetSource().HasAlpha(), std::move(holder), std::move(graphTrack));
+      GetSource().HasAlpha(), std::move(holder), std::move(graphTrack),
+      std::move(fence));
 
   LOG(LogLevel::Info, ("MediaStreamTrack {} transferred", fmt::ptr(this)));
 
@@ -416,6 +474,18 @@ UniquePtr<MediaStreamTrack::TransferredData> MediaStreamTrack::Transfer() {
   SetReadyState(MediaStreamTrackState::Ended);
   if (wasLive) {
     NotifyEnded();
+  }
+
+  if (!fenceHolder.IsEmpty()) {
+    // Everything we queued for the graph from this thread until now, like
+    // disconnecting our mirrors, is queued ahead of this. The graph runs it
+    // also when it is shutting down.
+    MOZ_ALWAYS_SUCCEEDS(
+        data->mTrack->GraphImpl()->Dispatch(NS_NewRunnableFunction(
+            "MediaStreamTrack::TransferFence",
+            [fenceHolder = std::move(fenceHolder)]() mutable {
+              fenceHolder.Resolve(true, __func__);
+            })));
   }
 
   return data;
@@ -465,11 +535,11 @@ already_AddRefed<MediaStreamTrack> MediaStreamTrack::FromTransferred(
   if (aData.mKind == MediaSegment::AUDIO) {
     track = AudioStreamTrack::Create(aGlobal, holder.forget(), source,
                                      aData.mReadyState, aData.mMuted,
-                                     aData.mConstraints);
+                                     aData.mConstraints, aData.mFence);
   } else {
     track = VideoStreamTrack::Create(aGlobal, holder.forget(), source,
                                      aData.mReadyState, aData.mMuted,
-                                     aData.mConstraints);
+                                     aData.mConstraints, aData.mFence);
   }
   track->AssignId(aData.mId);
   track->SetEnabled(aData.mEnabled);
@@ -500,7 +570,7 @@ void MediaStreamTrack::SetEnabled(bool aEnabled) {
     return;
   }
 
-  if (mTrack && NS_IsMainThread()) {
+  if (mTrackConnected && NS_IsMainThread()) {
     // TODO(Bug 1991619): A track borrowing its graph track from another
     // thread's holder cannot talk to it yet. The holder applies the enabled
     // state instead.
@@ -824,17 +894,20 @@ void MediaStreamTrack::SetReadyState(MediaStreamTrackState aState) {
     // may let the graph track's holder destroy it, and our mirrors and
     // listeners must be gone from it on the graph thread by then.
     mWatchManager.Shutdown();
+    mFenceRequest.DisconnectIfExists();
+    mPendingFence = nullptr;
     mTrackEnded.DisconnectIfConnected();
     mTrackPrincipalHandle.DisconnectIfConnected();
-    if (mTrack) {
+    if (mTrackConnected) {
       for (const auto& listener : mTrackListeners) {
         mTrack->RemoveListener(listener);
       }
       for (const auto& listener : mDirectTrackListeners) {
         mTrack->RemoveDirectListener(listener);
       }
-      mTrack = nullptr;
+      mTrackConnected = false;
     }
+    mTrack = nullptr;
     if (mSource) {
       mSource->UnregisterSink(mSink.get());
     }
@@ -882,7 +955,7 @@ void MediaStreamTrack::AddListener(MediaTrackListener* aListener) {
                         fmt::ptr(this), fmt::ptr(aListener)));
   mTrackListeners.AppendElement(aListener);
 
-  if (Ended() || !mTrack || !NS_IsMainThread()) {
+  if (Ended() || !mTrackConnected || !NS_IsMainThread()) {
     // TODO(Bug 1991619): A track borrowing its graph track from another
     // thread's holder cannot talk to it yet.
     return;
@@ -895,7 +968,7 @@ void MediaStreamTrack::RemoveListener(MediaTrackListener* aListener) {
                         fmt::ptr(this), fmt::ptr(aListener)));
   mTrackListeners.RemoveElement(aListener);
 
-  if (Ended() || !mTrack || !NS_IsMainThread()) {
+  if (Ended() || !mTrackConnected || !NS_IsMainThread()) {
     return;
   }
   mTrack->RemoveListener(aListener);
@@ -909,7 +982,7 @@ void MediaStreamTrack::AddDirectListener(DirectMediaTrackListener* aListener) {
        fmt::ptr(aListener), fmt::ptr(mTrack.get())));
   mDirectTrackListeners.AppendElement(aListener);
 
-  if (Ended() || !mTrack || !NS_IsMainThread()) {
+  if (Ended() || !mTrackConnected || !NS_IsMainThread()) {
     // TODO(Bug 1991619): A track borrowing its graph track from another
     // thread's holder cannot talk to it yet.
     return;
@@ -924,7 +997,7 @@ void MediaStreamTrack::RemoveDirectListener(
        fmt::ptr(this), fmt::ptr(aListener), fmt::ptr(mTrack.get())));
   mDirectTrackListeners.RemoveElement(aListener);
 
-  if (Ended() || !mTrack || !NS_IsMainThread()) {
+  if (Ended() || !mTrackConnected || !NS_IsMainThread()) {
     return;
   }
   mTrack->RemoveDirectListener(aListener);

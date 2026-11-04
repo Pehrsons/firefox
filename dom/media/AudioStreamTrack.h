@@ -28,11 +28,12 @@ class AudioStreamTrack : public MediaStreamTrack {
   static already_AddRefed<AudioStreamTrack> Create(
       nsIGlobalObject* aGlobal, already_AddRefed<GraphTrackHolder> aHolder,
       MediaStreamTrackSource* aSource, MediaStreamTrackState aReadyState,
-      bool aMuted, const MediaTrackConstraints& aConstraints) {
+      bool aMuted, const MediaTrackConstraints& aConstraints,
+      GenericNonExclusivePromise* aFence) {
     RefPtr<AudioStreamTrack> track =
         new AudioStreamTrack(aGlobal, std::move(aHolder), aSource, aReadyState,
                              aMuted, aConstraints);
-    track->Init();
+    track->Init(aFence);
     return track.forget();
   }
 

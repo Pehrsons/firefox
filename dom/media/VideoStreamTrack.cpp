@@ -27,10 +27,11 @@ already_AddRefed<VideoStreamTrack> VideoStreamTrack::Create(
 already_AddRefed<VideoStreamTrack> VideoStreamTrack::Create(
     nsIGlobalObject* aGlobal, already_AddRefed<GraphTrackHolder> aHolder,
     MediaStreamTrackSource* aSource, MediaStreamTrackState aReadyState,
-    bool aMuted, const MediaTrackConstraints& aConstraints) {
+    bool aMuted, const MediaTrackConstraints& aConstraints,
+    GenericNonExclusivePromise* aFence) {
   RefPtr<VideoStreamTrack> track = new VideoStreamTrack(
       aGlobal, std::move(aHolder), aSource, aReadyState, aMuted, aConstraints);
-  track->Init();
+  track->Init(aFence);
   return track.forget();
 }
 
