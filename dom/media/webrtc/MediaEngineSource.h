@@ -92,13 +92,13 @@ struct MediaEngineSourceSettings {
  */
 struct MediaEngineSourceCapabilities {
   template <typename T>
-  struct Range {
+  struct ValueRange {
     T mMin{};
     T mMax{};
-    bool operator==(const Range&) const = default;
+    bool operator==(const ValueRange&) const = default;
   };
-  using ULongRange = Range<uint32_t>;
-  using DoubleRange = Range<double>;
+  using ULongRange = ValueRange<uint32_t>;
+  using DoubleRange = ValueRange<double>;
 
   Maybe<ULongRange> mWidth;
   Maybe<ULongRange> mHeight;
