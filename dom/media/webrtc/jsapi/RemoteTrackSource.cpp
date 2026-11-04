@@ -52,6 +52,12 @@ void RemoteTrackSource::Destroy() {
   }
 }
 
+void RemoteTrackSource::Stop() {
+  // XXX (Bug 1314270): Implement rejection logic if necessary when we have
+  //                    clarity in the spec.
+  mReceiver = nullptr;
+}
+
 void RemoteTrackSource::SetReceivingSize(const Maybe<gfx::IntSize>& aSize) {
   MOZ_ASSERT(NS_IsMainThread());
   const gfx::IntSize size = aSize.valueOr(gfx::IntSize{0, 0});

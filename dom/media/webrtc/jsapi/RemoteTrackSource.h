@@ -35,10 +35,7 @@ class RemoteTrackSource : public dom::MediaStreamTrackSource {
       const dom::MediaTrackConstraints& aConstraints,
       dom::CallerType aCallerType) override;
 
-  void Stop() override {
-    // XXX (Bug 1314270): Implement rejection logic if necessary when we have
-    //                    clarity in the spec.
-  }
+  void Stop() override;
 
   void Disable() override {}
 
