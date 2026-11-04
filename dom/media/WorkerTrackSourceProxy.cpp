@@ -195,14 +195,26 @@ void WorkerTrackSourceProxy::Detach() {
     }
   }
   if (mWorkerRef) {
-    // Producers on other threads can dispatch updates to our mirrors until
-    // they have processed the disconnections above. Hold the worker until a
-    // round trip through each, queued behind those, is back on this thread.
-    InvokeAsync(AbstractThread::MainThread(), __func__,
-                [] { return GenericPromise::CreateAndResolve(true, __func__); })
-        ->Then(mAbstractThread, __func__,
-               [workerRef = std::move(mWorkerRef)](
-                   const GenericPromise::ResolveOrRejectValue&) {});
+    // Producers on other threads, the graph thread for our track's mirror of
+    // the graph track, can dispatch updates to our mirrors until they have
+    // processed the disconnections above. Hold the worker until a round trip
+    // through each, queued behind those, is back on this thread.
+    auto roundTrip = [](AbstractThread* aThread) {
+      return InvokeAsync(aThread, __func__, [] {
+        return GenericPromise::CreateAndResolve(true, __func__);
+      });
+    };
+    nsTArray<RefPtr<GenericPromise>> roundTrips;
+    roundTrips.AppendElement(roundTrip(AbstractThread::MainThread()));
+    if (graphTrack) {
+      roundTrips.AppendElement(roundTrip(graphTrack->GraphImpl()));
+    }
+    GenericPromise::All(mAbstractThread, roundTrips)
+        ->Then(
+            mAbstractThread, __func__,
+            [workerRef = std::move(mWorkerRef)](
+                const GenericPromise::AllPromiseType::ResolveOrRejectValue&) {
+            });
   }
 }
 

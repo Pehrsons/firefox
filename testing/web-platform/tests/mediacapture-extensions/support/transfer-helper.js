@@ -90,6 +90,14 @@ const TRACK_WORKER_SCRIPT = `
     return describeTrack(self.track);
   };
   handlers.transferOut = () => transfer(self.track, [self.track]);
+  handlers.disableAndTransferOut = () => {
+    self.track.enabled = false;
+    return transfer(self.track, [self.track]);
+  };
+  handlers.cloneAndTransferOut = () => {
+    const clone = self.track.clone();
+    return transfer(clone, [clone]);
+  };
   handlers.setPort = ({port}) => { self.port = port; };
   handlers.transferToPort = () => {
     self.port.postMessage(self.track, [self.track]);
