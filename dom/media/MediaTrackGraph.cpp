@@ -4537,11 +4537,21 @@ nsresult MediaTrackGraphImpl::Dispatch(
     event = MakeAndAddRef<DefaultShutdownRunnableWrapper>(event.forget());
   }
 
+  // The final shutdown cycle collection runs after
+  // AbstractThread::ShutdownMainThread(), but consumers may still disconnect
+  // mirrors from tracks while unlinking.
+  const bool mainThreadButNoAbstractThread =
+      NS_IsMainThread() && !AbstractThread::GetCurrent();
+  MOZ_ASSERT_IF(mainThreadButNoAbstractThread,
+                AppShutdown::IsInOrBeyond(ShutdownPhase::XPCOMShutdownFinal));
+
   // Enforce tail-dispatch. The IOThread is exempt as it dispatches messages to
   // AudioWorklet from JS.
-  MOZ_ASSERT_IF(!OnIPCIOThread(), RequiresTailDispatchFromCurrentThread());
+  MOZ_ASSERT_IF(!OnIPCIOThread() && !mainThreadButNoAbstractThread,
+                RequiresTailDispatchFromCurrentThread());
 
-  if (aReason == TailDispatch || !RequiresTailDispatchFromCurrentThread()) {
+  if (aReason == TailDispatch || (!mainThreadButNoAbstractThread &&
+                                  !RequiresTailDispatchFromCurrentThread())) {
     return TailDispatchMessage(event.forget());
   }
   return QueueMessageForTailDispatch(event.forget());
@@ -4700,7 +4710,8 @@ nsresult MediaTrackGraphImpl::QueueMessageForTailDispatch(
     if (AppShutdown::IsInOrBeyond(ShutdownPhase::AppShutdownNetTeardown)) {
       // Tail dispatcher may not be available on main thread once shutdown has
       // started, since shutdown is handled off the event loop.
-      MOZ_ASSERT(!AbstractThread::GetCurrent()->HasTailTasksFor(this));
+      MOZ_ASSERT_IF(AbstractThread::GetCurrent(),
+                    !AbstractThread::GetCurrent()->HasTailTasksFor(this));
       return TailDispatchMessage(event.forget());
     }
   }
