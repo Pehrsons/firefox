@@ -18,6 +18,7 @@
 #include "nsIUUIDGenerator.h"
 #include "nsServiceManagerUtils.h"
 #include "systemservices/MediaUtils.h"
+#include "xpcpublic.h"
 
 mozilla::LazyLogModule gMediaStreamTrackLog("MediaStreamTrack");
 #define LOG(type, ...) \
@@ -231,6 +232,17 @@ void MediaStreamTrack::SetEnabled(bool aEnabled) {
   mTrack->SetDisabledTrackMode(mEnabled ? DisabledTrackMode::ENABLED
                                         : DisabledTrackMode::SILENCE_BLACK);
   NotifyEnabledChanged();
+}
+
+already_AddRefed<MediaStreamTrack> MediaStreamTrack::Clone() {
+  // The owner is gone once its global is torn down, but the reflector that
+  // `this` is called through still has a global.
+  nsCOMPtr<nsIGlobalObject> global = GetParentObject();
+  if (!global) {
+    MOZ_ASSERT(GetWrapper());
+    global = xpc::NativeGlobal(GetWrapper());
+  }
+  return Clone(global);
 }
 
 void MediaStreamTrack::Stop() {

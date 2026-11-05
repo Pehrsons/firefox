@@ -29,6 +29,7 @@
 #include "nsProxyRelease.h"
 #include "nsRFPService.h"
 #include "nsServiceManagerUtils.h"
+#include "xpcpublic.h"
 
 #ifdef LOG
 #  undef LOG
@@ -372,7 +373,14 @@ void DOMMediaStream::RemoveTrack(MediaStreamTrack& aTrack) {
 }
 
 already_AddRefed<DOMMediaStream> DOMMediaStream::Clone() {
-  auto newStream = MakeRefPtr<DOMMediaStream>(GetParentObject());
+  // The owner is gone once its global is torn down, but the reflector that
+  // `this` is called through still has a global.
+  nsCOMPtr<nsIGlobalObject> global = GetParentObject();
+  if (!global) {
+    MOZ_ASSERT(GetWrapper());
+    global = xpc::NativeGlobal(GetWrapper());
+  }
+  auto newStream = MakeRefPtr<DOMMediaStream>(global);
 
   LOG(LogLevel::Info, ("DOMMediaStream {} created clone {}", fmt::ptr(this),
                        fmt::ptr(newStream.get())));
@@ -381,7 +389,7 @@ already_AddRefed<DOMMediaStream> DOMMediaStream::Clone() {
     LOG(LogLevel::Debug,
         ("DOMMediaStream {} forwarding external track {} to clone {}",
          fmt::ptr(this), fmt::ptr(track.get()), fmt::ptr(newStream.get())));
-    RefPtr<MediaStreamTrack> clone = track->Clone();
+    RefPtr<MediaStreamTrack> clone = track->Clone(global);
     newStream->AddTrack(*clone);
   }
 

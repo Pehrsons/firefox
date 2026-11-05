@@ -24,7 +24,7 @@ class VideoStreamTrack : public MediaStreamTrack {
       bool aMuted = false,
       const MediaTrackConstraints& aConstraints = MediaTrackConstraints());
 
-  already_AddRefed<MediaStreamTrack> Clone() override;
+  already_AddRefed<MediaStreamTrack> Clone(nsIGlobalObject* aGlobal) override;
 
   void Destroy() override;
 

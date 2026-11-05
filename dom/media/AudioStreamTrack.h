@@ -23,7 +23,7 @@ class AudioStreamTrack : public MediaStreamTrack {
       : MediaStreamTrack(aGlobal, aInputTrack, aSource, aReadyState, aMuted,
                          aConstraints) {}
 
-  already_AddRefed<MediaStreamTrack> Clone() override;
+  already_AddRefed<MediaStreamTrack> Clone(nsIGlobalObject* aGlobal) override;
 
   AudioStreamTrack* AsAudioStreamTrack() override { return this; }
   const AudioStreamTrack* AsAudioStreamTrack() const override { return this; }

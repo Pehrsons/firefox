@@ -125,8 +125,9 @@ void AudioStreamTrack::GetLabel(nsAString& aLabel, CallerType aCallerType) {
   MediaStreamTrack::GetLabel(aLabel, aCallerType);
 }
 
-already_AddRefed<MediaStreamTrack> AudioStreamTrack::Clone() {
-  return MediaStreamTrack::CloneInternal<AudioStreamTrack>();
+already_AddRefed<MediaStreamTrack> AudioStreamTrack::Clone(
+    nsIGlobalObject* aGlobal) {
+  return MediaStreamTrack::CloneInternal<AudioStreamTrack>(aGlobal);
 }
 
 void AudioStreamTrack::SetReadyState(MediaStreamTrackState aState) {
