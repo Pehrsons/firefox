@@ -1,0 +1,141 @@
+<!doctype html>
+<title>Realm of the tracks created by MediaStream.clone()</title>
+<link rel="help" href="https://w3c.github.io/mediacapture-main/#dom-mediastream-clone">
+<link rel="help" href="https://w3c.github.io/mediacapture-main/#dom-mediastreamtrack-clone">
+<link rel="help" href="https://w3c.github.io/mediacapture-main/#dfn-stop-all-sources">
+<script src=/resources/testharness.js></script>
+<script src=/resources/testharnessreport.js></script>
+<script src=/resources/testdriver.js></script>
+<script src=/resources/testdriver-vendor.js></script>
+<script src=permission-helper.js></script>
+<body></body>
+<script>
+'use strict';
+
+async function createFrame(t) {
+  const frame = document.createElement('iframe');
+  t.add_cleanup(() => frame.remove());
+  const loaded = new Promise(r => frame.addEventListener('load', r, {once: true}));
+  frame.src = '/common/blank.html';
+  document.body.appendChild(frame);
+  await loaded;
+  return frame;
+}
+
+async function navigate(frame) {
+  const loaded = new Promise(r => frame.addEventListener('load', r, {once: true}));
+  frame.src = '/common/blank.html?navigated';
+  await loaded;
+}
+
+function getUserMediaIn(frame) {
+  return frame.contentWindow.navigator.mediaDevices.getUserMedia(
+      {audio: true, video: true});
+}
+
+function recordEnded(tracks) {
+  const ended = [];
+  for (const track of tracks) {
+    track.addEventListener('ended', () => ended.push(track));
+  }
+  return ended;
+}
+
+promise_test(async t => {
+  await setMediaPermission();
+  const frame = await createFrame(t);
+  const frameStream = await getUserMediaIn(frame);
+  const tracks = frameStream.getTracks();
+  tracks.push(
+      ...tracks.map(track => track.clone()),
+      ...tracks.map(track => MediaStreamTrack.prototype.clone.call(track)),
+      ...MediaStream.prototype.clone.call(frameStream).getTracks());
+  const ended = recordEnded(tracks);
+
+  await navigate(frame);
+  await t.step_wait(() => tracks.every(track => track.readyState == 'ended'),
+                    'Tracks of the navigated iframe end');
+  await new Promise(r => t.step_timeout(r, 100));
+  assert_equals(ended.length, 0, 'number of ended events');
+}, 'Tracks in the realm of a navigated iframe end without an ended event');
+
+promise_test(async t => {
+  await setMediaPermission();
+  const frame = await createFrame(t);
+  const frameStream = await getUserMediaIn(frame);
+  const frameProto = frame.contentWindow.MediaStreamTrack.prototype;
+  assert_not_equals(frameProto, MediaStreamTrack.prototype);
+  const tracks = frameStream.getTracks();
+
+  const frameRealmClones = {
+    'track.clone()': tracks.map(track => track.clone()),
+    'MediaStreamTrack.prototype.clone.call() from this realm':
+        tracks.map(track => MediaStreamTrack.prototype.clone.call(track)),
+    'stream.clone()': frameStream.clone().getTracks(),
+    'MediaStream.prototype.clone.call() from this realm':
+        MediaStream.prototype.clone.call(frameStream).getTracks(),
+  };
+  for (const [what, clones] of Object.entries(frameRealmClones)) {
+    for (const track of clones) {
+      assert_equals(Object.getPrototypeOf(track), frameProto, what);
+    }
+  }
+  for (const track of new MediaStream(tracks).clone().getTracks()) {
+    assert_equals(Object.getPrototypeOf(track), MediaStreamTrack.prototype,
+                  'clone() of a stream made in this realm');
+  }
+}, 'clone() creates tracks in the relevant realm of this');
+
+promise_test(async t => {
+  await setMediaPermission();
+  const frame = await createFrame(t);
+  const frameStream = await getUserMediaIn(frame);
+  const frameProto = frame.contentWindow.MediaStreamTrack.prototype;
+  const tracks = frameStream.getTracks();
+
+  await navigate(frame);
+  const clones = [
+    ...tracks.map(track => MediaStreamTrack.prototype.clone.call(track)),
+    ...MediaStream.prototype.clone.call(frameStream).getTracks(),
+  ];
+  for (const track of clones) {
+    assert_equals(Object.getPrototypeOf(track), frameProto);
+  }
+}, 'clone() of a track or stream of a navigated iframe creates tracks in the ' +
+   'realm of that iframe');
+
+// These clones are in the parent realm, which stays fully active. Their source
+// is the iframe's, stopped by step 2 of "stop all sources" when the iframe's
+// document unloads, so they end as "track ended by the User Agent", which fires
+// ended.
+async function cloneIntoParentRealm(t) {
+  await setMediaPermission();
+  const frame = await createFrame(t);
+  const tracks = (await getUserMediaIn(frame)).getTracks();
+  const clones = new MediaStream(tracks).clone().getTracks();
+  return {frame, clones, ended: recordEnded(clones)};
+}
+
+promise_test(async t => {
+  const {frame, clones} = await cloneIntoParentRealm(t);
+
+  await navigate(frame);
+  await t.step_wait(() => clones.every(track => track.readyState == 'ended'),
+                    'readyState of the clones in the parent realm is ended');
+}, 'Clones in the parent realm end when the iframe of their source navigates');
+
+promise_test(async t => {
+  const {frame, clones, ended} = await cloneIntoParentRealm(t);
+
+  await navigate(frame);
+  await t.step_wait(() => clones.every(track => track.readyState == 'ended'),
+                    'readyState of the clones in the parent realm is ended');
+  await t.step_wait(() => ended.length >= clones.length,
+                    'an ended event is fired for each clone in the parent realm');
+  assert_equals(ended.length, clones.length, 'number of ended events');
+  for (const track of clones) {
+    assert_equals(track.readyState, 'ended');
+  }
+}, 'Clones in the parent realm fire ended when the iframe of their source ' +
+   'navigates');
+</script>
