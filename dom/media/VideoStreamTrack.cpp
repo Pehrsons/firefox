@@ -69,8 +69,9 @@ void VideoStreamTrack::GetLabel(nsAString& aLabel, CallerType aCallerType) {
   MediaStreamTrack::GetLabel(aLabel, aCallerType);
 }
 
-already_AddRefed<MediaStreamTrack> VideoStreamTrack::Clone() {
-  return MediaStreamTrack::CloneInternal<VideoStreamTrack>();
+already_AddRefed<MediaStreamTrack> VideoStreamTrack::Clone(
+    nsPIDOMWindowInner* aWindow) {
+  return MediaStreamTrack::CloneInternal<VideoStreamTrack>(aWindow);
 }
 
 }  // namespace mozilla::dom

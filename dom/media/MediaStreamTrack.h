@@ -483,7 +483,11 @@ class MediaStreamTrack : public DOMEventTargetHelper, public SupportsWeakPtr {
   already_AddRefed<Promise> ApplyConstraints(
       const dom::MediaTrackConstraints& aConstraints, CallerType aCallerType,
       ErrorResult& aRv);
-  virtual already_AddRefed<MediaStreamTrack> Clone() = 0;
+  // The WebIDL clone(). The clone lives in the relevant global of this.
+  already_AddRefed<MediaStreamTrack> Clone();
+  // Like Clone() but the clone lives in aWindow.
+  virtual already_AddRefed<MediaStreamTrack> Clone(
+      nsPIDOMWindowInner* aWindow) = 0;
   MediaStreamTrackState ReadyState() { return mReadyState; }
 
   IMPL_EVENT_HANDLER(mute)
@@ -665,7 +669,8 @@ class MediaStreamTrack : public DOMEventTargetHelper, public SupportsWeakPtr {
    */
 
   template <typename TrackType>
-  already_AddRefed<MediaStreamTrack> CloneInternal() {
+  already_AddRefed<MediaStreamTrack> CloneInternal(
+      nsPIDOMWindowInner* aWindow) {
     auto cloneRes = mSource->Clone();
     MOZ_ASSERT(!!cloneRes.mSource == !!cloneRes.mInputTrack);
     if (!cloneRes.mSource || !cloneRes.mInputTrack) {
@@ -673,7 +678,7 @@ class MediaStreamTrack : public DOMEventTargetHelper, public SupportsWeakPtr {
       cloneRes.mInputTrack = mInputTrack;
     }
     auto newTrack =
-        MakeRefPtr<TrackType>(mWindow, cloneRes.mInputTrack, cloneRes.mSource,
+        MakeRefPtr<TrackType>(aWindow, cloneRes.mInputTrack, cloneRes.mSource,
                               ReadyState(), Muted(), mConstraints);
     newTrack->SetEnabled(Enabled());
     newTrack->SetMuted(Muted());

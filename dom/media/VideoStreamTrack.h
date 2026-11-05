@@ -24,7 +24,8 @@ class VideoStreamTrack : public MediaStreamTrack {
       bool aMuted = false,
       const MediaTrackConstraints& aConstraints = MediaTrackConstraints());
 
-  already_AddRefed<MediaStreamTrack> Clone() override;
+  already_AddRefed<MediaStreamTrack> Clone(
+      nsPIDOMWindowInner* aWindow) override;
 
   void Destroy() override;
 

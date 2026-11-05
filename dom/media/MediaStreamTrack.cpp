@@ -18,6 +18,7 @@
 #include "nsIUUIDGenerator.h"
 #include "nsServiceManagerUtils.h"
 #include "systemservices/MediaUtils.h"
+#include "xpcpublic.h"
 
 mozilla::LazyLogModule gMediaStreamTrackLog("MediaStreamTrack");
 #define LOG(type, ...) \
@@ -226,6 +227,21 @@ void MediaStreamTrack::SetEnabled(bool aEnabled) {
   mTrack->SetDisabledTrackMode(mEnabled ? DisabledTrackMode::ENABLED
                                         : DisabledTrackMode::SILENCE_BLACK);
   NotifyEnabledChanged();
+}
+
+already_AddRefed<MediaStreamTrack> MediaStreamTrack::Clone() {
+  // https://w3c.github.io/mediacapture-main/#dom-mediastreamtrack-clone
+  // creates the clone without naming a realm. Use the relevant realm of this,
+  // as
+  // https://html.spec.whatwg.org/multipage/webappapis.html#realms-settings-objects-global-objects
+  // recommends. The owner is gone once its global is torn down, but the
+  // reflector that `this` is called through is still in that realm.
+  nsCOMPtr<nsPIDOMWindowInner> window = mWindow;
+  if (!window) {
+    MOZ_ASSERT(GetWrapper());
+    window = xpc::NativeGlobal(GetWrapper())->GetAsInnerWindow();
+  }
+  return Clone(window);
 }
 
 void MediaStreamTrack::Stop() {

@@ -29,6 +29,7 @@
 #include "nsProxyRelease.h"
 #include "nsRFPService.h"
 #include "nsServiceManagerUtils.h"
+#include "xpcpublic.h"
 
 #ifdef LOG
 #  undef LOG
@@ -373,7 +374,19 @@ void DOMMediaStream::RemoveTrack(MediaStreamTrack& aTrack) {
 }
 
 already_AddRefed<DOMMediaStream> DOMMediaStream::Clone() {
-  auto newStream = MakeRefPtr<DOMMediaStream>(GetOwnerWindow());
+  // https://w3c.github.io/mediacapture-main/#dom-mediastream-clone
+  // creates the clone without naming a realm. Use the relevant realm of this,
+  // as
+  // https://html.spec.whatwg.org/multipage/webappapis.html#realms-settings-objects-global-objects
+  // recommends. The track clones are created in the same realm. The owner is
+  // gone once its global is torn down, but the reflector that `this` is called
+  // through is still in that realm.
+  nsCOMPtr<nsPIDOMWindowInner> window = GetOwnerWindow();
+  if (!window) {
+    MOZ_ASSERT(GetWrapper());
+    window = xpc::NativeGlobal(GetWrapper())->GetAsInnerWindow();
+  }
+  auto newStream = MakeRefPtr<DOMMediaStream>(window);
 
   LOG(LogLevel::Info, ("DOMMediaStream {} created clone {}", fmt::ptr(this),
                        fmt::ptr(newStream.get())));
@@ -382,7 +395,7 @@ already_AddRefed<DOMMediaStream> DOMMediaStream::Clone() {
     LOG(LogLevel::Debug,
         ("DOMMediaStream {} forwarding external track {} to clone {}",
          fmt::ptr(this), fmt::ptr(track.get()), fmt::ptr(newStream.get())));
-    RefPtr<MediaStreamTrack> clone = track->Clone();
+    RefPtr<MediaStreamTrack> clone = track->Clone(window);
     newStream->AddTrack(*clone);
   }
 
