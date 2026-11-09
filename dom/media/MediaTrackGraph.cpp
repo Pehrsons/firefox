@@ -2747,7 +2747,9 @@ void MediaTrack::NotifyIfDisabledModeChangedFrom(DisabledTrackMode aOldMode) {
 void MediaTrack::QueueMessage(UniquePtr<ControlMessageInterface> aMessage) {
   MOZ_ASSERT(NS_IsMainThread() || dom::IsCurrentThreadRunningWorker(),
              "Only the main thread and workers control tracks");
-  // Authoritative on the main thread only, see the declaration.
+  // Authoritative on the main thread only. Off the main thread the caller
+  // guarantees that the track is not destroyed, see the declaration of
+  // QueueMessage().
   MOZ_RELEASE_ASSERT(!mDestroyed);
   GraphImpl()->AppendMessage(std::move(aMessage));
 }
