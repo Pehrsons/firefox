@@ -19,7 +19,8 @@ class ProcessedMediaTrack;
 namespace dom {
 
 /**
- * Owns the MediaTrackGraph track of a MediaStreamTrack, which borrows it.
+ * Owns the MediaTrackGraph track of a MediaStreamTrack, which borrows it. The
+ * MediaStreamTrackSource of the MediaStreamTrack creates it.
  *
  * The graph track is destroyed in Shutdown() and nowhere else, so the track
  * borrowing it can rely on it until the holder's owner shuts the holder down.
@@ -45,10 +46,6 @@ class GraphTrackHolder final {
    */
   void Shutdown();
 
-  mozilla::MediaTrack* InputTrack() const {
-    MOZ_ASSERT(NS_IsMainThread());
-    return mInputTrack;
-  }
   // The graph track, borrowed by the MediaStreamTrack. Null after Shutdown().
   ProcessedMediaTrack* GraphTrack() const {
     MOZ_ASSERT(NS_IsMainThread());
@@ -59,15 +56,12 @@ class GraphTrackHolder final {
   GraphTrackHolder(mozilla::MediaTrack* aInputTrack, MediaTrackGraph* aGraph);
   ~GraphTrackHolder();
 
-  // The input MediaTrack assigned us by the data producer. Owned by the
-  // producer, which decides its lifetime.
-  const RefPtr<mozilla::MediaTrack> mInputTrack;
   // The MediaTrack representing the MediaStreamTrack in the MediaTrackGraph,
   // which it borrows. Set on construction. Owned by us. Destroyed only in
   // Shutdown().
   RefPtr<ProcessedMediaTrack> mTrack;
-  // The MediaInputPort connecting mInputTrack to mTrack. Set on construction.
-  // Owned by us. Destroyed only in Shutdown().
+  // The MediaInputPort connecting the input track to mTrack. Set on
+  // construction. Owned by us. Destroyed only in Shutdown().
   RefPtr<MediaInputPort> mPort;
 };
 

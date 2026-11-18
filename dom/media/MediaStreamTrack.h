@@ -116,31 +116,31 @@ class MediaStreamTrackSource : public nsISupports {
      */
     virtual void OverrideEnded() = 0;
 
+    /**
+     * Return true to be given the GraphTrackHolder of the graph track of the
+     * MediaStreamTrackSource where this sink is registered, through
+     * SetGraphTrack() during RegisterSink() or later.
+     */
+    virtual bool WantsGraphTrack() const { return false; }
+
+    virtual void SetGraphTrack(already_AddRefed<GraphTrackHolder> aHolder) {}
+
    protected:
     virtual ~Sink() = default;
   };
 
-  MediaStreamTrackSource(nsIPrincipal* aPrincipal, const nsString& aLabel,
+  MediaStreamTrackSource(mozilla::MediaTrack* aInputTrack,
+                         nsIPrincipal* aPrincipal, const nsString& aLabel,
                          TrackingId aTrackingId)
-      : MediaStreamTrackSource(aPrincipal, aLabel, std::move(aTrackingId),
-                               nsString(), nsString()) {}
+      : MediaStreamTrackSource(aInputTrack, aPrincipal, aLabel,
+                               std::move(aTrackingId), nsString(), nsString()) {
+  }
 
   // The Canonicals are owned by AbstractThread::GetCurrent(), which must exist.
-  MediaStreamTrackSource(nsIPrincipal* aPrincipal, const nsString& aLabel,
+  MediaStreamTrackSource(mozilla::MediaTrack* aInputTrack,
+                         nsIPrincipal* aPrincipal, const nsString& aLabel,
                          TrackingId aTrackingId, const nsString& aDeviceId,
-                         const nsString& aGroupId)
-      : mPrincipal(aPrincipal),
-        mLabel(aLabel),
-        mTrackingId(std::move(aTrackingId)),
-        mDeviceId(aDeviceId),
-        mGroupId(aGroupId),
-        mSettings(AbstractThread::GetCurrent(),
-                  MediaStreamTrackSourceSettings(),
-                  "MediaStreamTrackSource::mSettings"),
-        mCapabilities(AbstractThread::GetCurrent(),
-                      MediaStreamTrackSourceCapabilities(),
-                      "MediaStreamTrackSource::mCapabilities"),
-        mStopped(false) {}
+                         const nsString& aGroupId);
 
   /**
    * Use to clean up any resources that have to be cleaned before the
@@ -149,19 +149,18 @@ class MediaStreamTrackSource : public nsISupports {
    */
   virtual void Destroy() {}
 
-  struct CloneResult {
-    ~CloneResult();
-
-    RefPtr<MediaStreamTrackSource> mSource;
-    RefPtr<mozilla::MediaTrack> mInputTrack;
-  };
-
   /**
    * Clone this MediaStreamTrackSource. Cloned sources allow independent track
    * settings. Not supported by all source types. A source not supporting
    * cloning returns nullptr.
    */
-  virtual CloneResult Clone();
+  virtual RefPtr<MediaStreamTrackSource> Clone();
+
+  /**
+   * The MediaTrack that the producer of this source produces its media into.
+   * The producer decides on its lifetime.
+   */
+  mozilla::MediaTrack* InputTrack() const { return mInputTrack; }
 
   /**
    * Gets the source's MediaSourceEnum for usage by PeerConnections.
@@ -278,19 +277,10 @@ class MediaStreamTrackSource : public nsISupports {
   }
 
   /**
-   * Called by each MediaStreamTrack clone on initialization.
+   * Called by each MediaStreamTrack clone on initialization. Gives aSink its
+   * graph track if it WantsGraphTrack().
    */
-  void RegisterSink(Sink* aSink) {
-    MOZ_ASSERT(NS_IsMainThread());
-    if (mStopped) {
-      return;
-    }
-    mSinks.RemoveElementsBy([](const WeakPtr<Sink>& aElem) {
-      MOZ_ASSERT(aElem, "Sink was not explicitly removed");
-      return !aElem;
-    });
-    mSinks.AppendElement(aSink);
-  }
+  void RegisterSink(Sink* aSink);
 
   /**
    * Called by each MediaStreamTrack clone on Stop() if supported by the
@@ -315,7 +305,7 @@ class MediaStreamTrackSource : public nsISupports {
   }
 
  protected:
-  virtual ~MediaStreamTrackSource() = default;
+  virtual ~MediaStreamTrackSource();
 
   bool IsActive() {
     for (const WeakPtr<Sink>& sink : mSinks) {
@@ -396,6 +386,12 @@ class MediaStreamTrackSource : public nsISupports {
     }
   }
 
+  // The MediaTrack that the producer of this source produces its media into.
+  const RefPtr<mozilla::MediaTrack> mInputTrack;
+  // The window of the graph of mInputTrack, which can still be looked up once
+  // mInputTrack is destroyed.
+  const uint64_t mInputWindowId;
+
   // Principal identifying who may access the contents of this source.
   RefPtr<nsIPrincipal> mPrincipal;
 
@@ -448,7 +444,8 @@ class MediaStreamTrackConsumer : public SupportsWeakPtr {
  * DOM wrapper for MediaTrackGraph-MediaTracks.
  *
  * To account for cloning, a MediaStreamTrack wraps two internal (and chained)
- * MediaTracks, held by its GraphTrackHolder:
+ * MediaTracks. Its source owns the first, and gives it the GraphTrackHolder
+ * that owns the second:
  *   1. The input track
  *      - Controlled by the producer of the data in the track. The producer
  *        decides on lifetime of the MediaTrack and the track inside it.
@@ -640,11 +637,10 @@ class MediaStreamTrack : public DOMEventTargetHelper, public SupportsWeakPtr {
   virtual ~MediaStreamTrack();
 
   /**
-   * Registers with the source and, unless we are ended, gets a graph track
-   * forwarding aInputTrack, the MediaTrack that our producer produces its media
-   * into. Called once by the factory after construction.
+   * Registers with the source and, unless we are ended, gets our graph track
+   * from it. Called once by the factory after construction.
    */
-  void Init(mozilla::MediaTrack* aInputTrack);
+  void Init();
 
   /**
    * Forces the ready state to a particular value, for instance when we're
@@ -674,14 +670,6 @@ class MediaStreamTrack : public DOMEventTargetHelper, public SupportsWeakPtr {
    * ended in the MediaTrackGraph. Queues a task to end this track.
    */
   void OnTrackEnded();
-
-  /**
-   * Starts borrowing aTrack as mTrack and mirroring its state.
-   */
-  void SetGraphTrack(ProcessedMediaTrack* aTrack);
-
-  // The input track of our holder, for cloning. Null without a holder.
-  mozilla::MediaTrack* InputTrack() const;
 
   /**
    * Called when this track's readyState transitions to "ended".
@@ -724,37 +712,41 @@ class MediaStreamTrack : public DOMEventTargetHelper, public SupportsWeakPtr {
   void SetPrincipal(nsIPrincipal* aPrincipal);
 
   /**
-   * Creates a new MediaStreamTrack with the same kind, input track, input
-   * track ID and source as this MediaStreamTrack.
+   * Creates a new MediaStreamTrack with the same kind as this
+   * MediaStreamTrack, and a clone of its source, or its source if that cannot
+   * be cloned.
    */
 
   template <typename TrackType>
   already_AddRefed<MediaStreamTrack> CloneInternal() {
-    auto cloneRes = mSource->Clone();
-    MOZ_ASSERT(!!cloneRes.mSource == !!cloneRes.mInputTrack);
-    if (!cloneRes.mSource || !cloneRes.mInputTrack) {
-      cloneRes.mSource = mSource;
-      cloneRes.mInputTrack = InputTrack();
+    RefPtr<MediaStreamTrackSource> source = mSource->Clone();
+    if (!source) {
+      source = mSource;
     }
     RefPtr<TrackType> newTrack = TrackType::Create(
-        GetRelevantGlobal(), cloneRes.mInputTrack, cloneRes.mSource,
-        ReadyState(), Muted(), mConstraints);
+        GetRelevantGlobal(), source, ReadyState(), Muted(), mConstraints);
     newTrack->SetEnabled(Enabled());
     newTrack->SetMuted(Muted());
     return newTrack.forget();
   }
 
+ private:
+  // Takes ownership of aHolder and starts borrowing its graph track as mTrack,
+  // mirroring its state.
+  void SetGraphTrack(already_AddRefed<GraphTrackHolder> aHolder);
+
+ protected:
   nsTArray<PrincipalChangeObserver<MediaStreamTrack>*>
       mPrincipalChangeObservers;
 
   nsTArray<WeakPtr<MediaStreamTrackConsumer>> mConsumers;
 
-  // Holds the input track assigned us by the data producer and owns mTrack.
-  // Set on construction if we're live. Valid until we end.
+  // Owns mTrack. Given to us by our source when we register as its sink, if
+  // we're live. Valid until we end.
   RefPtr<GraphTrackHolder> mHolder;
   // The MediaTrack representing this MediaStreamTrack in the MediaTrackGraph.
   // Borrowed from mHolder, which guarantees it is not destroyed while we
-  // borrow it. Set on construction if we're live. Valid until we end.
+  // borrow it. Valid until we end.
   RefPtr<ProcessedMediaTrack> mTrack;
   RefPtr<MediaStreamTrackSource> mSource;
   const UniquePtr<TrackSink> mSink;

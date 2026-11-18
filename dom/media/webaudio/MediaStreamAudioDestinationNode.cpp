@@ -26,7 +26,7 @@ class AudioDestinationTrackSource final : public MediaStreamTrackSource {
                               ProcessedMediaTrack* aTrack,
                               nsIPrincipal* aPrincipal)
       : MediaStreamTrackSource(
-            aPrincipal, nsString(),
+            aTrack, aPrincipal, nsString(),
             // We pass 0 here because tracking ids are video only for now.
             TrackingId(TrackingId::Source::AudioDestinationNode, 0)),
         mTrack(aTrack),
@@ -102,7 +102,7 @@ MediaStreamAudioDestinationNode::MediaStreamAudioDestinationNode(
       aContext->Graph()->CreateForwardedInputTrack(MediaSegment::AUDIO),
       principal);
   RefPtr<AudioStreamTrack> track =
-      AudioStreamTrack::Create(GetOwnerWindow(), source->mTrack, source);
+      AudioStreamTrack::Create(GetOwnerWindow(), source);
   mDOMStream->AddTrackInternal(track);
 }
 

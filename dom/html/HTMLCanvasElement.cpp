@@ -995,15 +995,15 @@ already_AddRefed<CanvasCaptureMediaStream> HTMLCanvasElement::CaptureStream(
   auto stream = MakeRefPtr<CanvasCaptureMediaStream>(window->AsGlobal(), this);
 
   nsCOMPtr<nsIPrincipal> principal = NodePrincipal();
-  auto source = MakeRefPtr<CanvasCaptureTrackSource>(principal, stream);
-  nsresult rv = stream->Init(aFrameRate, principal, source);
-  if (NS_FAILED(rv)) {
-    aRv.Throw(rv);
+  auto result = stream->Init(aFrameRate, principal);
+  if (result.isErr()) {
+    aRv.Throw(result.unwrapErr());
     return nullptr;
   }
+  RefPtr<CanvasCaptureTrackSource> source = result.unwrap();
 
-  RefPtr<MediaStreamTrack> track = VideoStreamTrack::Create(
-      window->AsGlobal(), stream->GetSourceStream(), source);
+  RefPtr<MediaStreamTrack> track =
+      VideoStreamTrack::Create(window->AsGlobal(), source);
   stream->AddTrackInternal(track);
 
   // Check site-specific permission and display prompt if appropriate.
@@ -1013,7 +1013,7 @@ already_AddRefed<CanvasCaptureMediaStream> HTMLCanvasElement::CaptureStream(
       CanvasUtils::ImageExtractionResult(
           this, nsContentUtils::GetCurrentJSContext(), &aSubjectPrincipal);
 
-  rv = RegisterFrameCaptureListener(
+  nsresult rv = RegisterFrameCaptureListener(
       stream->FrameCaptureListener(),
       extractionBehaviour == CanvasUtils::ImageExtraction::Placeholder);
   if (NS_FAILED(rv)) {

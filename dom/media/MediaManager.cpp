@@ -855,11 +855,10 @@ class LocalTrackSource : public MediaStreamTrackSource {
                    MediaTrack* aTrack, RefPtr<const PeerIdentity> aPeerIdentity,
                    TrackingId aTrackingId = TrackingId())
       : MediaStreamTrackSource(
-            aPrincipal, aLabel, std::move(aTrackingId),
+            aTrack, aPrincipal, aLabel, std::move(aTrackingId),
             ExposesDeviceIds(aDevice) ? aDevice->mID : nsString(),
             ExposesDeviceIds(aDevice) ? aDevice->mGroupID : nsString()),
         mSource(aSource),
-        mTrack(aTrack),
         mPeerIdentity(std::move(aPeerIdentity)),
         mListener(aListener.get()) {}
 
@@ -904,23 +903,22 @@ class LocalTrackSource : public MediaStreamTrackSource {
       mListener->Stop();
       mListener = nullptr;
     }
-    if (!mTrack->IsDestroyed()) {
-      mTrack->Destroy();
+    if (!mInputTrack->IsDestroyed()) {
+      mInputTrack->Destroy();
     }
   }
 
-  CloneResult Clone() override {
+  RefPtr<MediaStreamTrackSource> Clone() override {
     if (!mListener) {
-      return {};
+      return nullptr;
     }
     RefPtr listener = mListener->Clone();
     MOZ_ASSERT(listener);
     if (!listener) {
-      return {};
+      return nullptr;
     }
 
-    return {.mSource = listener->GetTrackSource(),
-            .mInputTrack = listener->GetTrackSource()->mTrack};
+    return listener->GetTrackSource();
   }
 
   void Disable() override {
@@ -937,22 +935,21 @@ class LocalTrackSource : public MediaStreamTrackSource {
 
   void Mute() {
     MutedChanged(true);
-    mTrack->SetDisabledTrackMode(DisabledTrackMode::SILENCE_BLACK);
+    mInputTrack->SetDisabledTrackMode(DisabledTrackMode::SILENCE_BLACK);
   }
 
   void Unmute() {
     MutedChanged(false);
-    mTrack->SetDisabledTrackMode(DisabledTrackMode::ENABLED);
+    mInputTrack->SetDisabledTrackMode(DisabledTrackMode::ENABLED);
   }
 
   const MediaSourceEnum mSource;
-  const RefPtr<MediaTrack> mTrack;
   const RefPtr<const PeerIdentity> mPeerIdentity;
 
  protected:
   ~LocalTrackSource() {
     MOZ_ASSERT(NS_IsMainThread());
-    MOZ_ASSERT(mTrack->IsDestroyed());
+    MOZ_ASSERT(mInputTrack->IsDestroyed());
   }
 
   // This is a weak pointer to avoid having the DeviceListener (which may
@@ -993,8 +990,6 @@ class AudioCaptureTrackSource : public LocalTrackSource {
     LocalTrackSource::Stop();
     MOZ_ASSERT(mAudioCaptureTrack->IsDestroyed());
   }
-
-  ProcessedMediaTrack* InputTrack() const { return mAudioCaptureTrack.get(); }
 
  protected:
   ~AudioCaptureTrackSource() {
@@ -1834,8 +1829,8 @@ void GetUserMediaStreamTask::PrepareDOMStream() {
           principal, window, u"Window audio capture"_ns,
           mtg->CreateAudioCaptureTrack(), peerIdentity);
       audioTrackSource = audioCaptureSource;
-      RefPtr<MediaStreamTrack> track = dom::AudioStreamTrack::Create(
-          window, audioCaptureSource->InputTrack(), audioCaptureSource);
+      RefPtr<MediaStreamTrack> track =
+          dom::AudioStreamTrack::Create(window, audioCaptureSource);
       domStream->AddTrackInternal(track);
     } else {
       const nsString& audioDeviceName = mAudioDevice->mName;
@@ -1855,8 +1850,8 @@ void GetUserMediaStreamTask::PrepareDOMStream() {
           mAudioDevice->GetMediaSource(), track, peerIdentity);
       MOZ_ASSERT(MediaManager::IsOn(mConstraints.mAudio));
       RefPtr<MediaStreamTrack> domTrack = dom::AudioStreamTrack::Create(
-          window, track, audioTrackSource, dom::MediaStreamTrackState::Live,
-          false, GetInvariant(mConstraints.mAudio));
+          window, audioTrackSource, dom::MediaStreamTrackState::Live, false,
+          GetInvariant(mConstraints.mAudio));
       domStream->AddTrackInternal(domTrack);
     }
   }
@@ -1868,8 +1863,8 @@ void GetUserMediaStreamTask::PrepareDOMStream() {
         mVideoDevice->GetMediaSource(), track, peerIdentity, *mVideoTrackingId);
     MOZ_ASSERT(MediaManager::IsOn(mConstraints.mVideo));
     RefPtr<MediaStreamTrack> domTrack = dom::VideoStreamTrack::Create(
-        window, track, videoTrackSource, dom::MediaStreamTrackState::Live,
-        false, GetInvariant(mConstraints.mVideo));
+        window, videoTrackSource, dom::MediaStreamTrackState::Live, false,
+        GetInvariant(mConstraints.mVideo));
     domStream->AddTrackInternal(domTrack);
     switch (mVideoDevice->GetMediaSource()) {
       case MediaSourceEnum::Browser:
@@ -4477,7 +4472,7 @@ DeviceListener::InitializeAsync() {
              MediaManager::Get()->mMediaThread, __func__,
              [this, self = RefPtr(this), principal = GetPrincipalHandle(),
               device = mDeviceState->mDevice,
-              track = mDeviceState->mTrackSource->mTrack] {
+              track = RefPtr(mDeviceState->mTrackSource->InputTrack())] {
                // Start the device if not muted, or if mOffWhileDisabled is
                // false (the device should remain on even when muted).
                bool startDevice = !mDeviceState->mDeviceMuted ||
@@ -4577,7 +4572,7 @@ already_AddRefed<DeviceListener> DeviceListener::Clone() const {
 
   // See PrepareDOMStream for how a gUM/gDM track is created.
   RefPtr<MediaTrack> track;
-  MediaTrackGraph* mtg = thisTrackSource->mTrack->Graph();
+  MediaTrackGraph* mtg = thisTrackSource->InputTrack()->Graph();
   if (const auto source = thisDevice->GetMediaSource();
       source == dom::MediaSourceEnum::Microphone) {
 #ifdef MOZ_WEBRTC

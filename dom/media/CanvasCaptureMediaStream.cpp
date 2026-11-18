@@ -37,9 +37,10 @@ NS_IMPL_CYCLE_COLLECTION_TRAVERSE_BEGIN_INHERITED(CanvasCaptureTrackSource,
 NS_IMPL_CYCLE_COLLECTION_TRAVERSE_END
 
 CanvasCaptureTrackSource::CanvasCaptureTrackSource(
-    nsIPrincipal* aPrincipal, CanvasCaptureMediaStream* aCaptureStream)
+    nsIPrincipal* aPrincipal, CanvasCaptureMediaStream* aCaptureStream,
+    SourceMediaTrack* aSourceTrack)
     : MediaStreamTrackSource(
-          aPrincipal, nsString(),
+          aSourceTrack, aPrincipal, nsString(),
           TrackingId(TrackingId::Source::Canvas, sCaptureSourceId++,
                      TrackingId::TrackAcrossProcesses::Yes)),
       mCaptureStream(aCaptureStream) {
@@ -230,26 +231,28 @@ void CanvasCaptureMediaStream::RequestFrame() {
   }
 }
 
-nsresult CanvasCaptureMediaStream::Init(
-    const dom::Optional<double>& aFPS, nsIPrincipal* aPrincipal,
-    CanvasCaptureTrackSource* aTrackSource) {
+Result<RefPtr<CanvasCaptureTrackSource>, nsresult>
+CanvasCaptureMediaStream::Init(const dom::Optional<double>& aFPS,
+                               nsIPrincipal* aPrincipal) {
   MediaTrackGraph* graph = MediaTrackGraph::GetInstance(
       MediaTrackGraph::SYSTEM_THREAD_DRIVER, GetOwnerWindow(),
       MediaTrackGraph::REQUEST_DEFAULT_SAMPLE_RATE,
       MediaTrackGraph::DEFAULT_OUTPUT_DEVICE);
   SourceMediaTrack* source = graph->CreateSourceTrack(MediaSegment::VIDEO);
   PrincipalHandle principalHandle(aPrincipal);
+  auto trackSource =
+      MakeRefPtr<CanvasCaptureTrackSource>(aPrincipal, this, source);
   if (!aFPS.WasPassed()) {
-    mOutputStreamDriver = new AutoDriver(source, principalHandle, aTrackSource);
+    mOutputStreamDriver = new AutoDriver(source, principalHandle, trackSource);
   } else if (aFPS.Value() < 0) {
-    return NS_ERROR_ILLEGAL_VALUE;
+    return Err(NS_ERROR_ILLEGAL_VALUE);
   } else {
     // Cap frame rate to 60 FPS for sanity
     double fps = std::min(60.0, aFPS.Value());
     mOutputStreamDriver =
-        new TimerDriver(source, fps, principalHandle, aTrackSource);
+        new TimerDriver(source, fps, principalHandle, trackSource);
   }
-  return NS_OK;
+  return trackSource;
 }
 
 FrameCaptureListener* CanvasCaptureMediaStream::FrameCaptureListener() {
@@ -263,13 +266,6 @@ void CanvasCaptureMediaStream::StopCapture() {
 
   mOutputStreamDriver->EndTrack();
   mOutputStreamDriver = nullptr;
-}
-
-SourceMediaTrack* CanvasCaptureMediaStream::GetSourceStream() const {
-  if (!mOutputStreamDriver) {
-    return nullptr;
-  }
-  return mOutputStreamDriver->mSourceStream;
 }
 
 }  // namespace mozilla::dom

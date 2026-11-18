@@ -15,14 +15,13 @@ namespace mozilla::dom {
 class AudioStreamTrack : public MediaStreamTrack {
  public:
   static already_AddRefed<AudioStreamTrack> Create(
-      nsIGlobalObject* aGlobal, mozilla::MediaTrack* aInputTrack,
-      MediaStreamTrackSource* aSource,
+      nsIGlobalObject* aGlobal, MediaStreamTrackSource* aSource,
       MediaStreamTrackState aReadyState = MediaStreamTrackState::Live,
       bool aMuted = false,
       const MediaTrackConstraints& aConstraints = MediaTrackConstraints()) {
     RefPtr<AudioStreamTrack> track = new AudioStreamTrack(
         aGlobal, aSource, aReadyState, aMuted, aConstraints);
-    track->Init(aInputTrack);
+    track->Init();
     return track.forget();
   }
 

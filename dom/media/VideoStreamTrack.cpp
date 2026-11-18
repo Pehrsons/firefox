@@ -14,12 +14,12 @@ namespace mozilla::dom {
 
 /* static */
 already_AddRefed<VideoStreamTrack> VideoStreamTrack::Create(
-    nsIGlobalObject* aGlobal, mozilla::MediaTrack* aInputTrack,
-    MediaStreamTrackSource* aSource, MediaStreamTrackState aReadyState,
-    bool aMuted, const MediaTrackConstraints& aConstraints) {
+    nsIGlobalObject* aGlobal, MediaStreamTrackSource* aSource,
+    MediaStreamTrackState aReadyState, bool aMuted,
+    const MediaTrackConstraints& aConstraints) {
   RefPtr<VideoStreamTrack> track =
       new VideoStreamTrack(aGlobal, aSource, aReadyState, aMuted, aConstraints);
-  track->Init(aInputTrack);
+  track->Init();
   return track.forget();
 }
 

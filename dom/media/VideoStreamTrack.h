@@ -18,8 +18,7 @@ namespace dom {
 class VideoStreamTrack : public MediaStreamTrack {
  public:
   static already_AddRefed<VideoStreamTrack> Create(
-      nsIGlobalObject* aGlobal, mozilla::MediaTrack* aInputTrack,
-      MediaStreamTrackSource* aSource,
+      nsIGlobalObject* aGlobal, MediaStreamTrackSource* aSource,
       MediaStreamTrackState aState = MediaStreamTrackState::Live,
       bool aMuted = false,
       const MediaTrackConstraints& aConstraints = MediaTrackConstraints());

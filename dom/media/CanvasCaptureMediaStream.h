@@ -8,6 +8,7 @@
 #include "DOMMediaStream.h"
 #include "MediaStreamTrack.h"
 #include "PrincipalHandle.h"
+#include "mozilla/Result.h"
 #include "mozilla/WeakPtr.h"
 #include "mozilla/dom/HTMLCanvasElement.h"
 
@@ -63,7 +64,8 @@ class CanvasCaptureTrackSource final : public MediaStreamTrackSource,
                                            MediaStreamTrackSource)
 
   CanvasCaptureTrackSource(nsIPrincipal* aPrincipal,
-                           CanvasCaptureMediaStream* aCaptureStream);
+                           CanvasCaptureMediaStream* aCaptureStream,
+                           SourceMediaTrack* aSourceTrack);
 
   MediaSourceEnum GetMediaSource() const override {
     return MediaSourceEnum::Other;
@@ -131,8 +133,8 @@ class CanvasCaptureMediaStream : public DOMMediaStream {
   NS_DECL_CYCLE_COLLECTION_CLASS_INHERITED(CanvasCaptureMediaStream,
                                            DOMMediaStream)
 
-  nsresult Init(const dom::Optional<double>& aFPS, nsIPrincipal* aPrincipal,
-                CanvasCaptureTrackSource* aTrackSource);
+  Result<RefPtr<CanvasCaptureTrackSource>, nsresult> Init(
+      const dom::Optional<double>& aFPS, nsIPrincipal* aPrincipal);
 
   JSObject* WrapObject(JSContext* aCx,
                        JS::Handle<JSObject*> aGivenProto) override;
@@ -147,8 +149,6 @@ class CanvasCaptureMediaStream : public DOMMediaStream {
    * Stops capturing for this stream at mCanvas.
    */
   void StopCapture();
-
-  SourceMediaTrack* GetSourceStream() const;
 
  protected:
   ~CanvasCaptureMediaStream();

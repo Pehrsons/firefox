@@ -1302,16 +1302,15 @@ class HTMLMediaElement::MediaElementTrackSource
                           nsIPrincipal* aPrincipal, OutputMuteState aMuteState,
                           bool aHasAlpha)
       : MediaStreamTrackSource(
-            aPrincipal, nsString(),
+            aTrack, aPrincipal, nsString(),
             TrackingId(TrackingId::Source::MediaElementDecoder,
                        sDecoderCaptureSourceId++,
                        TrackingId::TrackAcrossProcesses::Yes)),
         mOwner(aOwner),
-        mTrack(aTrack),
         mIntendedElementMuteState(aMuteState),
         mElementMuteState(aMuteState),
         mMediaDecoderHasAlpha(Some(aHasAlpha)) {
-    MOZ_ASSERT(mTrack);
+    MOZ_ASSERT(aTrack);
   }
 
   /* MediaStream track source */
@@ -1321,18 +1320,17 @@ class HTMLMediaElement::MediaElementTrackSource
                           ProcessedMediaTrack* aTrack, MediaInputPort* aPort,
                           OutputMuteState aMuteState)
       : MediaStreamTrackSource(
-            aCapturedTrackSource->GetPrincipal(), nsString(),
+            aTrack, aCapturedTrackSource->GetPrincipal(), nsString(),
             TrackingId(TrackingId::Source::MediaElementStream,
                        sStreamCaptureSourceId++,
                        TrackingId::TrackAcrossProcesses::Yes)),
         mOwner(aOwner),
         mCapturedTrack(aCapturedTrack),
         mCapturedTrackSource(aCapturedTrackSource),
-        mTrack(aTrack),
         mPort(aPort),
         mIntendedElementMuteState(aMuteState),
         mElementMuteState(aMuteState) {
-    MOZ_ASSERT(mTrack);
+    MOZ_ASSERT(aTrack);
     MOZ_ASSERT(mCapturedTrack);
     MOZ_ASSERT(mCapturedTrackSource);
     MOZ_ASSERT(mPort);
@@ -1342,11 +1340,8 @@ class HTMLMediaElement::MediaElementTrackSource
   }
 
   void SetEnabled(bool aEnabled) {
-    if (!mTrack) {
-      return;
-    }
-    mTrack->SetDisabledTrackMode(aEnabled ? DisabledTrackMode::ENABLED
-                                          : DisabledTrackMode::SILENCE_FREEZE);
+    Track()->SetDisabledTrackMode(aEnabled ? DisabledTrackMode::ENABLED
+                                           : DisabledTrackMode::SILENCE_FREEZE);
   }
 
   void SetPrincipal(RefPtr<nsIPrincipal> aPrincipal) {
@@ -1376,8 +1371,8 @@ class HTMLMediaElement::MediaElementTrackSource
       mCapturedTrackSource->UnregisterSink(this);
       mCapturedTrackSource = nullptr;
     }
-    if (mTrack && !mTrack->IsDestroyed()) {
-      mTrack->Destroy();
+    if (!Track()->IsDestroyed()) {
+      Track()->Destroy();
     }
     if (mPort) {
       mPort->Destroy();
@@ -1450,7 +1445,7 @@ class HTMLMediaElement::MediaElementTrackSource
   }
 
   void UpdateVideoSize() {
-    if (!mOwner || mTrack->mType != MediaSegment::VIDEO) {
+    if (!mOwner || Track()->mType != MediaSegment::VIDEO) {
       return;
     }
 
@@ -1464,7 +1459,9 @@ class HTMLMediaElement::MediaElementTrackSource
         .mHeight = Some(AssertedCast<int32_t>(elem->VideoHeight()))};
   }
 
-  ProcessedMediaTrack* Track() const { return mTrack; }
+  ProcessedMediaTrack* Track() const {
+    return static_cast<ProcessedMediaTrack*>(InputTrack());
+  }
 
  private:
   virtual ~MediaElementTrackSource() { Destroy(); };
@@ -1472,7 +1469,6 @@ class HTMLMediaElement::MediaElementTrackSource
   WeakPtr<HTMLMediaElement> mOwner;
   RefPtr<MediaStreamTrack> mCapturedTrack;
   RefPtr<MediaStreamTrackSource> mCapturedTrackSource;
-  const RefPtr<ProcessedMediaTrack> mTrack;
   RefPtr<MediaInputPort> mPort;
   // The mute state as intended by the media element.
   OutputMuteState mIntendedElementMuteState;
@@ -4126,13 +4122,13 @@ void HTMLMediaElement::AddOutputTrackSourceToOutputStream(
 
   RefPtr<MediaStreamTrack> domTrack;
   if (aSource->Track()->mType == MediaSegment::AUDIO) {
-    domTrack = AudioStreamTrack::Create(
-        aOutputStream.mStream->GetOwnerWindow(), aSource->Track(), aSource,
-        MediaStreamTrackState::Live, aSource->Muted());
+    domTrack = AudioStreamTrack::Create(aOutputStream.mStream->GetOwnerWindow(),
+                                        aSource, MediaStreamTrackState::Live,
+                                        aSource->Muted());
   } else {
-    domTrack = VideoStreamTrack::Create(
-        aOutputStream.mStream->GetOwnerWindow(), aSource->Track(), aSource,
-        MediaStreamTrackState::Live, aSource->Muted());
+    domTrack = VideoStreamTrack::Create(aOutputStream.mStream->GetOwnerWindow(),
+                                        aSource, MediaStreamTrackState::Live,
+                                        aSource->Muted());
   }
 
   aOutputStream.mLiveTracks.AppendElement(domTrack);

@@ -24,15 +24,14 @@ already_AddRefed<GraphTrackHolder> GraphTrackHolder::Create(
 }
 
 GraphTrackHolder::GraphTrackHolder(mozilla::MediaTrack* aInputTrack,
-                                   MediaTrackGraph* aGraph)
-    : mInputTrack(aInputTrack) {
+                                   MediaTrackGraph* aGraph) {
   // Even if the input track is destroyed we need a graph track so that methods
   // like MediaStreamTrack::AddListener still work. Keeping the number of paths
   // to a minimum also helps prevent bugs elsewhere. We'll be ended through the
   // source soon enough.
   mTrack = aGraph->CreateForwardedInputTrack(
-      mInputTrack->mType, mozilla::MediaTrack::Flag::EnableCanonicals);
-  mPort = mTrack->AllocateInputPort(mInputTrack);
+      aInputTrack->mType, mozilla::MediaTrack::Flag::EnableCanonicals);
+  mPort = mTrack->AllocateInputPort(aInputTrack);
   LOG(LogLevel::Info, ("GraphTrackHolder {} created with graph track {}",
                        fmt::ptr(this), fmt::ptr(mTrack.get())));
 }

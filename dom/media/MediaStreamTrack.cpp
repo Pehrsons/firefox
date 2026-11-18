@@ -45,9 +45,57 @@ NS_IMPL_CYCLE_COLLECTION_TRAVERSE_BEGIN(MediaStreamTrackSource)
   NS_IMPL_CYCLE_COLLECTION_TRAVERSE(mPrincipal)
 NS_IMPL_CYCLE_COLLECTION_TRAVERSE_END
 
-MediaStreamTrackSource::CloneResult::~CloneResult() = default;
+MediaStreamTrackSource::MediaStreamTrackSource(mozilla::MediaTrack* aInputTrack,
+                                               nsIPrincipal* aPrincipal,
+                                               const nsString& aLabel,
+                                               TrackingId aTrackingId,
+                                               const nsString& aDeviceId,
+                                               const nsString& aGroupId)
+    : mInputTrack(aInputTrack),
+      mInputWindowId(aInputTrack ? aInputTrack->GetWindowId() : 0),
+      mPrincipal(aPrincipal),
+      mLabel(aLabel),
+      mTrackingId(std::move(aTrackingId)),
+      mDeviceId(aDeviceId),
+      mGroupId(aGroupId),
+      mSettings(AbstractThread::GetCurrent(), MediaStreamTrackSourceSettings(),
+                "MediaStreamTrackSource::mSettings"),
+      mCapabilities(AbstractThread::GetCurrent(),
+                    MediaStreamTrackSourceCapabilities(),
+                    "MediaStreamTrackSource::mCapabilities"),
+      mStopped(false) {}
 
-auto MediaStreamTrackSource::Clone() -> CloneResult { return {}; }
+MediaStreamTrackSource::~MediaStreamTrackSource() = default;
+
+RefPtr<MediaStreamTrackSource> MediaStreamTrackSource::Clone() {
+  return nullptr;
+}
+
+void MediaStreamTrackSource::RegisterSink(Sink* aSink) {
+  MOZ_ASSERT(NS_IsMainThread());
+  if (!mStopped) {
+    mSinks.RemoveElementsBy([](const WeakPtr<Sink>& aElem) {
+      MOZ_ASSERT(aElem, "Sink was not explicitly removed");
+      return !aElem;
+    });
+    mSinks.AppendElement(aSink);
+  }
+
+  if (!aSink->WantsGraphTrack()) {
+    return;
+  }
+
+  MediaTrackGraph* graph = mInputTrack->IsDestroyed()
+                               ? MediaTrackGraphImpl::GetInstanceIfExists(
+                                     mInputWindowId, mInputTrack->mSampleRate,
+                                     MediaTrackGraph::DEFAULT_OUTPUT_DEVICE)
+                               : mInputTrack->Graph();
+  MOZ_DIAGNOSTIC_ASSERT(graph,
+                        "A destroyed input track is only expected when "
+                        "cloning, but since we're live there must be another "
+                        "live track that is keeping the graph alive");
+  aSink->SetGraphTrack(GraphTrackHolder::Create(mInputTrack, graph));
+}
 
 auto MediaStreamTrackSource::ApplyConstraints(
     const dom::MediaTrackConstraints& aConstraints, CallerType aCallerType)
@@ -98,6 +146,13 @@ class MediaStreamTrack::TrackSink : public MediaStreamTrackSource::Sink {
     }
   }
 
+  bool WantsGraphTrack() const override { return true; }
+
+  void SetGraphTrack(already_AddRefed<GraphTrackHolder> aHolder) override {
+    MOZ_ASSERT(mTrack);
+    mTrack->SetGraphTrack(std::move(aHolder));
+  }
+
  private:
   WeakPtr<MediaStreamTrack> mTrack;
 };
@@ -135,38 +190,25 @@ MediaStreamTrack::MediaStreamTrack(nsIGlobalObject* aGlobal,
   mID = NS_ConvertASCIItoUTF16(chars);
 }
 
-void MediaStreamTrack::Init(mozilla::MediaTrack* aInputTrack) {
+void MediaStreamTrack::Init() {
   if (Ended()) {
     return;
   }
   GetSource().RegisterSink(mSink.get());
-
-  auto graph = aInputTrack->IsDestroyed()
-                   ? MediaTrackGraph::GetInstanceIfExists(
-                         GetOwnerWindow(), aInputTrack->mSampleRate,
-                         MediaTrackGraph::DEFAULT_OUTPUT_DEVICE)
-                   : aInputTrack->Graph();
-  MOZ_DIAGNOSTIC_ASSERT(graph,
-                        "A destroyed input track is only expected when "
-                        "cloning, but since we're live there must be another "
-                        "live track that is keeping the graph alive");
-  mHolder = GraphTrackHolder::Create(aInputTrack, graph);
-  SetGraphTrack(mHolder->GraphTrack());
+  MOZ_ASSERT(mHolder);
 }
 
-void MediaStreamTrack::SetGraphTrack(ProcessedMediaTrack* aTrack) {
-  MOZ_ASSERT(aTrack);
+void MediaStreamTrack::SetGraphTrack(
+    already_AddRefed<GraphTrackHolder> aHolder) {
+  MOZ_ASSERT(!mHolder);
   MOZ_ASSERT(!mTrack);
-  mTrack = aTrack;
+  mHolder = std::move(aHolder);
+  mTrack = mHolder->GraphTrack();
   mTrackEnded.Connect(&mTrack->CanonicalEnded());
   mWatchManager.Watch(mTrackEnded, &MediaStreamTrack::OnTrackEnded);
   mTrackPrincipalHandle.Connect(&mTrack->CanonicalPrincipalHandle());
   mWatchManager.Watch(mTrackPrincipalHandle,
                       &MediaStreamTrack::OnPrincipalHandleChanged);
-}
-
-mozilla::MediaTrack* MediaStreamTrack::InputTrack() const {
-  return mHolder ? mHolder->InputTrack() : nullptr;
 }
 
 MediaStreamTrack::~MediaStreamTrack() { Destroy(); }

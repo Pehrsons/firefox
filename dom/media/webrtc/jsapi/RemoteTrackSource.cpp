@@ -30,7 +30,8 @@ RemoteTrackSource::RemoteTrackSource(SourceMediaTrack* aStream,
                                      nsIPrincipal* aPrincipal,
                                      const nsString& aLabel,
                                      TrackingId aTrackingId)
-    : dom::MediaStreamTrackSource(aPrincipal, aLabel, std::move(aTrackingId)),
+    : dom::MediaStreamTrackSource(aStream, aPrincipal, aLabel,
+                                  std::move(aTrackingId)),
       mStream(aStream),
       mReceiver(aReceiver) {
   if (mStream->mType == MediaSegment::VIDEO) {
