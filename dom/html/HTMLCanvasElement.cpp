@@ -1002,7 +1002,7 @@ already_AddRefed<CanvasCaptureMediaStream> HTMLCanvasElement::CaptureStream(
     return nullptr;
   }
 
-  RefPtr<MediaStreamTrack> track = new VideoStreamTrack(
+  RefPtr<MediaStreamTrack> track = VideoStreamTrack::Create(
       window->AsGlobal(), stream->GetSourceStream(), source);
   stream->AddTrackInternal(track);
 

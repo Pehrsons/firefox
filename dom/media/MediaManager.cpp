@@ -1834,7 +1834,7 @@ void GetUserMediaStreamTask::PrepareDOMStream() {
           principal, window, u"Window audio capture"_ns,
           mtg->CreateAudioCaptureTrack(), peerIdentity);
       audioTrackSource = audioCaptureSource;
-      RefPtr<MediaStreamTrack> track = new dom::AudioStreamTrack(
+      RefPtr<MediaStreamTrack> track = dom::AudioStreamTrack::Create(
           window, audioCaptureSource->InputTrack(), audioCaptureSource);
       domStream->AddTrackInternal(track);
     } else {
@@ -1854,7 +1854,7 @@ void GetUserMediaStreamTask::PrepareDOMStream() {
           principal, audioDeviceName, mAudioDeviceListener, mAudioDevice,
           mAudioDevice->GetMediaSource(), track, peerIdentity);
       MOZ_ASSERT(MediaManager::IsOn(mConstraints.mAudio));
-      RefPtr<MediaStreamTrack> domTrack = new dom::AudioStreamTrack(
+      RefPtr<MediaStreamTrack> domTrack = dom::AudioStreamTrack::Create(
           window, track, audioTrackSource, dom::MediaStreamTrackState::Live,
           false, GetInvariant(mConstraints.mAudio));
       domStream->AddTrackInternal(domTrack);
@@ -1867,7 +1867,7 @@ void GetUserMediaStreamTask::PrepareDOMStream() {
         principal, videoDeviceName, mVideoDeviceListener, mVideoDevice,
         mVideoDevice->GetMediaSource(), track, peerIdentity, *mVideoTrackingId);
     MOZ_ASSERT(MediaManager::IsOn(mConstraints.mVideo));
-    RefPtr<MediaStreamTrack> domTrack = new dom::VideoStreamTrack(
+    RefPtr<MediaStreamTrack> domTrack = dom::VideoStreamTrack::Create(
         window, track, videoTrackSource, dom::MediaStreamTrackState::Live,
         false, GetInvariant(mConstraints.mVideo));
     domStream->AddTrackInternal(domTrack);

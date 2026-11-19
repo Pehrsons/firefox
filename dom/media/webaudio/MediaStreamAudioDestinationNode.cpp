@@ -101,8 +101,8 @@ MediaStreamAudioDestinationNode::MediaStreamAudioDestinationNode(
       this, mTrack,
       aContext->Graph()->CreateForwardedInputTrack(MediaSegment::AUDIO),
       principal);
-  auto track =
-      MakeRefPtr<AudioStreamTrack>(GetOwnerWindow(), source->mTrack, source);
+  RefPtr<AudioStreamTrack> track =
+      AudioStreamTrack::Create(GetOwnerWindow(), source->mTrack, source);
   mDOMStream->AddTrackInternal(track);
 }
 

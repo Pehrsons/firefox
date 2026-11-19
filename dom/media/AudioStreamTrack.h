@@ -14,14 +14,17 @@ namespace mozilla::dom {
 
 class AudioStreamTrack : public MediaStreamTrack {
  public:
-  AudioStreamTrack(
+  static already_AddRefed<AudioStreamTrack> Create(
       nsIGlobalObject* aGlobal, mozilla::MediaTrack* aInputTrack,
       MediaStreamTrackSource* aSource,
       MediaStreamTrackState aReadyState = MediaStreamTrackState::Live,
       bool aMuted = false,
-      const MediaTrackConstraints& aConstraints = MediaTrackConstraints())
-      : MediaStreamTrack(aGlobal, aInputTrack, aSource, aReadyState, aMuted,
-                         aConstraints) {}
+      const MediaTrackConstraints& aConstraints = MediaTrackConstraints()) {
+    RefPtr<AudioStreamTrack> track = new AudioStreamTrack(
+        aGlobal, aSource, aReadyState, aMuted, aConstraints);
+    track->Init(aInputTrack);
+    return track.forget();
+  }
 
   already_AddRefed<MediaStreamTrack> Clone() override;
 
@@ -47,6 +50,11 @@ class AudioStreamTrack : public MediaStreamTrack {
   void GetLabel(nsAString& aLabel, CallerType aCallerType) override;
 
  protected:
+  AudioStreamTrack(nsIGlobalObject* aGlobal, MediaStreamTrackSource* aSource,
+                   MediaStreamTrackState aReadyState, bool aMuted,
+                   const MediaTrackConstraints& aConstraints)
+      : MediaStreamTrack(aGlobal, aSource, aReadyState, aMuted, aConstraints) {}
+
   void SetReadyState(MediaStreamTrackState aState) override;
 
  private:

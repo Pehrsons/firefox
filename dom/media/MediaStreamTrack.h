@@ -489,13 +489,6 @@ class MediaStreamTrack : public DOMEventTargetHelper, public SupportsWeakPtr {
   class TrackSink;
 
  public:
-  MediaStreamTrack(
-      nsIGlobalObject* aGlobal, mozilla::MediaTrack* aInputTrack,
-      MediaStreamTrackSource* aSource,
-      MediaStreamTrackState aReadyState = MediaStreamTrackState::Live,
-      bool aMuted = false,
-      const MediaTrackConstraints& aConstraints = MediaTrackConstraints());
-
   NS_DECL_ISUPPORTS_INHERITED
   NS_DECL_CYCLE_COLLECTION_CLASS_INHERITED(MediaStreamTrack,
                                            DOMEventTargetHelper)
@@ -634,7 +627,24 @@ class MediaStreamTrack : public DOMEventTargetHelper, public SupportsWeakPtr {
       ProcessedMediaTrack* aTrack);
 
  protected:
+  /**
+   * Subclasses expose factories that construct and then Init() a track, as
+   * Init() may take references to it.
+   */
+  MediaStreamTrack(
+      nsIGlobalObject* aGlobal, MediaStreamTrackSource* aSource,
+      MediaStreamTrackState aReadyState = MediaStreamTrackState::Live,
+      bool aMuted = false,
+      const MediaTrackConstraints& aConstraints = MediaTrackConstraints());
+
   virtual ~MediaStreamTrack();
+
+  /**
+   * Registers with the source and, unless we are ended, gets a graph track
+   * forwarding aInputTrack, the MediaTrack that our producer produces its media
+   * into. Called once by the factory after construction.
+   */
+  void Init(mozilla::MediaTrack* aInputTrack);
 
   /**
    * Forces the ready state to a particular value, for instance when we're
@@ -726,7 +736,7 @@ class MediaStreamTrack : public DOMEventTargetHelper, public SupportsWeakPtr {
       cloneRes.mSource = mSource;
       cloneRes.mInputTrack = InputTrack();
     }
-    auto newTrack = MakeRefPtr<TrackType>(
+    RefPtr<TrackType> newTrack = TrackType::Create(
         GetRelevantGlobal(), cloneRes.mInputTrack, cloneRes.mSource,
         ReadyState(), Muted(), mConstraints);
     newTrack->SetEnabled(Enabled());

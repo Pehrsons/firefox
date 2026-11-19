@@ -17,7 +17,7 @@ namespace dom {
 
 class VideoStreamTrack : public MediaStreamTrack {
  public:
-  VideoStreamTrack(
+  static already_AddRefed<VideoStreamTrack> Create(
       nsIGlobalObject* aGlobal, mozilla::MediaTrack* aInputTrack,
       MediaStreamTrackSource* aSource,
       MediaStreamTrackState aState = MediaStreamTrackState::Live,
@@ -43,6 +43,11 @@ class VideoStreamTrack : public MediaStreamTrack {
   void GetKind(nsAString& aKind) override { aKind.AssignLiteral("video"); }
 
   void GetLabel(nsAString& aLabel, CallerType aCallerType) override;
+
+ protected:
+  VideoStreamTrack(nsIGlobalObject* aGlobal, MediaStreamTrackSource* aSource,
+                   MediaStreamTrackState aReadyState, bool aMuted,
+                   const MediaTrackConstraints& aConstraints);
 
  private:
   nsTArray<RefPtr<VideoOutput>> mVideoOutputs;

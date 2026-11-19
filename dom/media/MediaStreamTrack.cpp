@@ -103,7 +103,6 @@ class MediaStreamTrack::TrackSink : public MediaStreamTrackSource::Sink {
 };
 
 MediaStreamTrack::MediaStreamTrack(nsIGlobalObject* aGlobal,
-                                   mozilla::MediaTrack* aInputTrack,
                                    MediaStreamTrackSource* aSource,
                                    MediaStreamTrackState aReadyState,
                                    bool aMuted,
@@ -121,22 +120,6 @@ MediaStreamTrack::MediaStreamTrack(nsIGlobalObject* aGlobal,
                   "MediaStreamTrack::mTrackEnded"),
       mTrackPrincipalHandle(AbstractThread::MainThread(), PRINCIPAL_HANDLE_NONE,
                             "MediaStreamTrack::mTrackPrincipalHandle") {
-  if (!Ended()) {
-    GetSource().RegisterSink(mSink.get());
-
-    auto graph = aInputTrack->IsDestroyed()
-                     ? MediaTrackGraph::GetInstanceIfExists(
-                           GetOwnerWindow(), aInputTrack->mSampleRate,
-                           MediaTrackGraph::DEFAULT_OUTPUT_DEVICE)
-                     : aInputTrack->Graph();
-    MOZ_DIAGNOSTIC_ASSERT(graph,
-                          "A destroyed input track is only expected when "
-                          "cloning, but since we're live there must be another "
-                          "live track that is keeping the graph alive");
-    mHolder = GraphTrackHolder::Create(aInputTrack, graph);
-    SetGraphTrack(mHolder->GraphTrack());
-  }
-
   nsresult rv;
   nsCOMPtr<nsIUUIDGenerator> uuidgen =
       do_GetService("@mozilla.org/uuid-generator;1", &rv);
@@ -150,6 +133,25 @@ MediaStreamTrack::MediaStreamTrack(nsIGlobalObject* aGlobal,
   char chars[NSID_LENGTH];
   uuid.ToProvidedString(chars);
   mID = NS_ConvertASCIItoUTF16(chars);
+}
+
+void MediaStreamTrack::Init(mozilla::MediaTrack* aInputTrack) {
+  if (Ended()) {
+    return;
+  }
+  GetSource().RegisterSink(mSink.get());
+
+  auto graph = aInputTrack->IsDestroyed()
+                   ? MediaTrackGraph::GetInstanceIfExists(
+                         GetOwnerWindow(), aInputTrack->mSampleRate,
+                         MediaTrackGraph::DEFAULT_OUTPUT_DEVICE)
+                   : aInputTrack->Graph();
+  MOZ_DIAGNOSTIC_ASSERT(graph,
+                        "A destroyed input track is only expected when "
+                        "cloning, but since we're live there must be another "
+                        "live track that is keeping the graph alive");
+  mHolder = GraphTrackHolder::Create(aInputTrack, graph);
+  SetGraphTrack(mHolder->GraphTrack());
 }
 
 void MediaStreamTrack::SetGraphTrack(ProcessedMediaTrack* aTrack) {
